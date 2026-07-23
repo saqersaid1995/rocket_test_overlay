@@ -1,0 +1,42 @@
+# Input files
+video: input/test_video.mp4
+data: input/telemetry.xlsx
+output: output/rocket_test_overlay.mp4
+
+# Excel sheet: name or zero-based index
+sheet: 0
+
+# Set these exactly if automatic detection does not match your Excel headings.
+time_column: Time (s)
+pressure_column: Pressure (bar)
+thrust_column: Thrust (N)
+
+# Synchronization:
+# Example: ignition visibly starts at 4.52 seconds in the video.
+ignition_video_s: 4.52
+
+# Timestamp in Excel that should become telemetry t=0.
+# Leave null to use the first telemetry timestamp.
+telemetry_zero_s: null
+
+# Use 0.001 when Excel time is in milliseconds.
+time_scale: 1.0
+
+title: RNX-TEST-L819-V2
+subtitle: Pressure & Derived Thrust
+pressure_unit: bar
+thrust_unit: N
+
+width: 1920
+height: 1080
+video_fraction: 0.62
+
+chart_window_before_s: 1.0
+chart_window_after_s: 1.0
+
+# Optional transparent PNG logo
+logo: null
+
+keep_audio: true
+codec: mp4v
+crf: 18
