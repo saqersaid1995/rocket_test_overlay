@@ -625,12 +625,12 @@ class WebPreviewTests(unittest.TestCase):
             )
             self.assertIn(f'data-theme-layout="{theme}"', html)
         self.assertIn('id="broadcastRasterOverlay"', html)
-        for filename in (
-            "rocket_overlay_broadcast.py",
-            "rocket_overlay_broadcast (1).py",
-            "rocket_overlay_broadcast-3).py",
+        for caption in (
+            "tape gauges",
+            "arc gauges",
+            "meters &middot; phase list",
         ):
-            self.assertIn(filename, html)
+            self.assertIn(caption, html)
         for field in (
             "organization_name", "test_site", "footer_tagline",
             "camera_label", "capture_fps",
@@ -640,7 +640,7 @@ class WebPreviewTests(unittest.TestCase):
         self.assertIn(
             '<input type="checkbox" id="preserveSourceQuality">', html
         )
-        self.assertIn("SDR Rec.709 عالي الجودة بدقة المصدر", html)
+        self.assertIn("SDR Rec.709 high quality at source resolution", html)
 
     def test_same_aspect_upscale_is_capped_to_source_resolution(self):
         with tempfile.TemporaryDirectory() as directory:

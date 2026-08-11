@@ -67,7 +67,7 @@ test("production metadata normalization requires an immutable id and version", (
   assert.equal(normalized.version, "1.2.0");
   assert.equal(normalized.validation.valid, true);
   assert.equal(context.api.key(normalized), "stellar.duqm@1.2.0");
-  assert.equal(context.api.name(normalized), "قالب الدقم");
+  assert.equal(context.api.name(normalized), "DUQM");
   assert.equal(normalized.sha256, "f".repeat(64));
   context.api.select(normalized);
   assert.equal(JSON.stringify(context.api.payload()), JSON.stringify({

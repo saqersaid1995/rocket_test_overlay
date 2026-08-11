@@ -1,183 +1,70 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rocket Overlay Studio</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260810-1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260811-1') }}">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><i>R</i><div><strong>ROCKET OVERLAY</strong><span>منصة توثيق الاختبارات</span></div></div>
+    <div class="brand"><i>R</i><div><strong>ROCKET OVERLAY STUDIO</strong><span>Test footage &amp; telemetry compositor</span></div></div>
+    <nav class="wizard-nav">
+      <a href="#step-media" data-step-link="media"><b>1</b>Media</a>
+      <a href="#step-sync" data-step-link="sync"><b>2</b>Sync</a>
+      <a href="#step-design" data-step-link="design"><b>3</b>Design</a>
+      <a href="#step-export" data-step-link="export"><b>4</b>Export</a>
+    </nav>
     <div class="top-actions">
-      <button type="button" id="undoButton" title="تراجع">↶</button>
-      <button type="button" id="redoButton" title="إعادة">↷</button>
-      <button type="button" id="saveTemplate">حفظ القالب</button>
-      <button type="button" id="exportTemplate">تصدير القالب</button>
-      <label class="import-template">استيراد<input type="file" id="importTemplate" accept=".json,application/json"></label>
-      <button type="button" id="resetScene">إعادة الضبط</button>
-      <span id="systemStatus" class="status-dot">جاهز</span>
+      <span id="systemStatus" class="status-dot">Ready</span>
+      <button type="button" id="headerExportButton" class="primary-ghost">Export Video</button>
     </div>
   </header>
 
   <main class="studio">
     <aside class="assets-panel">
       <section>
-        <h2>ملفات المشروع</h2>
+        <div class="section-title"><h2>Media Pool</h2></div>
         <form id="renderForm" novalidate>
           <label class="file-card">
             <input type="file" name="video" id="videoInput" accept="video/*" required>
-            <b>▶ الكاميرا 1 — أساسية</b><small id="videoName">اختر ملف فيديو</small>
+            <b>&#9654; CAM 1 &mdash; Primary</b><small id="videoName">Choose a video file</small>
           </label>
           <label class="file-card">
             <input type="file" name="video_2" id="videoInput2" accept="video/*">
-            <b>▶ الكاميرا 2</b><small id="videoName2">اختيارية</small>
+            <b>&#9654; CAM 2</b><small id="videoName2">Optional</small>
           </label>
           <label class="file-card">
             <input type="file" name="video_3" id="videoInput3" accept="video/*">
-            <b>▶ الكاميرا 3</b><small id="videoName3">اختيارية</small>
+            <b>&#9654; CAM 3</b><small id="videoName3">Optional</small>
           </label>
+
+          <div class="section-title inset"><h2>Telemetry</h2></div>
           <label class="file-card">
             <input type="file" name="data" id="dataInput" accept=".xlsx,.xls,.xlsm,.csv,.txt" required>
-            <b>≋ بيانات القياسات</b><small id="dataName">Excel أو CSV</small>
+            <b>&#8776; Pressure / thrust data</b><small id="dataName">Excel or CSV</small>
           </label>
+
           <label class="file-card">
             <input type="file" name="logo" id="logoInput" accept="image/*">
-            <b>＋ الشعار</b><small id="logoName">اختياري</small>
+            <b>&#65291; Organization logo</b><small id="logoName">Optional</small>
           </label>
-
-          <details open>
-            <summary>المزامنة والأعمدة</summary>
-            <label>لحظة الاشتعال في الفيديو
-              <input type="number" name="ignition_video_s" value="4.52" min="0" step="any">
-            </label>
-            <label>زمن الاشتعال داخل ملف القياسات
-              <input type="number" name="telemetry_zero_s" placeholder="مثال: 44.162" step="any">
-            </label>
-            <small class="field-help">يُكتشف تلقائيًا من بداية ارتفاع الضغط، ويمكنك تعديله يدويًا عند الحاجة.</small>
-            <label>مقياس الزمن
-              <select name="time_scale"><option value="1">ثوانٍ</option><option value="0.001">ميلي ثانية</option></select>
-            </label>
-            <label>ورقة Excel<input type="text" name="sheet" value="0"></label>
-            <label>عمود الزمن<select name="time_column" id="timeColumn"></select></label>
-            <label>عمود الضغط<select name="pressure_column" id="pressureColumn"></select></label>
-            <label>عمود الدفع<select name="thrust_column" id="thrustColumn"></select></label>
-            <div id="telemetryDiagnostics" class="telemetry-diagnostics hidden" aria-live="polite">
-              <strong id="telemetryHealth">بانتظار تحليل البيانات</strong>
-              <span id="telemetryMapping"></span>
-              <span id="telemetryRange"></span>
-              <span id="telemetryChannels"></span>
-            </div>
-          </details>
-
-          <details>
-            <summary>الكاميرات المتعددة</summary>
-            <label>طريقة العرض
-              <select name="camera_mode" id="cameraMode">
-                <option value="single">كاميرا واحدة</option>
-                <option value="switch">تبديل عند الاشتعال</option>
-                <option value="split">تقسيم الشاشة</option>
-                <option value="pip">صورة داخل صورة</option>
-              </select>
-            </label>
-            <label>معاينة الكاميرا
-              <select id="cameraPreviewMode">
-                <option value="layout">معاينة النتيجة النهائية</option>
-                <option value="1">الكاميرا 1 منفردة</option>
-                <option value="2">الكاميرا 2 منفردة</option>
-                <option value="3">الكاميرا 3 منفردة</option>
-              </select>
-            </label>
-            <label class="check"><input type="checkbox" id="cameraDragMode"> تحريك لقطة الكاميرا بالسحب داخل المعاينة</label>
-            <label>لحظة الاشتعال في الكاميرا 2
-              <input type="number" name="camera_2_ignition_s" value="0" min="0" step="any">
-            </label>
-            <label>لحظة الاشتعال في الكاميرا 3
-              <input type="number" name="camera_3_ignition_s" value="0" min="0" step="any">
-            </label>
-            <label>الانتقال إلى الكاميرا 3 بعد الاشتعال (ث)
-              <input type="number" name="camera_3_switch_delay_s" value="2" min="0" step="any">
-            </label>
-            <h3>تأطير الكاميرا 2</h3>
-            <label>التكبير<input type="range" name="camera_2_crop_zoom" value="1" min="1" max="4" step=".05"></label>
-            <label>تحريك أفقي<input type="range" name="camera_2_crop_x" value=".5" min="0" max="1" step=".01"></label>
-            <label>تحريك رأسي<input type="range" name="camera_2_crop_y" value=".5" min="0" max="1" step=".01"></label>
-            <h3>تأطير الكاميرا 3</h3>
-            <label>التكبير<input type="range" name="camera_3_crop_zoom" value="1" min="1" max="4" step=".05"></label>
-            <label>تحريك أفقي<input type="range" name="camera_3_crop_x" value=".5" min="0" max="1" step=".01"></label>
-            <label>تحريك رأسي<input type="range" name="camera_3_crop_y" value=".5" min="0" max="1" step=".01"></label>
-            <small class="field-help">ضع زمن ظهور الاشتعال داخل كل فيديو لمزامنة الكاميرات بدقة.</small>
-          </details>
-
-          <details>
-            <summary>معلومات الاختبار</summary>
-            <label>العنوان<input name="title" value="RNX-TEST-L819-V2"></label>
-            <label>وصف البث<input name="subtitle" value="STATIC FIRE TEST"></label>
-            <label>رقم التشغيل<input name="run_number" placeholder="RUN-019"></label>
-            <label>نوع المحرك<input name="motor_type" placeholder="L819"></label>
-            <label>الوقود الدافع<input name="propellant" placeholder="APCP"></label>
-            <label>المؤكسد<input name="oxidizer" value="LOX" maxlength="32"></label>
-            <label>الوقود<input name="fuel" value="PROPANE" maxlength="32"></label>
-            <label>المادة العازلة<input name="ablative_material" value="PHENOLIC ABLATIVE" maxlength="48"></label>
-            <label>تاريخ الاختبار<input name="test_date" type="date"></label>
-            <label>اسم الجهة<input name="organization_name" value="STELLAR KINETICS" maxlength="48"></label>
-            <label>موقع الاختبار<input name="test_site" value="ETLAQ SPACEPORT - DUQM, OMAN" maxlength="72"></label>
-            <label>الإحداثيات<input name="coordinates_text" placeholder="19°39'N 57°42'E" maxlength="48"></label>
-            <label>سطر هوية الشركة<input name="footer_tagline" value="STELLAR KINETICS - ENGINEERING THE VOID" maxlength="80"></label>
-            <label>تعريف الكاميرا<input name="camera_label" value="CAM 01" maxlength="24"></label>
-            <label>معدل التصوير الظاهر<input name="capture_fps" value="120 FPS" maxlength="20"></label>
-            <label>وحدة الضغط<input name="pressure_unit" value="bar"></label>
-            <label>وحدة الدفع<input name="thrust_unit" value="N"></label>
-          </details>
-
-          <details>
-            <summary>الإخراج ومعالجة الفيديو</summary>
-            <label>الدقة
-              <select name="resolution" id="resolution">
-                <option value="source" selected>الدقة الأصلية — موصى بها</option>
-                <option value="1920x1080" data-native-check data-label="1080p">1080p</option>
-                <option value="3840x2160" data-native-check data-label="4K UHD">4K UHD</option>
-                <option value="1280x720" data-native-check data-label="720p">720p</option>
-                <option value="960x540" data-native-check data-label="540p">540p</option>
-                <option value="1080x1920">عمودي</option><option value="1080x1080">مربع</option>
-              </select>
-            </label>
-            <small id="resolutionHint" class="field-help">اختر الفيديو أولًا لتحديد دقته الأصلية ومنع التكبير غير المفيد.</small>
-            <small class="field-help">الوضع الافتراضي: SDR Rec.709 عالي الجودة بدقة المصدر، ويستخدم مسار التركيب نفسه للمعاينة كي تتطابق إضاءة النص وشدة التظليل على المنصات.</small>
-            <label class="check"><input type="checkbox" id="preserveSourceQuality"> أرشفة HDR / HLG ‏10-bit — اختياري</label>
-            <small class="field-help">خيار أرشيفي لمصدر HDR/HLG ‏10-bit فقط. يستخدم HEVC Main10 دون فقد ودمجًا خطيًا للرسومات؛ قد يختلف عرضه باختلاف شاشة HDR والمشغّل.</small>
-            <label>ترميز فيديو SDR Rec.709<select name="delivery_codec"><option value="h264">H.264 — توافق أوسع</option><option value="h265">H.265 — حجم أقل</option></select></label>
-            <input type="hidden" name="output_style" value="engineering">
-            <input type="hidden" name="template_id" id="selectedTemplateId" value="">
-            <input type="hidden" name="template_version" id="selectedTemplateVersion" value="">
-            <input type="hidden" name="sha256" id="selectedTemplateSha256" value="">
-            <input type="hidden" name="video_fraction" value="0.70">
-            <input type="hidden" name="intro_duration_s" value="0">
-            <label>مدة الخاتمة<input type="number" name="outro_duration_s" value="0" min="0" max="15" step=".1"></label>
-            <label>حد الضغط الآمن<input type="number" name="pressure_limit" min="0" step="any"></label>
-            <label>تكبير الفيديو<input type="range" name="crop_zoom" value="1" min="1" max="4" step=".05"></label>
-            <label>مركز القص أفقيًا<input type="range" name="crop_x" value=".5" min="0" max="1" step=".01"></label>
-            <label>مركز القص رأسيًا<input type="range" name="crop_y" value=".5" min="0" max="1" step=".01"></label>
-            <label class="check"><input type="checkbox" id="revealChart" checked> كشف المخطط تدريجيًا</label>
-            <label class="check"><input type="checkbox" id="enhanceVideo"> تحسين الإضاءة (يغيّر صورة المصدر)</label>
-            <label class="check"><input type="checkbox" id="denoiseVideo"> تخفيف الضجيج</label>
-            <label class="check"><input type="checkbox" id="stabilizeVideo"> تثبيت الاهتزاز</label>
-            <label class="check"><input type="checkbox" id="thumbnail" checked> صورة مصغرة</label>
-            <label class="check"><input type="checkbox" id="keepAudio" checked> الصوت الأصلي</label>
-          </details>
         </form>
-      </section>
-
-      <section class="layers-section">
-        <div class="section-title"><h2>العناصر</h2><small>اسحب لترتيب الطبقات</small></div>
-        <div id="layersList" class="layers-list"></div>
       </section>
     </aside>
 
     <section class="editor">
       <div class="editor-toolbar">
-        <div class="broadcast-edition"><i></i><strong id="broadcastEditionName">LAUNCH BROADCAST</strong><span>قالب بث فضائي مباشر</span></div>
-        <div><label>التكبير <input id="stageZoom" type="range" min="50" max="120" value="86"></label><span id="zoomValue">86%</span></div>
+        <div class="broadcast-edition"><i></i><strong id="broadcastEditionName">LAUNCH BROADCAST</strong><span>Live broadcast overlay</span></div>
+        <label class="view-mode-field">Viewer
+          <select id="cameraPreviewMode">
+            <option value="layout">PROGRAM OUT</option>
+            <option value="1">CAM 1</option>
+            <option value="2">CAM 2</option>
+            <option value="3">CAM 3</option>
+          </select>
+        </label>
+        <div><label>Zoom <input id="stageZoom" type="range" min="50" max="120" value="86"></label><span id="zoomValue">86%</span></div>
       </div>
       <div class="stage-viewport">
         <div id="editorStage" class="editor-stage">
@@ -185,7 +72,7 @@
           <video id="previewVideo2" playsinline muted></video>
           <video id="previewVideo3" playsinline muted></video>
           <svg id="chartPreview" preserveAspectRatio="none"></svg>
-          <div id="emptyPreview"><span>▶</span><p>ارفع الفيديو والبيانات لتظهر المعاينة الحية</p></div>
+          <div id="emptyPreview"><span>&#9654;</span><p>Upload a video and telemetry file to see the live preview</p></div>
           <div id="broadcastOverlay" data-theme="launch" aria-hidden="true">
             <img id="broadcastRasterOverlay" alt="" draggable="false">
             <div class="broadcast-layout broadcast-layout-launch" data-theme-layout="launch">
@@ -223,7 +110,7 @@
                 <div data-phase-index="2"><i></i><b>BURN</b><span data-bind="burn-time">T+ 0.0s</span></div>
                 <div data-phase-index="3"><i></i><b>BURNOUT</b><span data-bind="burnout-time">T+ 0.0s</span></div>
               </div>
-              <div class="mission-strip" data-chart-wrap><header><span>CHAMBER PRESSURE — <b data-bind="pressure-unit">bar</b></span><small data-bind="chart-duration">T 0–0 s</small></header><svg data-theme-chart data-chart-width="1000" data-chart-height="96" viewBox="0 0 1000 96" preserveAspectRatio="none"></svg></div>
+              <div class="mission-strip" data-chart-wrap><header><span>CHAMBER PRESSURE &mdash; <b data-bind="pressure-unit">bar</b></span><small data-bind="chart-duration">T 0&ndash;0 s</small></header><svg data-theme-chart data-chart-width="1000" data-chart-height="96" viewBox="0 0 1000 96" preserveAspectRatio="none"></svg></div>
             </div>
 
             <div class="broadcast-layout broadcast-layout-stellar" data-theme-layout="stellar_console">
@@ -253,14 +140,13 @@
               <div class="stellar-footer"><span data-bind="footer-tagline">STELLAR KINETICS - ENGINEERING THE VOID</span><span data-bind="footer-right">LOX / PROPANE - CAM 01 - 120 FPS</span></div>
             </div>
           </div>
-          <div id="sceneElements"></div>
-          <div id="safeArea"></div>
+          <div id="sceneElements" class="hidden"></div>
         </div>
       </div>
       <div class="timeline">
         <div class="transport">
-          <button type="button" id="playButton">▶</button>
-          <button type="button" id="jumpIgnition">الاشتعال</button>
+          <button type="button" id="playButton">&#9654;</button>
+          <button type="button" id="jumpIgnition">Jump to ignition</button>
           <span id="currentTime">00:00.00</span><span>/</span><span id="duration">00:00.00</span>
         </div>
         <div class="scrub-wrap">
@@ -271,116 +157,184 @@
     </section>
 
     <aside class="properties-panel">
-      <div class="broadcast-panel">
-        <span class="edition-kicker">OUTPUT DESIGN</span>
-        <h2 id="broadcastThemeName">Launch Broadcast</h2>
-        <p id="broadcastThemeDescription">توزيع متوازن للبث العام مع عدادات دائرية وساعة مهمة ومخطط مباشر.</p>
+
+      <details class="step-panel" id="step-media" open>
+        <summary><b>1</b>Media &mdash; framing &amp; processing</summary>
+
+        <h3>Framing &mdash; CAM 1</h3>
+        <label class="check"><input type="checkbox" id="cameraDragMode"> Drag to pan inside the preview</label>
+        <label>Zoom<input form="renderForm" type="range" name="crop_zoom" value="1" min="1" max="4" step=".05"></label>
+        <label>Pan X<input form="renderForm" type="range" name="crop_x" value=".5" min="0" max="1" step=".01"></label>
+        <label>Pan Y<input form="renderForm" type="range" name="crop_y" value=".5" min="0" max="1" step=".01"></label>
+
+        <h3>Processing</h3>
+        <label class="check"><input type="checkbox" id="enhanceVideo"> Enhance low-light (preserves flame detail)</label>
+        <label class="check"><input type="checkbox" id="denoiseVideo"> Denoise</label>
+        <label class="check"><input type="checkbox" id="stabilizeVideo"> Stabilize</label>
+
+        <h3>Multi-cam</h3>
+        <label>Program mode
+          <select form="renderForm" name="camera_mode" id="cameraMode">
+            <option value="single">Single camera</option>
+            <option value="switch">Switch at ignition</option>
+            <option value="split">Split screen</option>
+            <option value="pip">Picture-in-picture</option>
+          </select>
+        </label>
+        <label>Switch to CAM 3 after ignition (s)<input form="renderForm" type="number" name="camera_3_switch_delay_s" value="2" min="0" step="any"></label>
+
+        <details class="sub-panel">
+          <summary>Framing &mdash; CAM 2</summary>
+          <label>Zoom<input form="renderForm" type="range" name="camera_2_crop_zoom" value="1" min="1" max="4" step=".05"></label>
+          <label>Pan X<input form="renderForm" type="range" name="camera_2_crop_x" value=".5" min="0" max="1" step=".01"></label>
+          <label>Pan Y<input form="renderForm" type="range" name="camera_2_crop_y" value=".5" min="0" max="1" step=".01"></label>
+        </details>
+        <details class="sub-panel">
+          <summary>Framing &mdash; CAM 3</summary>
+          <label>Zoom<input form="renderForm" type="range" name="camera_3_crop_zoom" value="1" min="1" max="4" step=".05"></label>
+          <label>Pan X<input form="renderForm" type="range" name="camera_3_crop_x" value=".5" min="0" max="1" step=".01"></label>
+          <label>Pan Y<input form="renderForm" type="range" name="camera_3_crop_y" value=".5" min="0" max="1" step=".01"></label>
+        </details>
+      </details>
+
+      <details class="step-panel" id="step-sync" open>
+        <summary><b>2</b>Ignition sync</summary>
+        <div class="hint-banner">
+          <i></i>
+          <p>Align every camera and the telemetry file to <b>T-0</b>. Scrub the timeline to verify the flame front matches the pressure rise.</p>
+        </div>
+        <label>Ignition in CAM 1 (s)<input form="renderForm" type="number" name="ignition_video_s" value="4.52" min="0" step="any"></label>
+        <label>Ignition in CAM 2 (s)<input form="renderForm" type="number" name="camera_2_ignition_s" value="0" min="0" step="any"></label>
+        <label>Ignition in CAM 3 (s)<input form="renderForm" type="number" name="camera_3_ignition_s" value="0" min="0" step="any"></label>
+        <label>Telemetry ignition (s)<input form="renderForm" type="number" name="telemetry_zero_s" placeholder="e.g. 44.162" step="any"></label>
+        <small class="field-help">Auto-detected from the onset of the pressure rise; override any time.</small>
+
+        <h3>Column mapping</h3>
+        <label>Excel sheet<input form="renderForm" type="text" name="sheet" value="0"></label>
+        <label>Time<select form="renderForm" name="time_column" id="timeColumn"></select></label>
+        <label>Pressure<select form="renderForm" name="pressure_column" id="pressureColumn"></select></label>
+        <label>Thrust<select form="renderForm" name="thrust_column" id="thrustColumn"></select></label>
+        <label>Time scale<select form="renderForm" name="time_scale"><option value="1">Seconds</option><option value="0.001">Milliseconds (&times;0.001)</option></select></label>
+        <div id="telemetryDiagnostics" class="telemetry-diagnostics hidden" aria-live="polite">
+          <strong id="telemetryHealth">Waiting for telemetry</strong>
+          <span id="telemetryMapping"></span>
+          <span id="telemetryRange"></span>
+          <span id="telemetryChannels"></span>
+        </div>
+
+        <h3>Safety</h3>
+        <label>Safety pressure limit (bar)<input form="renderForm" type="number" name="pressure_limit" min="0" step="any"></label>
+      </details>
+
+      <details class="step-panel broadcast-panel" id="step-design" open>
+        <summary><b>3</b>Overlay design</summary>
+
+        <h3>Test identity</h3>
+        <label>Title<input form="renderForm" name="title" value="RNX-TEST-L819-V2"></label>
+        <label>Subtitle<input form="renderForm" name="subtitle" value="STATIC FIRE TEST"></label>
+        <label>Run number<input form="renderForm" name="run_number" placeholder="RUN-019"></label>
+        <label>Motor type<input form="renderForm" name="motor_type" placeholder="L819"></label>
+        <label>Propellant<input form="renderForm" name="propellant" placeholder="APCP"></label>
+        <label>Oxidizer<input form="renderForm" name="oxidizer" value="LOX" maxlength="32"></label>
+        <label>Fuel<input form="renderForm" name="fuel" value="PROPANE" maxlength="32"></label>
+        <label>Ablative material<input form="renderForm" name="ablative_material" value="PHENOLIC ABLATIVE" maxlength="48"></label>
+        <label>Test date<input form="renderForm" name="test_date" type="date"></label>
+        <label>Organization<input form="renderForm" name="organization_name" value="STELLAR KINETICS" maxlength="48"></label>
+        <label>Test site<input form="renderForm" name="test_site" value="ETLAQ SPACEPORT - DUQM, OMAN" maxlength="72"></label>
+        <label>Coordinates<input form="renderForm" name="coordinates_text" placeholder="19°39'N 57°42'E" maxlength="48"></label>
+        <label>Footer tagline<input form="renderForm" name="footer_tagline" value="STELLAR KINETICS - ENGINEERING THE VOID" maxlength="80"></label>
+        <label>Camera label<input form="renderForm" name="camera_label" value="CAM 01" maxlength="24"></label>
+        <label>Capture FPS label<input form="renderForm" name="capture_fps" value="120 FPS" maxlength="20"></label>
+        <label>Pressure unit<input form="renderForm" name="pressure_unit" value="bar"></label>
+        <label>Thrust unit<input form="renderForm" name="thrust_unit" value="N"></label>
+
         <section class="template-packages" aria-labelledby="templatePackagesTitle">
           <div class="template-packages-heading">
             <div>
-              <strong id="templatePackagesTitle">قوالب ROTPL</strong>
-              <small>حزم تصميم آمنة بدقة 1920×1080</small>
+              <strong id="templatePackagesTitle">ROTPL templates</strong>
+              <small>Safe declarative packages, 1920&times;1080</small>
             </div>
-            <button type="button" id="refreshTemplates" class="template-icon-button" title="تحديث قائمة القوالب" aria-label="تحديث قائمة القوالب">↻</button>
+            <button type="button" id="refreshTemplates" class="template-icon-button" title="Refresh template list" aria-label="Refresh template list">&#8635;</button>
           </div>
 
           <label class="template-upload" id="templateUploadLabel">
             <input type="file" id="templatePackageInput" accept=".rotpl,application/zip">
-            <span aria-hidden="true">＋</span>
-            <b>رفع قالب جديد</b>
-            <small>.rotpl فقط — سيتم فحصه قبل التفعيل</small>
+            <span aria-hidden="true">&#65291;</span>
+            <b>Install a template</b>
+            <small>.rotpl only &mdash; validated before activation</small>
           </label>
 
-          <div id="templateUploadProgress" class="template-upload-progress hidden" role="progressbar" aria-label="تقدم رفع القالب" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div><strong id="templateUploadMessage">جارٍ رفع القالب</strong><span id="templateUploadPercent">0%</span></div>
+          <div id="templateUploadProgress" class="template-upload-progress hidden" role="progressbar" aria-label="Template upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div><strong id="templateUploadMessage">Uploading template</strong><span id="templateUploadPercent">0%</span></div>
             <div class="progress-track"><i id="templateUploadBar"></i></div>
           </div>
 
           <div id="templatePackageFeedback" class="template-feedback hidden" aria-live="polite"></div>
           <div id="installedTemplates" class="installed-templates" aria-live="polite" aria-busy="true">
-            <div class="template-list-placeholder"><i></i><span>جارٍ تحميل القوالب المثبتة…</span></div>
+            <div class="template-list-placeholder"><i></i><span>Loading installed templates&hellip;</span></div>
           </div>
         </section>
-        <fieldset class="theme-picker">
-          <legend>القوالب المضمنة</legend>
-          <label class="theme-card"><input type="radio" name="broadcast_theme" value="launch" form="renderForm" checked><span class="theme-thumbnail theme-thumbnail-launch"><i></i><i></i><i></i></span><span class="theme-copy"><b>A · Launch Broadcast</b><small>rocket_overlay_broadcast.py</small></span></label>
-          <label class="theme-card"><input type="radio" name="broadcast_theme" value="mission_control" form="renderForm"><span class="theme-thumbnail theme-thumbnail-mission"><i></i><i></i><i></i></span><span class="theme-copy"><b>B · Mission Control</b><small>rocket_overlay_broadcast (1).py</small></span></label>
-          <label class="theme-card"><input type="radio" name="broadcast_theme" value="stellar_console" form="renderForm"><span class="theme-thumbnail theme-thumbnail-stellar"><i></i><i></i><i></i></span><span class="theme-copy"><b>3 · Stellar Broadcast Console</b><small>rocket_overlay_broadcast-3).py</small></span><em>موصى به</em></label>
-        </fieldset>
-        <label class="color-field">لون الهوية<input id="broadcastAccent" name="accent" form="renderForm" type="color" value="#38bdf8"></label>
-        <label class="check"><input id="showBroadcastChart" name="show_chart" form="renderForm" type="checkbox" checked> إظهار المخطط المباشر</label>
-        <label class="check"><input id="showBroadcastPhases" name="show_phases" form="renderForm" type="checkbox" checked> إظهار مراحل الاختبار</label>
-        <div class="broadcast-features" id="broadcastFeatures"><span>ARC GAUGES</span><span>MISSION CLOCK</span><span>LIVE TRACE</span></div>
-      </div>
-      <div class="section-title"><h2>الخصائص</h2><small id="selectedName">اختر عنصرًا</small></div>
-      <div id="noSelection" class="empty-properties">حدد عنصرًا من المعاينة أو قائمة العناصر.</div>
-      <div id="propertyEditor" class="hidden">
-        <div class="property-actions">
-          <button type="button" id="toggleVisible">إخفاء</button>
-          <button type="button" id="toggleLock">قفل</button>
-          <button type="button" id="moveUp">للأمام</button>
-          <button type="button" id="moveDown">للخلف</button>
-        </div>
-        <h3>الموضع والحجم</h3>
-        <div class="property-grid">
-          <label>X<input id="propX" type="number" min="0" max="100" step=".1"></label>
-          <label>Y<input id="propY" type="number" min="0" max="100" step=".1"></label>
-          <label>العرض<input id="propW" type="number" min="1" max="100" step=".1"></label>
-          <label>الارتفاع<input id="propH" type="number" min="1" max="100" step=".1"></label>
-        </div>
-        <label>الشفافية <output id="opacityValue">100%</output><input id="propOpacity" type="range" min="0" max="100" value="100"></label>
-        <label class="color-field">لون العنصر<input id="propColor" type="color"></label>
-        <label class="color-field">لون الخلفية<input id="propBackground" type="color"></label>
-        <label>شفافية الخلفية <output id="backgroundOpacityValue">0%</output><input id="propBackgroundOpacity" type="range" min="0" max="100" value="0"></label>
-        <div id="textProperties">
-          <h3>النص</h3>
-          <label>حجم الخط <output id="fontSizeValue">100%</output><input id="fontSize" type="range" min="50" max="250" value="100" step="5"></label>
-        </div>
-        <h3>الظهور على الخط الزمني</h3>
-        <div class="property-grid">
-          <label>يظهر عند (ث)<input id="startTime" type="number" min="0" step=".1" placeholder="من البداية"></label>
-          <label>يختفي عند (ث)<input id="endTime" type="number" min="0" step=".1" placeholder="حتى النهاية"></label>
-          <label>تلاشي دخول (ث)<input id="fadeIn" type="number" min="0" max="10" step=".1" value="0"></label>
-          <label>تلاشي خروج (ث)<input id="fadeOut" type="number" min="0" max="10" step=".1" value="0"></label>
-        </div>
 
-        <div id="chartProperties" class="hidden">
-          <h3>إعدادات المخطط</h3>
-          <label>شكل المخطط
-            <select id="chartType">
-              <option value="line">خطي — للقراءة الهندسية</option>
-              <option value="area">مساحي — لإبراز نبضة الضغط</option>
-              <option value="step">درجات — لعينات الحساس المتقطعة</option>
-              <option value="points">نقاط — لفحص العينات والضجيج</option>
-            </select>
-          </label>
-          <label class="color-field">لون الضغط<input id="pressureColor" type="color"></label>
-          <label class="color-field">لون الدفع<input id="thrustColor" type="color"></label>
-          <label class="color-field">لون الشبكة<input id="gridColor" type="color"></label>
-          <label class="color-field">لون المؤشر<input id="cursorColor" type="color"></label>
-          <label>سماكة الخط <output id="lineWidthValue"></output><input id="lineWidth" type="range" min="1" max="8"></label>
-          <label>تعبئة أسفل الخط <output id="fillOpacityValue"></output><input id="fillOpacity" type="range" min="0" max="80"></label>
-          <label>استدارة الحواف<input id="borderRadius" type="range" min="0" max="40"></label>
-          <label class="check"><input id="showGrid" type="checkbox"> الشبكة</label>
-          <label class="check"><input id="showAxes" type="checkbox"> المحاور</label>
-          <label class="check"><input id="showTitle" type="checkbox"> عنوان المخطط</label>
+        <fieldset class="theme-picker">
+          <legend>Built-in themes</legend>
+          <label class="theme-card"><input type="radio" name="broadcast_theme" value="stellar_console" form="renderForm" checked><span class="theme-thumbnail theme-thumbnail-stellar"><i></i><i></i><i></i></span><span class="theme-copy"><b>Stellar Console</b><small>tape gauges &middot; mission sequence</small></span><em>recommended</em></label>
+          <label class="theme-card"><input type="radio" name="broadcast_theme" value="launch" form="renderForm"><span class="theme-thumbnail theme-thumbnail-launch"><i></i><i></i><i></i></span><span class="theme-copy"><b>Launch Broadcast</b><small>arc gauges &middot; mission clock</small></span></label>
+          <label class="theme-card"><input type="radio" name="broadcast_theme" value="mission_control" form="renderForm"><span class="theme-thumbnail theme-thumbnail-mission"><i></i><i></i><i></i></span><span class="theme-copy"><b>Mission Control</b><small>meters &middot; phase list</small></span></label>
+        </fieldset>
+        <label class="color-field">Accent<input id="broadcastAccent" name="accent" form="renderForm" type="color" value="#38bdf8"></label>
+
+        <h3>Layers</h3>
+        <label class="check"><input id="showBroadcastChart" name="show_chart" form="renderForm" type="checkbox" checked> Live pressure trace</label>
+        <label class="check"><input id="showBroadcastPhases" name="show_phases" form="renderForm" type="checkbox" checked> Test phase sequence</label>
+        <label class="check"><input type="checkbox" id="revealChart" checked> Progressive chart reveal</label>
+        <div class="broadcast-features" id="broadcastFeatures"><span>ARC GAUGES</span><span>MISSION CLOCK</span><span>LIVE TRACE</span></div>
+        <p class="broadcast-theme-note"><span id="broadcastThemeName">Launch Broadcast</span> &mdash; <span id="broadcastThemeDescription">Balanced broadcast layout with arc gauges, mission clock and a live chart.</span></p>
+      </details>
+
+      <details class="step-panel" id="step-export" open>
+        <summary><b>4</b>Export</summary>
+
+        <label>Resolution
+          <select form="renderForm" name="resolution" id="resolution">
+            <option value="source" selected>Source resolution &mdash; recommended</option>
+            <option value="1920x1080" data-native-check data-label="1080p">1080p</option>
+            <option value="3840x2160" data-native-check data-label="4K UHD">4K UHD</option>
+            <option value="1280x720" data-native-check data-label="720p">720p</option>
+            <option value="960x540" data-native-check data-label="540p">540p</option>
+            <option value="1080x1920">Portrait</option><option value="1080x1080">Square</option>
+          </select>
+        </label>
+        <small id="resolutionHint" class="field-help">Choose a video first to detect its native resolution and prevent unhelpful upscaling.</small>
+        <small class="field-help">Default: SDR Rec.709 high quality at source resolution, using the same compositing path as the preview so text and shading match across platforms.</small>
+        <label class="check"><input type="checkbox" id="preserveSourceQuality"> Archive HDR / HLG 10-bit &mdash; optional</label>
+        <small class="field-help">Archival option for HDR/HLG 10-bit sources only. Uses lossless HEVC Main10 with linear graphics compositing; playback may vary across HDR displays.</small>
+        <label>SDR Rec.709 delivery codec<select form="renderForm" name="delivery_codec"><option value="h264">H.264 &mdash; widest compatibility</option><option value="h265">H.265 &mdash; smaller files</option></select></label>
+        <input form="renderForm" type="hidden" name="output_style" value="engineering">
+        <input form="renderForm" type="hidden" name="template_id" id="selectedTemplateId" value="">
+        <input form="renderForm" type="hidden" name="template_version" id="selectedTemplateVersion" value="">
+        <input form="renderForm" type="hidden" name="sha256" id="selectedTemplateSha256" value="">
+        <input form="renderForm" type="hidden" name="video_fraction" value="0.70">
+        <input form="renderForm" type="hidden" name="intro_duration_s" value="0">
+        <label>Outro duration<input form="renderForm" type="number" name="outro_duration_s" value="0" min="0" max="15" step=".1"></label>
+        <label class="check"><input type="checkbox" id="thumbnail" checked> Generate thumbnail</label>
+        <label class="check"><input type="checkbox" id="keepAudio" checked> Keep original audio</label>
+
+        <div class="export-dock">
+          <div id="progressBox" class="progress-box hidden" aria-live="polite">
+            <div><strong id="progressMessage">Preparing</strong><span id="progressValue">0%</span></div>
+            <div class="progress-track"><i id="progressBar"></i></div>
+          </div>
+          <div id="resultActions" class="result-actions hidden">
+            <a id="downloadLink" download>&#8595; Download video</a>
+            <a id="thumbnailLink" class="hidden" download>&#8595; Thumbnail</a>
+          </div>
+          <button type="button" id="renderButton" class="primary">&#9654; Render final video</button>
         </div>
-        <button type="button" id="resetElement" class="danger-quiet">إعادة ضبط العنصر</button>
-      </div>
-      <div class="export-dock">
-        <div id="progressBox" class="progress-box hidden" aria-live="polite">
-          <div><strong id="progressMessage">جارٍ التحضير</strong><span id="progressValue">0%</span></div>
-          <div class="progress-track"><i id="progressBar"></i></div>
-        </div>
-        <div id="resultActions" class="result-actions hidden">
-          <a id="downloadLink" download>↓ تنزيل الفيديو</a>
-          <a id="thumbnailLink" class="hidden" download>↓ الصورة المصغرة</a>
-        </div>
-        <button type="button" id="renderButton" class="primary">▶ تصدير الفيديو النهائي</button>
-      </div>
+      </details>
+
     </aside>
   </main>
   <div id="toast" role="alert"></div>
-  <script src="{{ url_for('static', filename='app.js', v='20260810-1') }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v='20260811-1') }}"></script>
 </body>
 </html>

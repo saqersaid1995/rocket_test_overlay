@@ -19,22 +19,20 @@ const selectedTemplateIdInput = document.querySelector("#selectedTemplateId");
 const selectedTemplateVersionInput = document.querySelector("#selectedTemplateVersion");
 const selectedTemplateSha256Input = document.querySelector("#selectedTemplateSha256");
 
-document.body.classList.add("broadcast-mode");
-
 const broadcastThemes = {
   launch: {
-    name: "A · Launch Broadcast",
-    description: "مطابق للتصميم الموجود في rocket_overlay_broadcast.py.",
+    name: "Launch Broadcast",
+    description: "Balanced broadcast layout with arc gauges, a mission clock and a live chart.",
     features: ["ARC GAUGES", "MISSION CLOCK", "LIVE TRACE"],
   },
   mission_control: {
-    name: "B · Mission Control",
-    description: "مطابق للتصميم الموجود في rocket_overlay_broadcast (1).py.",
+    name: "Mission Control",
+    description: "Bar meters, a phase checklist and a strip chart across the bottom.",
     features: ["BAR METERS", "PHASE CHECKLIST", "STRIP CHART"],
   },
   stellar_console: {
-    name: "3 · Stellar Broadcast Console",
-    description: "مطابق للتصميم الأصلي في rocket_overlay_broadcast-3).py.",
+    name: "Stellar Console",
+    description: "Vertical pressure tape, mission console and phase sequencer.",
     features: ["VERTICAL PRESSURE TAPE", "MISSION CONSOLE", "PHASE SEQUENCER"],
   },
 };
@@ -52,9 +50,9 @@ function templatePackageName(template) {
   const name = template?.name;
   if (typeof name === "string" && name.trim()) return name.trim();
   if (name && typeof name === "object") {
-    return String(name.ar || name.en || Object.values(name)[0] || "").trim();
+    return String(name.en || name.ar || Object.values(name)[0] || "").trim();
   }
-  return template?.id || template?.template_id || "قالب ROTPL";
+  return template?.id || template?.template_id || "ROTPL template";
 }
 
 function normalizeTemplatePackage(template) {
@@ -94,9 +92,9 @@ function normalizeTemplatePackage(template) {
 
 function templateValidationMessage(issue) {
   if (typeof issue === "string") return issue;
-  if (!issue || typeof issue !== "object") return String(issue || "خطأ غير معروف");
+  if (!issue || typeof issue !== "object") return String(issue || "Unknown error");
   const location = issue.path || issue.file || issue.field || "";
-  const message = issue.message || issue.error || issue.code || "مشكلة في الحزمة";
+  const message = issue.message || issue.error || issue.code || "Package issue";
   return location ? `${location}: ${message}` : String(message);
 }
 
@@ -160,7 +158,7 @@ function setSelectedTemplatePackage(template, announce = false) {
     document.querySelector("#broadcastEditionName").textContent = name.toUpperCase();
     document.querySelector("#broadcastThemeName").textContent = name;
     document.querySelector("#broadcastThemeDescription").textContent =
-      `حزمة ROTPL إصدار ${selectedTemplatePackage.version} — تستخدم في المعاينة والتصدير.`;
+      `ROTPL package v${selectedTemplatePackage.version} — used for preview and export.`;
     document.querySelector("#broadcastFeatures").innerHTML =
       `<span>ROTPL</span><span>v${escapeHtml(selectedTemplatePackage.version)}</span><span>1920 × 1080</span>`;
   } else {
@@ -173,16 +171,16 @@ function setSelectedTemplatePackage(template, announce = false) {
   clearBroadcastRasterPreview();
   renderBroadcastPreview();
   if (announce && selectedTemplatePackage) {
-    notify(`تم تطبيق قالب ${templatePackageName(selectedTemplatePackage)} إصدار ${selectedTemplatePackage.version}.`);
+    notify(`Applied template ${templatePackageName(selectedTemplatePackage)} v${selectedTemplatePackage.version}.`);
   }
 }
 
 function templateStatusLabel(template, isSelected) {
-  if (isSelected) return "قيد الاستخدام";
-  if (template.blocked) return "محظور — راجع الأخطاء";
-  if (!template.validation.valid) return "غير صالح";
-  if (template.validation.warnings.length) return "جاهز مع تحذيرات";
-  return "جاهز";
+  if (isSelected) return "In use";
+  if (template.blocked) return "Blocked — review errors";
+  if (!template.validation.valid) return "Invalid";
+  if (template.validation.warnings.length) return "Ready with warnings";
+  return "Ready";
 }
 
 function appendTemplateIssueSummary(card, template) {
@@ -193,8 +191,8 @@ function appendTemplateIssueSummary(card, template) {
   details.className = "template-validation-details";
   const summary = document.createElement("summary");
   summary.textContent = errors.length
-    ? `${errors.length} أخطاء تمنع التفعيل`
-    : `${warnings.length} تحذيرات`;
+    ? `${errors.length} errors block activation`
+    : `${warnings.length} warnings`;
   details.append(summary);
   const list = document.createElement("ul");
   [...errors, ...warnings].slice(0, 8).forEach(issue => {
@@ -214,9 +212,9 @@ function renderInstalledTemplatePackages() {
     const empty = document.createElement("div");
     empty.className = "template-list-empty";
     const title = document.createElement("strong");
-    title.textContent = "لا توجد قوالب ROTPL مثبتة";
+    title.textContent = "No ROTPL templates installed";
     const help = document.createElement("span");
-    help.textContent = "ارفع stellar-kinetics.rotpl ليظهر هنا بعد التحقق.";
+    help.textContent = "Upload a .rotpl package to see it here after validation.";
     empty.append(title, help);
     installedTemplatesHost.append(empty);
     return;
@@ -246,7 +244,7 @@ function renderInstalledTemplatePackages() {
     title.textContent = templatePackageName(template);
     const meta = document.createElement("span");
     const bindings = Number(template.bindings_count);
-    meta.textContent = `v${template.version}${Number.isFinite(bindings) ? ` · ${bindings} متغيرًا` : ""}`;
+    meta.textContent = `v${template.version}${Number.isFinite(bindings) ? ` · ${bindings} bindings` : ""}`;
     const status = document.createElement("small");
     status.textContent = templateStatusLabel(template, isSelected);
     copy.append(title, meta, status);
@@ -255,10 +253,10 @@ function renderInstalledTemplatePackages() {
     action.type = "button";
     action.className = "template-use-button";
     action.disabled = isSelected || !template.validation.valid;
-    action.textContent = isSelected ? "مفعّل" : (template.validation.valid ? "استخدام" : "مرفوض");
+    action.textContent = isSelected ? "Active" : (template.validation.valid ? "Use" : "Rejected");
     action.setAttribute(
       "aria-label",
-      `${action.textContent} ${templatePackageName(template)} إصدار ${template.version}`
+      `${action.textContent} ${templatePackageName(template)} version ${template.version}`
     );
     action.addEventListener("click", () => activateTemplatePackage(template));
 
@@ -275,7 +273,7 @@ async function loadTemplatePackages({ preferKey = "" } = {}) {
   try {
     const response = await fetch("/api/templates", { headers: { "Accept": "application/json" } });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "تعذر تحميل القوالب المثبتة.");
+    if (!response.ok) throw new Error(payload.error || "Could not load installed templates.");
     if (sequence !== templatesRequestSequence) return;
     installedTemplatePackages = (Array.isArray(payload.templates) ? payload.templates : [])
       .map(normalizeTemplatePackage).filter(Boolean);
@@ -313,7 +311,7 @@ async function activateTemplatePackage(template) {
   const normalized = normalizeTemplatePackage(template);
   if (!normalized?.validation.valid) return;
   installedTemplatesHost?.setAttribute("aria-busy", "true");
-  setTemplateFeedback(`جارٍ تفعيل ${templatePackageName(normalized)}…`, "info");
+  setTemplateFeedback(`Activating ${templatePackageName(normalized)}…`, "info");
   try {
     const response = await fetch(`/api/templates/${encodeURIComponent(normalized.id)}/activate`, {
       method: "POST",
@@ -321,12 +319,12 @@ async function activateTemplatePackage(template) {
       body: JSON.stringify({ version: normalized.version }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "تعذر تفعيل القالب.");
+    if (!response.ok) throw new Error(payload.error || "Could not activate the template.");
     const active = normalizeTemplatePackage(payload.active || payload.template || normalized) || normalized;
     if (!active.validation.valid) active.validation = normalized.validation;
     setSelectedTemplatePackage({ ...normalized, ...active, validation: normalized.validation }, true);
     setTemplateFeedback(
-      `تم تفعيل ${templatePackageName(normalized)} إصدار ${normalized.version} للمعاينة والتصدير.`,
+      `Activated ${templatePackageName(normalized)} v${normalized.version} for preview and export.`,
       "success"
     );
   } catch (error) {
@@ -348,19 +346,19 @@ function uploadTemplatePackage(file) {
     request.upload.addEventListener("progress", event => {
       if (!event.lengthComputable) return;
       const percent = Math.round(event.loaded / event.total * 100);
-      updateTemplateUploadProgress(percent, percent < 100 ? "جارٍ رفع الحزمة…" : "جارٍ فحص الحزمة…");
+      updateTemplateUploadProgress(percent, percent < 100 ? "Uploading package…" : "Validating package…");
     });
     request.addEventListener("load", () => {
       let payload = {};
       try { payload = JSON.parse(request.responseText || "{}"); } catch {}
       if (request.status >= 200 && request.status < 300) resolve(payload);
       else reject(Object.assign(
-        new Error(payload.error || `تعذر رفع القالب (${request.status}).`),
+        new Error(payload.error || `Could not upload the template (${request.status}).`),
         { issues: payload.validation?.errors || payload.errors || [] }
       ));
     });
-    request.addEventListener("error", () => reject(new Error("انقطع الاتصال أثناء رفع القالب.")));
-    request.addEventListener("abort", () => reject(new Error("تم إلغاء رفع القالب.")));
+    request.addEventListener("error", () => reject(new Error("Connection lost while uploading the template.")));
+    request.addEventListener("abort", () => reject(new Error("Template upload was canceled.")));
     request.send(body);
   });
 }
@@ -369,7 +367,7 @@ async function handleTemplatePackageUpload() {
   const file = templatePackageInput?.files?.[0];
   if (!file) return;
   if (!file.name.toLowerCase().endsWith(".rotpl")) {
-    setTemplateFeedback("الملف غير مدعوم. اختر حزمة تنتهي بالامتداد .rotpl.", "error");
+    setTemplateFeedback("Unsupported file. Choose a package ending in .rotpl.", "error");
     templatePackageInput.value = "";
     return;
   }
@@ -377,35 +375,35 @@ async function handleTemplatePackageUpload() {
   uploadLabel?.classList.add("busy");
   templatePackageInput.disabled = true;
   setTemplateFeedback("", "info");
-  updateTemplateUploadProgress(0, `جارٍ تجهيز ${file.name}…`);
+  updateTemplateUploadProgress(0, `Preparing ${file.name}…`);
   try {
     const payload = await uploadTemplatePackage(file);
     const rawTemplate = payload.template || payload;
     const uploaded = normalizeTemplatePackage(rawTemplate);
     const validation = rawTemplate?.validation || payload.validation || {};
-    updateTemplateUploadProgress(100, "اكتمل الرفع والفحص");
+    updateTemplateUploadProgress(100, "Upload and validation complete");
     if (validation.valid === true && validation.activatable !== false && !uploaded?.blocked) {
       setTemplateFeedback(
-        "الحزمة سليمة وجاهزة. راجع التحذيرات ثم اضغط «استخدام» لتفعيلها.",
+        "The package is valid and ready. Review any warnings, then click “Use” to activate it.",
         validation.warnings?.length ? "warning" : "success",
         validation.warnings || []
       );
     } else if (validation.valid === true) {
       setTemplateFeedback(
-        "الحزمة سليمة بنيويًا، لكن تفعيلها محظور حتى تُستكمل المتطلبات التالية:",
+        "The package is structurally valid, but activation is blocked until the following are resolved:",
         "error",
         validation.blocked_reasons || uploaded?.validation?.errors || []
       );
     } else {
       setTemplateFeedback(
-        "تم رفع الحزمة، لكنها لم تجتز الفحص ولن يمكن تفعيلها.",
+        "The package was uploaded but failed validation and cannot be activated.",
         "error",
         validation.errors || []
       );
     }
     await loadTemplatePackages({ preferKey: "" });
   } catch (error) {
-    updateTemplateUploadProgress(0, "فشل رفع القالب");
+    updateTemplateUploadProgress(0, "Template upload failed");
     setTemplateFeedback(error.message, "error", error.issues || []);
     notify(error.message);
   } finally {
@@ -440,13 +438,13 @@ function applyBroadcastTheme(theme, announce = false) {
     ?.classList.toggle("hidden", selected === "stellar_console");
   localStorage.setItem("rocket-overlay-broadcast-theme", selected);
   renderBroadcastPreview();
-  if (announce) notify(`تم تطبيق ثيم ${details.name} على المعاينة والتصدير.`);
+  if (announce) notify(`Applied ${details.name} theme to the preview and export.`);
 }
 
 const names = {
-  video: "الفيديو", chart: "المخطط", title: "العنوان", timecode: "الوقت والمزامنة",
-  pressure_card: "بطاقة الضغط", thrust_card: "بطاقة الدفع", status: "حالة الاختبار",
-  identity: "بيانات الاختبار", logo: "الشعار"
+  video: "Video", chart: "Chart", title: "Title", timecode: "Timecode",
+  pressure_card: "Pressure card", thrust_card: "Thrust card", status: "Status",
+  identity: "Identity", logo: "Logo"
 };
 let scene = null;
 let initialScene = null;
@@ -488,7 +486,7 @@ function notify(message) {
   window.setTimeout(() => toast.style.display = "none", 4200);
 }
 function fileName(input, id) {
-  document.querySelector(id).textContent = input.files[0]?.name || "لم يتم اختيار ملف";
+  document.querySelector(id).textContent = input.files[0]?.name || "No file selected";
 }
 function snapshot() {
   if (!scene || propertyEditing) return;
@@ -527,7 +525,7 @@ async function initialize() {
       saveDraft();
     }
   } catch {
-    notify("تعذر تحميل التصميم الافتراضي.");
+    notify("Could not load the default layout.");
     return;
   }
   renderScene();
@@ -584,7 +582,7 @@ function updateCameraPreview() {
   if (previewChoice !== "layout") {
     const chosen = cameras[Number(previewChoice) - 1];
     if (!chosen?.src) {
-      notify(`اختر ملف الكاميرا ${previewChoice} أولًا.`);
+      notify(`Choose the CAM ${previewChoice} file first.`);
       document.querySelector("#cameraPreviewMode").value = "layout";
     } else {
       chosen.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
@@ -808,10 +806,13 @@ document.querySelectorAll('input[name="broadcast_theme"]').forEach(input =>
 );
 templatePackageInput?.addEventListener("change", handleTemplatePackageUpload);
 document.querySelector("#refreshTemplates")?.addEventListener("click", () => {
-  setTemplateFeedback("جارٍ تحديث قائمة القوالب…", "info");
+  setTemplateFeedback("Refreshing template list…", "info");
   void loadTemplatePackages().then(success => {
     if (success) setTemplateFeedback();
   });
+});
+document.querySelector("#headerExportButton")?.addEventListener("click", () => {
+  document.querySelector("#renderButton").click();
 });
 
 async function inspectData() {
@@ -843,7 +844,7 @@ async function inspectData() {
     telemetryDiagnosticsData = payload.telemetry_diagnostics || null;
     for (const kind of ["time", "pressure", "thrust"]) {
       const select = document.querySelector(`#${kind}Column`);
-      const optional = kind === "thrust" ? '<option value="__none__">غير متوفر — ضغط فقط</option>' : "";
+      const optional = kind === "thrust" ? '<option value="__none__">Not available — pressure only</option>' : "";
       select.innerHTML = optional + payload.columns.map(column =>
         `<option value="${escapeHtml(column)}">${escapeHtml(column)}</option>`).join("");
       select.value = payload.detected[kind] || (kind === "thrust" ? "__none__" : payload.columns[0]);
@@ -860,9 +861,9 @@ async function inspectData() {
     }
     renderPreview();
     const thrustNotice = telemetryDiagnosticsData?.has_thrust
-      ? "تم ربط الضغط والدفع."
-      : "تم ربط الضغط؛ قناة الدفع غير موجودة وستظهر N/A.";
-    notify(`تم تحليل القياسات واكتشاف نقطة الاشتعال تلقائيًا. ${thrustNotice}`);
+      ? "Pressure and thrust are linked."
+      : "Pressure is linked; no thrust channel found, it will show N/A.";
+    notify(`Telemetry analyzed and ignition point auto-detected. ${thrustNotice}`);
   } catch (error) {
     if (error.name !== "AbortError") {
       telemetryDiagnosticsData = { status: "error", reason: error.message };
@@ -892,13 +893,13 @@ function renderTelemetryDiagnostics(runtimeError = "") {
   const status = runtimeError ? "error" : diagnostics.status;
   panel.dataset.tone = status === "error" ? "error" : (hasThrust ? "ready" : "warning");
   document.querySelector("#telemetryHealth").textContent = runtimeError
-    ? `تعذر تحديث المعاينة: ${runtimeError}`
+    ? `Could not refresh the preview: ${runtimeError}`
     : status === "ready"
-      ? "تم ربط القياسات بنجاح"
-      : "جارٍ تحليل وربط القياسات";
+      ? "Telemetry linked successfully"
+      : "Analyzing and linking telemetry";
   const timeColumn = form.elements.time_column.value || diagnostics.time_column || "—";
   const pressureColumn = form.elements.pressure_column.value || diagnostics.pressure_column || "—";
-  const thrustColumn = hasThrust ? form.elements.thrust_column.value : "N/A (غير موجود)";
+  const thrustColumn = hasThrust ? form.elements.thrust_column.value : "N/A (not found)";
   document.querySelector("#telemetryMapping").textContent =
     `TIME ← ${timeColumn}   |   PRESSURE ← ${pressureColumn}   |   THRUST ← ${thrustColumn}`;
   const sourceStart = formatTelemetryNumber(diagnostics.first_timestamp_s);
@@ -915,7 +916,7 @@ function renderTelemetryDiagnostics(runtimeError = "") {
     : "—";
   const peakThrust = hasThrust
     ? `${formatTelemetryNumber(diagnostics.peak_thrust, 1)} ${form.elements.thrust_unit.value || "N"}`
-    : "N/A — لا يوجد عمود دفع في الملف";
+    : "N/A — no thrust column in the file";
   document.querySelector("#telemetryChannels").textContent =
     `LIVE PRESSURE ${livePressure}   |   PEAK ${peakPressure} ${form.elements.pressure_unit.value || "bar"}   |   THRUST ${peakThrust}`;
 }
@@ -980,8 +981,13 @@ function hexAlpha(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
+// The scene/property editor (drag/resize/undo-redo overlay-element placement)
+// has no panel in the new UI; these functions stay in place but are unreachable
+// (no matching DOM), guarded so renderScene()/initialize() keep working.
 function renderLayers() {
-  const list = document.querySelector("#layersList"); list.innerHTML = "";
+  const list = document.querySelector("#layersList");
+  if (!list) return;
+  list.innerHTML = "";
   [...scene.elements].sort((a,b)=>(b.z||0)-(a.z||0)).forEach(element => {
     const button = document.createElement("button");
     button.type = "button";
@@ -996,9 +1002,12 @@ function selectElement(id) {
   document.querySelectorAll(".scene-element").forEach(node => node.classList.toggle("selected", node.dataset.id === id));
   renderLayers();
   const element = selected();
-  document.querySelector("#noSelection").classList.toggle("hidden", !!element);
-  document.querySelector("#propertyEditor").classList.toggle("hidden", !element);
-  document.querySelector("#selectedName").textContent = element ? names[element.type] : "اختر عنصرًا";
+  const noSelection = document.querySelector("#noSelection");
+  const propertyEditor = document.querySelector("#propertyEditor");
+  if (!noSelection || !propertyEditor) return;
+  noSelection.classList.toggle("hidden", !!element);
+  propertyEditor.classList.toggle("hidden", !element);
+  document.querySelector("#selectedName").textContent = element ? names[element.type] : "Select an element";
   if (!element) return;
   setPropertyValues(element);
 }
@@ -1045,6 +1054,7 @@ function snap(value) {
 }
 
 function bindProperties() {
+  if (!document.querySelector("#propX")) return; // no property editor panel in this UI
   const geometry = { propX:"x", propY:"y", propW:"width", propH:"height" };
   Object.entries(geometry).forEach(([id,key]) => {
     const input = document.querySelector(`#${id}`);
@@ -1116,8 +1126,8 @@ function setPropertyValues(element) {
   document.querySelector("#propBackground").value = element.background || "#0f172a";
   document.querySelector("#propBackgroundOpacity").value = (element.backgroundOpacity ?? 0) * 100;
   document.querySelector("#backgroundOpacityValue").textContent = `${Math.round((element.backgroundOpacity ?? 0)*100)}%`;
-  document.querySelector("#toggleVisible").textContent = element.visible === false ? "إظهار" : "إخفاء";
-  document.querySelector("#toggleLock").textContent = element.locked ? "فتح القفل" : "قفل";
+  document.querySelector("#toggleVisible").textContent = element.visible === false ? "Show" : "Hide";
+  document.querySelector("#toggleLock").textContent = element.locked ? "Unlock" : "Lock";
   const chart = element.type === "chart";
   document.querySelector("#textProperties").classList.toggle("hidden", chart || element.type === "video" || element.type === "logo");
   document.querySelector("#fontSize").value = (element.fontSize ?? 1) * 100;
@@ -1211,7 +1221,7 @@ async function syncBroadcastPreviewLogo(renderAfter = true) {
       });
     }
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "تعذر تجهيز الشعار للمعاينة.");
+    if (!response.ok) throw new Error(payload.error || "Could not prepare the logo for preview.");
     if (previewId !== broadcastPreviewSessionId) return;
     if (renderAfter) {
       invalidateBroadcastRasterWork();
@@ -1320,7 +1330,7 @@ async function loadBroadcastRasterPreview(telemetryTime) {
     });
     if (!response.ok) {
       const problem = await response.json().catch(() => ({}));
-      throw new Error(problem.error || "تعذر إنشاء المعاينة المطابقة.");
+      throw new Error(problem.error || "Could not build the matching preview.");
     }
     if (generation !== broadcastRasterGeneration || previewId !== broadcastPreviewSessionId) return;
     const renderedTelemetry = {
@@ -1611,48 +1621,13 @@ document.querySelector("#jumpIgnition").addEventListener("click",()=>video.curre
 function updateIgnitionMarker(){const d=video.duration||1,t=Number(form.elements.ignition_video_s.value)||0;document.querySelector("#ignitionMarker").style.left=`${clamp(t/d*100,0,100)}%`}
 function formatTime(seconds){if(!Number.isFinite(seconds))return"00:00.00";const m=Math.floor(seconds/60),s=seconds-m*60;return`${String(m).padStart(2,"0")}:${s.toFixed(2).padStart(5,"0")}`}
 
-document.querySelector("#toggleVisible").addEventListener("click",()=>mutateSelected(el=>el.visible=el.visible===false));
-document.querySelector("#toggleLock").addEventListener("click",()=>mutateSelected(el=>el.locked=!el.locked));
-document.querySelector("#moveUp").addEventListener("click",()=>mutateSelected(el=>el.z=(el.z||0)+1));
-document.querySelector("#moveDown").addEventListener("click",()=>mutateSelected(el=>el.z=(el.z||0)-1));
-document.querySelector("#resetElement").addEventListener("click",()=> {
-  const original=initialScene.elements.find(item=>item.id===selectedId); if(!original)return;
-  snapshot(); const index=scene.elements.findIndex(item=>item.id===selectedId); scene.elements[index]=clone(original); renderScene();selectElement(selectedId);saveDraft();
-});
+// Scene-editor toolbar actions (undo/redo/save/export/import/reset) have no
+// buttons in the new UI, so they are intentionally left unwired. The
+// functions they used to call (mutateSelected, restore, saveDraft, etc.)
+// remain defined above/below for a possible future "Advanced" panel.
 function mutateSelected(callback){if(!selected())return;snapshot();callback(selected());renderScene();selectElement(selectedId);saveDraft()}
-document.querySelector("#undoButton").addEventListener("click",()=>{if(!undoStack.length)return;redoStack.push(JSON.stringify(scene));restore(undoStack.pop());saveDraft()});
-document.querySelector("#redoButton").addEventListener("click",()=>{if(!redoStack.length)return;undoStack.push(JSON.stringify(scene));restore(redoStack.pop());saveDraft()});
-document.querySelector("#saveTemplate").addEventListener("click",()=>{saveDraft();notify("تم حفظ التصميم في هذا المتصفح.")});
-document.querySelector("#exportTemplate").addEventListener("click",()=>{
-  const blob=new Blob([JSON.stringify(scene,null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob),link=document.createElement("a");
-  link.href=url;link.download=`rocket-overlay-template-${new Date().toISOString().slice(0,10)}.json`;
-  document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
-  notify("تم تصدير القالب بنجاح.");
-});
-document.querySelector("#importTemplate").addEventListener("change",async event=>{
-  const file=event.target.files[0];if(!file)return;
-  try{
-    const imported=JSON.parse(await file.text());
-    if(!imported||!Array.isArray(imported.elements)||!imported.elements.length)throw new Error("ملف القالب غير صالح.");
-    snapshot();scene=imported;renderScene();selectElement(null);saveDraft();notify("تم استيراد القالب بنجاح.");
-  }catch(error){notify(error.message||"تعذر استيراد القالب.");}
-  event.target.value="";
-});
-document.querySelector("#resetScene").addEventListener("click",()=>{snapshot();scene=clone(initialScene);renderScene();selectElement(null);saveDraft()});
 function saveDraft(){localStorage.setItem("rocket-overlay-scene",JSON.stringify(scene))}
 
-const templates={
-  engineering:{chart:{x:.02,y:.805,width:.96,height:.165,backgroundOpacity:.93,chartType:"area",hudMode:true},pressure:{x:.71,y:.825,width:.125,height:.125},thrust:{x:.845,y:.825,width:.115,height:.125}},
-  overlay:{chart:{x:.03,y:.57,width:.46,height:.35,backgroundOpacity:.68,chartType:"area"},pressure:{x:.51,y:.80,width:.20,height:.12},thrust:{x:.72,y:.80,width:.20,height:.12}},
-  side:{chart:{x:.69,y:.16,width:.28,height:.56,backgroundOpacity:.94,chartType:"line"},pressure:{x:.69,y:.75,width:.135,height:.13},thrust:{x:.835,y:.75,width:.135,height:.13}},
-  clean:{chart:{x:.035,y:.67,width:.44,height:.25,backgroundOpacity:.34,chartType:"line"},pressure:{x:.55,y:.82,width:.18,height:.10},thrust:{x:.75,y:.82,width:.18,height:.10}}
-};
-document.querySelectorAll("[data-template]").forEach(button=>button.addEventListener("click",()=>{
-  snapshot();const preset=templates[button.dataset.template];
-  Object.entries(preset).forEach(([id,values])=>Object.assign(scene.elements.find(item=>item.id===id),values));
-  renderScene();saveDraft();
-}));
 document.querySelector("#stageZoom").addEventListener("input",event=>{const value=Number(event.target.value);document.querySelector("#zoomValue").textContent=`${value}%`;stage.style.width=`${value}%`});
 function configureResolutionOptions(sourceWidth, sourceHeight) {
   const resolution = document.querySelector("#resolution");
@@ -1660,8 +1635,8 @@ function configureResolutionOptions(sourceWidth, sourceHeight) {
   const hint = document.querySelector("#resolutionHint");
   const hasSourceSize = sourceWidth > 0 && sourceHeight > 0;
   sourceOption.textContent = hasSourceSize
-    ? `الدقة الأصلية — ${sourceWidth}×${sourceHeight} (موصى بها)`
-    : "الدقة الأصلية — موصى بها";
+    ? `Source resolution — ${sourceWidth}×${sourceHeight} (recommended)`
+    : "Source resolution — recommended";
 
   const unavailable = [];
   resolution.querySelectorAll("option[data-native-check]").forEach(option => {
@@ -1673,20 +1648,20 @@ function configureResolutionOptions(sourceWidth, sourceHeight) {
       && (width > sourceWidth || height > sourceHeight);
     option.disabled = wouldUpscale;
     option.textContent = wouldUpscale
-      ? `${baseLabel} — تكبير لا يحسن الجودة`
+      ? `${baseLabel} — upscale would not improve quality`
       : baseLabel;
     option.title = wouldUpscale
-      ? `غير متاح: دقة المصدر ${sourceWidth}×${sourceHeight} أصغر من هذا المقاس.`
+      ? `Not available: source resolution ${sourceWidth}×${sourceHeight} is smaller than this size.`
       : "";
     if (wouldUpscale) unavailable.push(baseLabel);
   });
 
   if (!hasSourceSize) {
-    hint.textContent = "اختر الفيديو أولًا لتحديد دقته الأصلية ومنع التكبير غير المفيد.";
+    hint.textContent = "Choose a video first to detect its native resolution and prevent unhelpful upscaling.";
   } else if (unavailable.length) {
-    hint.textContent = `المصدر ${sourceWidth}×${sourceHeight}؛ عُطّل ${unavailable.join(" و")} لأنه تكبير رقمي لا يضيف تفاصيل.`;
+    hint.textContent = `Source is ${sourceWidth}×${sourceHeight}; disabled ${unavailable.join(" and ")} because it would be a digital upscale that adds no detail.`;
   } else {
-    hint.textContent = `سيحافظ خيار الدقة الأصلية على أبعاد المصدر ${sourceWidth}×${sourceHeight}.`;
+    hint.textContent = `Source resolution will keep the source dimensions ${sourceWidth}×${sourceHeight}.`;
   }
 }
 
@@ -1719,8 +1694,8 @@ document.querySelector("#preserveSourceQuality").addEventListener("change", () =
   syncSourceQualityMode();
   notify(
     document.querySelector("#preserveSourceQuality").checked
-      ? "تم تفعيل الأرشفة HDR/HLG 10-bit: للمصادر المتوافقة فقط، بدقة المصدر وملف كبير جدًا."
-      : "الوضع الافتراضي: SDR Rec.709 عالي الجودة بدقة المصدر، مطابق لإضاءة المعاينة."
+      ? "HDR/HLG 10-bit archiving enabled: compatible sources only, at source resolution, and a very large file."
+      : "Default: SDR Rec.709 high quality at source resolution, matching the preview's lighting."
   );
 });
 
@@ -1743,8 +1718,8 @@ function hidePreviousResults() {
 
 async function startExport(event) {
   event?.preventDefault();
-  if(!videoInput.files[0]||!dataInput.files[0]){notify("اختر الفيديو وملف القياسات أولًا.");return}
-  if(!scene){notify("انتظر اكتمال تحميل المحرر ثم حاول مرة أخرى.");return}
+  if(!videoInput.files[0]||!dataInput.files[0]){notify("Choose the video and telemetry file first.");return}
+  if(!scene){notify("Wait for the editor to finish loading, then try again.");return}
   clearTimeout(pollTimer);
   pollTimer = null;
   hidePreviousResults();
@@ -1776,23 +1751,23 @@ async function startExport(event) {
   for(const [name,id] of [["keep_audio","keepAudio"],["reveal_chart","revealChart"],["enhance_video","enhanceVideo"],["denoise_video","denoiseVideo"],["stabilize_video","stabilizeVideo"],["thumbnail","thumbnail"]])
     body.set(name,document.querySelector(`#${id}`).checked?"true":"false");
   const button=document.querySelector("#renderButton");button.disabled=true;
-  button.textContent="جارٍ رفع الملفات…";
-  document.querySelector("#progressBox").classList.remove("hidden");updateProgress(0,"جارٍ رفع الملفات — 0%");
+  button.textContent="Uploading files…";
+  document.querySelector("#progressBox").classList.remove("hidden");updateProgress(0,"Uploading files — 0%");
   try{
     await uploadFilesInChunks(body);
     const payload=await uploadJob(body);
     const deliveryMode = preserveSource
-      ? "HDR/HLG 10-bit الأرشيفي"
-      : "SDR Rec.709 عالي الجودة";
+      ? "archival HDR/HLG 10-bit"
+      : "high-quality SDR Rec.709";
     const startMessage = payload.notice
-      ? `${payload.notice} — جارٍ بدء تصدير ${deliveryMode}`
-      : `اكتمل الرفع — جارٍ بدء تصدير ${deliveryMode}`;
+      ? `${payload.notice} — starting ${deliveryMode} export`
+      : `Upload complete — starting ${deliveryMode} export`;
     if (payload.notice) notify(payload.notice);
     updateProgress(0,startMessage);
-    button.textContent="جارٍ معالجة الفيديو…";
+    button.textContent="Processing video…";
     pollJob(payload.id);
   }
-  catch(error){hidePreviousResults();resetRenderButton();updateProgress(0,`خطأ: ${error.message}`);notify(error.message)}
+  catch(error){hidePreviousResults();resetRenderButton();updateProgress(0,`Error: ${error.message}`);notify(error.message)}
 }
 form.addEventListener("submit", startExport);
 document.querySelector("#renderButton").addEventListener("click", startExport);
@@ -1822,10 +1797,10 @@ async function uploadFilesInChunks(body) {
       })
     });
     const initPayload = await initResponse.json();
-    if (!initResponse.ok) throw new Error(initPayload.error||"تعذر بدء رفع الملف.");
+    if (!initResponse.ok) throw new Error(initPayload.error||"Could not start the file upload.");
     if (initPayload.reused) {
       uploaded += file.size;
-      updateProgress(Math.round(uploaded/total*100),`تم استعادة ${file.name} — دون إعادة رفع`);
+      updateProgress(Math.round(uploaded/total*100),`Restored ${file.name} — no re-upload needed`);
     }
     for (let offset=0; !initPayload.reused && offset<file.size; offset+=chunkSize) {
       const chunk=file.slice(offset,Math.min(file.size,offset+chunkSize));
@@ -1834,10 +1809,10 @@ async function uploadFilesInChunks(body) {
         headers:{"Content-Type":"application/octet-stream"}
       });
       const payload=await response.json();
-      if (!response.ok) throw new Error(payload.error||`تعذر رفع ${file.name}`);
+      if (!response.ok) throw new Error(payload.error||`Could not upload ${file.name}`);
       uploaded += chunk.size;
       const percent=Math.round(uploaded/total*100);
-      updateProgress(percent,`جارٍ رفع الملفات — ${formatBytes(uploaded)} من ${formatBytes(total)}`);
+      updateProgress(percent,`Uploading files — ${formatBytes(uploaded)} of ${formatBytes(total)}`);
     }
     body.delete(field);
     body.set(`${field}_token`,initPayload.upload_id);
@@ -1851,10 +1826,10 @@ function uploadJob(body){
       let payload={};
       try{payload=JSON.parse(request.responseText||"{}")}catch{}
       if(request.status>=200&&request.status<300)resolve(payload);
-      else reject(new Error(payload.error||`تعذر رفع الملفات (${request.status})`));
+      else reject(new Error(payload.error||`Could not upload the files (${request.status})`));
     });
-    request.addEventListener("error",()=>reject(new Error("انقطع الاتصال أثناء رفع الملفات.")));
-    request.addEventListener("abort",()=>reject(new Error("تم إلغاء رفع الملفات.")));
+    request.addEventListener("error",()=>reject(new Error("Connection lost while uploading the files.")));
+    request.addEventListener("abort",()=>reject(new Error("File upload was canceled.")));
     request.send(body);
   });
 }
@@ -1862,9 +1837,9 @@ function formatBytes(bytes){
   if(bytes<1024*1024)return`${(bytes/1024).toFixed(1)} KB`;
   return`${(bytes/1024/1024).toFixed(1)} MB`;
 }
-function updateProgress(value,message){document.querySelector("#progressValue").textContent=`${value}%`;document.querySelector("#progressBar").style.width=`${value}%`;document.querySelector("#progressMessage").textContent=message;document.querySelector("#systemStatus").textContent=value===100?"اكتمل":"جارٍ المعالجة"}
-function resetRenderButton(){const button=document.querySelector("#renderButton");button.disabled=false;button.textContent="▶ تصدير الفيديو النهائي"}
-function pollJob(id){clearTimeout(pollTimer);fetch(`/api/jobs/${id}`).then(r=>r.json()).then(job=>{updateProgress(job.progress||0,job.message);if(job.status==="complete"){document.querySelector("#downloadLink").href=job.result_url;const thumb=document.querySelector("#thumbnailLink");if(job.thumbnail_url){thumb.href=job.thumbnail_url;thumb.classList.remove("hidden")}document.querySelector("#resultActions").classList.remove("hidden");resetRenderButton();return}if(job.status==="error"){hidePreviousResults();resetRenderButton();updateProgress(job.progress||0,`خطأ: ${job.message}`);notify(job.message);return}pollTimer=setTimeout(()=>pollJob(id),1000)}).catch(error=>{hidePreviousResults();resetRenderButton();updateProgress(0,`خطأ: ${error.message}`);notify(error.message)})}
+function updateProgress(value,message){document.querySelector("#progressValue").textContent=`${value}%`;document.querySelector("#progressBar").style.width=`${value}%`;document.querySelector("#progressMessage").textContent=message;document.querySelector("#systemStatus").textContent=value===100?"Complete":"Processing"}
+function resetRenderButton(){const button=document.querySelector("#renderButton");button.disabled=false;button.textContent="▶ Render final video"}
+function pollJob(id){clearTimeout(pollTimer);fetch(`/api/jobs/${id}`).then(r=>r.json()).then(job=>{updateProgress(job.progress||0,job.message);if(job.status==="complete"){document.querySelector("#downloadLink").href=job.result_url;const thumb=document.querySelector("#thumbnailLink");if(job.thumbnail_url){thumb.href=job.thumbnail_url;thumb.classList.remove("hidden")}document.querySelector("#resultActions").classList.remove("hidden");resetRenderButton();return}if(job.status==="error"){hidePreviousResults();resetRenderButton();updateProgress(job.progress||0,`Error: ${job.message}`);notify(job.message);return}pollTimer=setTimeout(()=>pollJob(id),1000)}).catch(error=>{hidePreviousResults();resetRenderButton();updateProgress(0,`Error: ${error.message}`);notify(error.message)})}
 
 const storedBroadcastTheme = localStorage.getItem("rocket-overlay-broadcast-theme");
 const savedBroadcastTheme = storedBroadcastTheme === "range_line"
