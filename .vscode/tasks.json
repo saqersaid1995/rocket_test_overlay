@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Rocket Overlay Server",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "app.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "MPLCONFIGDIR": "${workspaceFolder}/.cache/matplotlib",
+          "PORT": "52206"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "rocket-overlay",
+        "pattern": {
+          "regexp": "^(.*)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Serving Flask app",
+          "endsPattern": "Running on http://"
+        }
+      },
+      "runOptions": {
+        "runOn": "folderOpen",
+        "instanceLimit": 1
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": false
+      }
+    }
+  ]
+}

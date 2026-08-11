@@ -15,8 +15,16 @@ thrust_column: Thrust (N)
 # Example: ignition visibly starts at 4.52 seconds in the video.
 ignition_video_s: 4.52
 
+# Optional synchronized cameras:
+# video_2: input/camera_2.mp4
+# video_3: input/camera_3.mp4
+# camera_2_ignition_s: 2.18
+# camera_3_ignition_s: 6.04
+# camera_mode: split  # single, switch, split, or pip
+# camera_3_switch_delay_s: 2.0
+
 # Timestamp in Excel that should become telemetry t=0.
-# Leave null to use the first telemetry timestamp.
+# Leave null to detect the first sustained chamber-pressure response.
 telemetry_zero_s: null
 
 # Use 0.001 when Excel time is in milliseconds.
@@ -26,10 +34,35 @@ title: RNX-TEST-L819-V2
 subtitle: Pressure & Derived Thrust
 pressure_unit: bar
 thrust_unit: N
+run_number: RUN-019
+motor_type: L819
+propellant: LOX / PROPANE
+oxidizer: LOX
+fuel: PROPANE
+ablative_material: PHENOLIC ABLATIVE
+test_date: "2026-08-09"
+organization_name: STELLAR KINETICS
+test_site: ETLAQ SPACEPORT - DUQM, OMAN
+coordinates_text: "19°39'N 57°42'E"
+footer_tagline: STELLAR KINETICS - ENGINEERING THE VOID
+camera_label: CAM 01
+capture_fps: 120 FPS
+
+# Broadcast Edition overlay
+broadcast_theme: launch  # launch, mission_control, or stellar_console
+# Optional direct ROTPL use from the CLI. The web registry fills these fields
+# automatically and pins the immutable SHA-256 to every export job.
+# template_id: stellar.duqm.qualification
+# template_version: 1.0.0
+# template_sha256: e24ff0c73f8396212a7f7e4f9ee442e32a90acfd657d780624e3538d3bbf8bfd
+# template_path: UPLOAD_TEMPLATE_HERE/stellar-kinetics-1.0.0.rotpl
+accent: "#38BDF8"
+show_chart: true
+show_phases: true
 
 width: 1920
 height: 1080
-video_fraction: 0.62
+video_fraction: 0.70
 
 chart_window_before_s: 1.0
 chart_window_after_s: 1.0
@@ -39,4 +72,5 @@ logo: null
 
 keep_audio: true
 codec: mp4v
-crf: 18
+crf: 15
+preserve_source_quality: false  # enable only for archival HLG Main10 delivery

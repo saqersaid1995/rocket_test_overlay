@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+.venv/
+config.yaml
+input/
+output/
+workspace/
+server.log
+server.pid

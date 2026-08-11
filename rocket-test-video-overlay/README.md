@@ -3,6 +3,26 @@
 
 A professional Python tool for combining a rocket motor test video with synchronized Excel/CSV pressure and thrust telemetry.
 
+## Web interface
+
+The easiest way to run the tool is through its local Arabic web interface:
+
+```bash
+pip install -r requirements.txt
+python app.py
+```
+
+Open `http://localhost:5000`. The interface lets you:
+
+- Preview the source video before rendering.
+- Upload Excel/CSV telemetry and auto-detect its columns.
+- Configure synchronization, units, titles, resolution, logo, and audio.
+- Follow render progress.
+- Play and download the finished video.
+
+Uploaded files and generated videos are stored under `workspace/`, which is
+ignored by Git.
+
 ## Output
 
 - Test video on the left.
@@ -90,6 +110,8 @@ Then telemetry `44.56 s` will line up with ignition in the video.
 ```bash
 python rocket_overlay.py --config config.yaml
 ```
+
+The command-line interface remains available for automated workflows.
 
 The finished video will be saved to:
 
