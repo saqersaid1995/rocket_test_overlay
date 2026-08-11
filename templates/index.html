@@ -145,6 +145,7 @@
             </div>
           </div>
           <div id="sceneElements" class="hidden"></div>
+          <div id="safeArea" class="hidden"></div>
         </div>
       </div>
       <div class="timeline">
@@ -304,12 +305,22 @@
         <label class="check"><input id="showBroadcastChart" name="show_chart" form="renderForm" type="checkbox" checked> Live pressure trace</label>
         <label class="check"><input id="showBroadcastPhases" name="show_phases" form="renderForm" type="checkbox" checked> Test phase sequence</label>
         <label class="check"><input type="checkbox" id="revealChart" checked> Progressive chart reveal</label>
+        <label class="check"><input type="checkbox" id="showSafeArea"> Safe-area guide</label>
+        <small class="field-help">Preview-only framing guide; it is never burned into the exported video.</small>
         <div class="broadcast-features" id="broadcastFeatures"><span>ARC GAUGES</span><span>MISSION CLOCK</span><span>LIVE TRACE</span></div>
         <p class="broadcast-theme-note"><span id="broadcastThemeName">Launch Broadcast</span> &mdash; <span id="broadcastThemeDescription">Balanced broadcast layout with arc gauges, mission clock and a live chart.</span></p>
       </details>
 
       <details class="step-panel" id="step-export" open>
         <summary><b>4</b>Export</summary>
+
+        <h3>Export presets</h3>
+        <div class="preset-grid">
+          <button type="button" class="export-preset active" data-preset="engineering"><b>Engineering</b><small>Full data &middot; summary card</small></button>
+          <button type="button" class="export-preset" data-preset="presentation"><b>Presentation</b><small>Clean broadcast look</small></button>
+          <button type="button" class="export-preset" data-preset="archive"><b>Archive HDR</b><small>HLG Main10 lossless</small></button>
+          <button type="button" class="export-preset" data-preset="social"><b>Social 9:16</b><small>Portrait &middot; thumbnail</small></button>
+        </div>
 
         <label>Resolution
           <select form="renderForm" name="resolution" id="resolution">

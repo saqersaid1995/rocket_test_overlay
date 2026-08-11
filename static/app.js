@@ -824,6 +824,51 @@ document.querySelector("#headerExportButton")?.addEventListener("click", () => {
   document.querySelector("#renderButton").click();
 });
 
+// Safe-area guide is a preview-only framing aid; it never reaches the
+// backend and is never burned into the exported video.
+document.querySelector("#showSafeArea")?.addEventListener("change", event => {
+  document.querySelector("#safeArea")?.classList.toggle("hidden", !event.target.checked);
+});
+
+// Export presets are a client-side convenience: every field they touch
+// already exists and is independently real (Config.output_style,
+// Config.resolution/width+height, Config.delivery_codec,
+// Config.preserve_source_quality) — a preset just sets several of them at
+// once. Archive routes through the existing #preserveSourceQuality checkbox
+// so it keeps respecting the same HDR-passthrough gating (source
+// resolution, single camera, no crop/enhance) as when a user checks it by
+// hand.
+const EXPORT_PRESETS = {
+  engineering: { outputStyle: "engineering", resolution: "source", codec: "h264", archive: false },
+  presentation: { outputStyle: "presentation", resolution: "source", codec: "h264", archive: false },
+  archive: { outputStyle: "archive", resolution: "source", codec: "h264", archive: true },
+  social: { outputStyle: "social", resolution: "1080x1920", codec: "h264", archive: false },
+};
+function applyExportPreset(name) {
+  const preset = EXPORT_PRESETS[name];
+  if (!preset) return;
+  form.elements.output_style.value = preset.outputStyle;
+  const archiveCheckbox = document.querySelector("#preserveSourceQuality");
+  if (archiveCheckbox.checked !== preset.archive) {
+    archiveCheckbox.checked = preset.archive;
+    archiveCheckbox.dispatchEvent(new Event("change"));
+  }
+  if (!preset.archive) {
+    // syncSourceQualityMode() already forces "source" while archive mode is
+    // on, so only apply the preset's own resolution/codec otherwise.
+    const resolutionSelect = document.querySelector("#resolution");
+    resolutionSelect.value = preset.resolution;
+    resolutionSelect.dispatchEvent(new Event("change"));
+    form.elements.delivery_codec.value = preset.codec;
+  }
+  document.querySelectorAll(".export-preset").forEach(button => {
+    button.classList.toggle("active", button.dataset.preset === name);
+  });
+}
+document.querySelectorAll(".export-preset").forEach(button => {
+  button.addEventListener("click", () => applyExportPreset(button.dataset.preset));
+});
+
 async function inspectData() {
   fileName(dataInput, "#dataName");
   broadcastPreviewSessionId = null;
