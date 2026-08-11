@@ -553,6 +553,7 @@ function setCameraSource(input, target, urlKey) {
   if (urlKey === 2) previewUrl2 = nextUrl; else previewUrl3 = nextUrl;
   if (nextUrl) target.src = nextUrl; else target.removeAttribute("src");
   updateCameraPreview();
+  updateTimelineUI();
 }
 videoInput2.addEventListener("change", () => setCameraSource(videoInput2, video2, 2));
 videoInput3.addEventListener("change", () => setCameraSource(videoInput3, video3, 3));
@@ -584,10 +585,12 @@ function updateCameraPreview() {
     if (!chosen?.src) {
       notify(`Choose the CAM ${previewChoice} file first.`);
       document.querySelector("#cameraPreviewMode").value = "layout";
+      syncViewTabs();
     } else {
       chosen.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
       applyCameraFocus(chosen, Number(previewChoice));
       syncSecondaryCameras();
+      syncViewTabs();
       return;
     }
   }
@@ -618,6 +621,7 @@ function updateCameraPreview() {
     applyCameraFocus(video, 1);
   }
   syncSecondaryCameras();
+  syncViewTabs();
 }
 function applyCameraFocus(camera, number) {
   const prefix = number === 1 ? "" : `camera_${number}_`;
@@ -685,6 +689,8 @@ function updatePlaybackPreview() {
   if (!video.duration) return;
   document.querySelector("#timelineRange").value = video.currentTime / video.duration * 1000;
   updateCameraPreview(); renderPreview();
+  const playhead = document.querySelector("#timelinePlayhead");
+  if (playhead) playhead.style.left = `${clamp(video.currentTime / video.duration * 100, 0, 100)}%`;
 }
 
 function stopVideoFrameLoop() {
@@ -771,7 +777,10 @@ form.elements.ignition_video_s.addEventListener("input", () => {
   renderPreview();
 });
 ["camera_2_ignition_s","camera_3_ignition_s","camera_3_switch_delay_s"].forEach(name =>
-  form.elements[name].addEventListener("input", updateCameraPreview)
+  form.elements[name].addEventListener("input", () => {
+    updateCameraPreview();
+    updateTimelineUI();
+  })
 );
 [
   "crop_x","crop_y","crop_zoom",
@@ -856,6 +865,7 @@ async function inspectData() {
       telemetryZeroAuto = true;
     }
     renderTelemetryDiagnostics();
+    renderTelemetryTrack();
     if (broadcastPreviewSessionId && logoInput.files[0]) {
       await syncBroadcastPreviewLogo(false);
     }
@@ -1618,8 +1628,167 @@ function drawChart(series,time,style) {
 document.querySelector("#playButton").addEventListener("click",()=>video.paused?video.play():video.pause());
 document.querySelector("#timelineRange").addEventListener("input",event=>{if(video.duration)video.currentTime=Number(event.target.value)/1000*video.duration});
 document.querySelector("#jumpIgnition").addEventListener("click",()=>video.currentTime=clamp(Number(form.elements.ignition_video_s.value)||0,0,video.duration||0));
-function updateIgnitionMarker(){const d=video.duration||1,t=Number(form.elements.ignition_video_s.value)||0;document.querySelector("#ignitionMarker").style.left=`${clamp(t/d*100,0,100)}%`}
+function timelineClipGeometry(cameraNumber) {
+  const duration = video.duration || 0;
+  if (!duration) return { leftPct: 0, widthPct: 100 };
+  const primaryIgnition = Number(form.elements.ignition_video_s.value || 0);
+  const cameraIgnition = Number(form.elements[`camera_${cameraNumber}_ignition_s`].value || 0);
+  const startMaster = primaryIgnition - cameraIgnition;
+  const startFraction = clamp(startMaster / duration, 0, 1);
+  const secondaryVideo = cameraNumber === 2 ? video2 : video3;
+  const secondaryDuration = Number.isFinite(secondaryVideo.duration) && secondaryVideo.duration > 0
+    ? secondaryVideo.duration : duration - startMaster;
+  const endFraction = clamp((startMaster + secondaryDuration) / duration, 0, 1);
+  return { leftPct: startFraction * 100, widthPct: Math.max(2, (endFraction - startFraction) * 100) };
+}
+
+function updateClipLabel(cameraNumber, input) {
+  const label = document.querySelector(`#clipLabel${cameraNumber}`);
+  if (!label) return;
+  const file = input.files[0];
+  const ignitionField = cameraNumber === 1
+    ? form.elements.ignition_video_s
+    : form.elements[`camera_${cameraNumber}_ignition_s`];
+  const ignitionValue = Number(ignitionField?.value || 0);
+  label.textContent = file
+    ? `CAM ${cameraNumber} · ${file.name} · IGN ${ignitionValue.toFixed(2)}s`
+    : `CAM ${cameraNumber} · no file assigned`;
+}
+
+function renderTelemetryTrack() {
+  const svg = document.querySelector("#telemetryTrackSvg");
+  if (!svg) return;
+  const duration = video.duration || 0;
+  const series = normalizedSeries();
+  if (!duration || series.length < 2) { svg.innerHTML = ""; return; }
+  const ignition = Number(form.elements.ignition_video_s.value || 0);
+  const maxPressure = Math.max(1, ...series.map(item => item.pressure || 0));
+  const points = series.map(item => {
+    const masterTime = item.time + ignition;
+    const x = clamp(masterTime / duration, 0, 1) * 1000;
+    const y = 38 - clamp(item.pressure / maxPressure, 0, 1) * 34;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  svg.innerHTML = `<polyline points="${points}" fill="none" stroke="#79c895" stroke-width="1.4"/>`;
+}
+
+function updateTimelineUI() {
+  const duration = video.duration || 0;
+  const ignitionTime = Number(form.elements.ignition_video_s.value) || 0;
+  const ignitionMarker = document.querySelector("#ignitionMarker");
+  if (ignitionMarker) ignitionMarker.style.left = `${clamp(duration ? ignitionTime / duration * 100 : 0, 0, 100)}%`;
+  const playhead = document.querySelector("#timelinePlayhead");
+  if (playhead) playhead.style.left = `${clamp(duration ? video.currentTime / duration * 100 : 0, 0, 100)}%`;
+  updateClipLabel(1, videoInput);
+  for (const [cameraNumber, input] of [[2, videoInput2], [3, videoInput3]]) {
+    const block = document.querySelector(`#clipBlock${cameraNumber}`);
+    updateClipLabel(cameraNumber, input);
+    if (!block) continue;
+    const hasSource = Boolean(input.files[0]);
+    block.classList.toggle("empty", !hasSource);
+    if (!hasSource) { block.style.left = ""; block.style.width = ""; continue; }
+    const { leftPct, widthPct } = timelineClipGeometry(cameraNumber);
+    block.style.left = `${leftPct}%`;
+    block.style.width = `${widthPct}%`;
+  }
+  renderTelemetryTrack();
+}
+function updateIgnitionMarker(){ updateTimelineUI(); }
 function formatTime(seconds){if(!Number.isFinite(seconds))return"00:00.00";const m=Math.floor(seconds/60),s=seconds-m*60;return`${String(m).padStart(2,"0")}:${s.toFixed(2).padStart(5,"0")}`}
+
+// PROGRAM/CAM1/2/3 viewer tabs are a reskin of the existing #cameraPreviewMode
+// select — clicking a tab just sets the select's value and dispatches the
+// same "change" event the select already handles, so updateCameraPreview()
+// stays the single source of truth for what's actually shown.
+function syncViewTabs() {
+  const value = document.querySelector("#cameraPreviewMode")?.value;
+  document.querySelectorAll(".view-tab").forEach(button => {
+    button.classList.toggle("active", button.dataset.view === value);
+  });
+}
+document.querySelectorAll(".view-tab").forEach(button => {
+  button.addEventListener("click", () => {
+    const select = document.querySelector("#cameraPreviewMode");
+    select.value = button.dataset.view;
+    select.dispatchEvent(new Event("change"));
+  });
+});
+
+// The 4-step wizard nav: clicking a tab shows only that step's panel.
+// Panels are native <details>, so a user can still expand another one by
+// hand without losing the rest of the form's state; doing so re-highlights
+// the matching nav tab via the "toggle" listener below.
+const WIZARD_STEPS = ["media", "sync", "design", "export"];
+function goToStep(step) {
+  WIZARD_STEPS.forEach(id => {
+    const panel = document.querySelector(`#step-${id}`);
+    if (panel) panel.open = id === step;
+  });
+  document.querySelectorAll(".wizard-nav a").forEach(link => {
+    link.classList.toggle("active", link.dataset.stepLink === step);
+  });
+}
+document.querySelectorAll(".wizard-nav a").forEach(link => {
+  link.addEventListener("click", event => {
+    event.preventDefault();
+    goToStep(link.dataset.stepLink);
+  });
+});
+WIZARD_STEPS.forEach(id => {
+  document.querySelector(`#step-${id}`)?.addEventListener("toggle", event => {
+    if (event.target.open) {
+      document.querySelectorAll(".wizard-nav a").forEach(link => {
+        link.classList.toggle("active", link.dataset.stepLink === id);
+      });
+    }
+  });
+});
+goToStep("sync");
+
+// Dragging a CAM 2/3 clip block along the timeline writes to the same
+// camera_N_ignition_s field the number input controls — same state, just a
+// different way to set it (mirrors the existing crop-pan drag handler).
+let clipDragState = null;
+document.querySelectorAll(".clip-block[data-clip]").forEach(block => {
+  const cameraNumber = Number(block.dataset.clip);
+  if (cameraNumber === 1) return; // primary camera is the fixed timeline reference
+  block.addEventListener("pointerdown", event => {
+    if (block.classList.contains("empty") || !video.duration) return;
+    clipDragState = {
+      pointerId: event.pointerId,
+      cameraNumber,
+      startX: event.clientX,
+      startIgnition: Number(form.elements[`camera_${cameraNumber}_ignition_s`].value || 0),
+    };
+    block.classList.add("dragging");
+    block.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  block.addEventListener("pointermove", event => {
+    if (!clipDragState || event.pointerId !== clipDragState.pointerId) return;
+    const lanes = document.querySelector("#trackLanes");
+    const rect = lanes.getBoundingClientRect();
+    if (!video.duration || !rect.width) return;
+    const deltaFraction = (event.clientX - clipDragState.startX) / rect.width;
+    // Dragging right moves the clip's visible start later in the master
+    // timeline, which means an earlier (smaller) camera-local ignition time.
+    const newIgnition = clamp(
+      clipDragState.startIgnition - deltaFraction * video.duration,
+      0, 24 * 60 * 60
+    );
+    form.elements[`camera_${clipDragState.cameraNumber}_ignition_s`].value = newIgnition.toFixed(2);
+    updateCameraPreview();
+    updateTimelineUI();
+    event.preventDefault();
+  });
+  block.addEventListener("pointerup", event => {
+    if (!clipDragState || event.pointerId !== clipDragState.pointerId) return;
+    block.classList.remove("dragging");
+    block.releasePointerCapture(event.pointerId);
+    clipDragState = null;
+  });
+});
 
 // Scene-editor toolbar actions (undo/redo/save/export/import/reset) have no
 // buttons in the new UI, so they are intentionally left unwired. The

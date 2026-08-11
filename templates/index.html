@@ -56,14 +56,18 @@
     <section class="editor">
       <div class="editor-toolbar">
         <div class="broadcast-edition"><i></i><strong id="broadcastEditionName">LAUNCH BROADCAST</strong><span>Live broadcast overlay</span></div>
-        <label class="view-mode-field">Viewer
-          <select id="cameraPreviewMode">
-            <option value="layout">PROGRAM OUT</option>
-            <option value="1">CAM 1</option>
-            <option value="2">CAM 2</option>
-            <option value="3">CAM 3</option>
-          </select>
-        </label>
+        <div class="view-tabs" role="tablist" aria-label="Viewer">
+          <button type="button" class="view-tab active" data-view="layout">PROGRAM</button>
+          <button type="button" class="view-tab" data-view="1">CAM 1</button>
+          <button type="button" class="view-tab" data-view="2">CAM 2</button>
+          <button type="button" class="view-tab" data-view="3">CAM 3</button>
+        </div>
+        <select id="cameraPreviewMode" class="hidden">
+          <option value="layout">PROGRAM OUT</option>
+          <option value="1">CAM 1</option>
+          <option value="2">CAM 2</option>
+          <option value="3">CAM 3</option>
+        </select>
         <div><label>Zoom <input id="stageZoom" type="range" min="50" max="120" value="86"></label><span id="zoomValue">86%</span></div>
       </div>
       <div class="stage-viewport">
@@ -149,9 +153,22 @@
           <button type="button" id="jumpIgnition">Jump to ignition</button>
           <span id="currentTime">00:00.00</span><span>/</span><span id="duration">00:00.00</span>
         </div>
-        <div class="scrub-wrap">
-          <input id="timelineRange" type="range" min="0" max="1000" value="0">
-          <i id="ignitionMarker"></i>
+        <div class="multitrack" id="multitrack">
+          <div class="track-labels">
+            <div class="track-label"><b>V1</b><span>CAM 1</span></div>
+            <div class="track-label"><b>V2</b><span>CAM 2</span></div>
+            <div class="track-label"><b>V3</b><span>CAM 3</span></div>
+            <div class="track-label"><b>D1</b><span>TELEMETRY</span></div>
+          </div>
+          <div class="track-lanes" id="trackLanes">
+            <div class="track-lane"><div class="clip-block active" data-clip="1"><span class="clip-label" id="clipLabel1">CAM 1</span></div></div>
+            <div class="track-lane"><div class="clip-block" data-clip="2" id="clipBlock2"><span class="clip-label" id="clipLabel2">CAM 2</span></div></div>
+            <div class="track-lane"><div class="clip-block" data-clip="3" id="clipBlock3"><span class="clip-label" id="clipLabel3">CAM 3</span></div></div>
+            <div class="track-lane telemetry-lane"><svg id="telemetryTrackSvg" viewBox="0 0 1000 40" preserveAspectRatio="none"></svg></div>
+            <i id="ignitionMarker"></i>
+            <i id="timelinePlayhead"></i>
+            <input id="timelineRange" type="range" min="0" max="1000" value="0">
+          </div>
         </div>
       </div>
     </section>
