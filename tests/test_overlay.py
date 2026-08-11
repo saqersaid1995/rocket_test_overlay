@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import hashlib
 import importlib.util
 import subprocess
 import sys
@@ -786,15 +787,24 @@ class WebPreviewTests(unittest.TestCase):
     def test_chunked_upload_bypasses_single_request_size(self):
         video_bytes = b"v" * (5 * 1024 * 1024)
         data_bytes = b"time,pressure\n0,0\n1,1\n"
+        video_last_modified = 1700000000000
+        video_partial_sha256 = hashlib.sha256(video_bytes[:1024 * 1024]).hexdigest()
         with app.test_client() as client:
             tokens = {}
             for field, filename, content in (
                 ("video", "large.mp4", video_bytes),
                 ("data", "data.csv", data_bytes),
             ):
+                init_payload = {"field": field, "filename": filename}
+                if field == "video":
+                    init_payload.update(
+                        size=len(content),
+                        last_modified=video_last_modified,
+                        partial_sha256=video_partial_sha256,
+                    )
                 response = client.post(
                     "/api/uploads/init",
-                    json={"field": field, "filename": filename},
+                    json=init_payload,
                 )
                 self.assertEqual(response.status_code, 200)
                 token = response.get_json()["upload_id"]
@@ -825,9 +835,23 @@ class WebPreviewTests(unittest.TestCase):
             reuse = client.post("/api/uploads/init", json={
                 "field": "video", "filename": "large.mp4",
                 "size": len(video_bytes),
+                "last_modified": video_last_modified,
+                "partial_sha256": video_partial_sha256,
             })
             self.assertEqual(reuse.status_code, 200)
             self.assertTrue(reuse.get_json()["reused"])
+
+            # A different file that merely happens to share the name and size
+            # (different last-modified stamp / content) must NOT be served
+            # from the previous upload.
+            mismatched = client.post("/api/uploads/init", json={
+                "field": "video", "filename": "large.mp4",
+                "size": len(video_bytes),
+                "last_modified": video_last_modified + 1,
+                "partial_sha256": video_partial_sha256,
+            })
+            self.assertEqual(mismatched.status_code, 200)
+            self.assertFalse(mismatched.get_json()["reused"])
 
     def test_inspect_preview_spans_entire_large_dataset(self):
         with tempfile.TemporaryDirectory() as directory:

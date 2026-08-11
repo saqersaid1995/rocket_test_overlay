@@ -1796,6 +1796,12 @@ async function startExport(event) {
 }
 form.addEventListener("submit", startExport);
 document.querySelector("#renderButton").addEventListener("click", startExport);
+async function fingerprintSample(file) {
+  const sampleSize = Math.min(file.size, 1024 * 1024);
+  const buffer = await file.slice(0, sampleSize).arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
 async function uploadFilesInChunks(body) {
   const fields = [
     ["video",videoInput],["video_2",videoInput2],["video_3",videoInput3],
@@ -1806,10 +1812,14 @@ async function uploadFilesInChunks(body) {
   const chunkSize = 2 * 1024 * 1024;
   for (const [field,input] of fields) {
     const file = input.files[0];
+    const partialSha256 = await fingerprintSample(file);
     const initResponse = await fetch("/api/uploads/init", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({field,filename:file.name,size:file.size})
+      body:JSON.stringify({
+        field, filename:file.name, size:file.size,
+        last_modified:file.lastModified, partial_sha256:partialSha256,
+      })
     });
     const initPayload = await initResponse.json();
     if (!initResponse.ok) throw new Error(initPayload.error||"تعذر بدء رفع الملف.");

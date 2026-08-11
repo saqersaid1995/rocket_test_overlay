@@ -578,6 +578,9 @@ def consume_upload(
         raise RocketOverlayError(f"لم يكتمل رفع الملف: {field}")
     destination = job_dir / item["filename"]
     source.replace(destination)
+    fingerprint = item.get("fingerprint") or {}
+    if fingerprint.get("size") and fingerprint.get("last_modified") and fingerprint.get("partial_sha256"):
+        _write_fingerprint(destination, fingerprint)
     source.parent.rmdir()
     return destination
 
@@ -642,12 +645,31 @@ def index():
     return render_template("index.html")
 
 
+def _fingerprint_path(path: Path) -> Path:
+    return path.with_name(path.name + ".fingerprint.json")
+
+
+def _read_fingerprint(path: Path) -> dict | None:
+    try:
+        with _fingerprint_path(path).open("r", encoding="utf-8") as stream:
+            return json.load(stream)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_fingerprint(path: Path, fingerprint: dict) -> None:
+    with _fingerprint_path(path).open("w", encoding="utf-8") as stream:
+        json.dump(fingerprint, stream)
+
+
 @app.post("/api/uploads/init")
 def initialize_upload():
     payload = request.get_json(silent=True) or {}
     field = str(payload.get("field", ""))
     filename = secure_filename(str(payload.get("filename", "")))
     expected_size = int(payload.get("size", 0) or 0)
+    last_modified = int(payload.get("last_modified", 0) or 0)
+    partial_sha256 = str(payload.get("partial_sha256", "")).strip().lower()
     allowed = {
         "video": VIDEO_EXTENSIONS, "video_2": VIDEO_EXTENSIONS,
         "video_3": VIDEO_EXTENSIONS, "data": DATA_EXTENSIONS,
@@ -662,13 +684,23 @@ def initialize_upload():
     upload_dir.mkdir(parents=True)
     path = upload_dir / filename
     reused = False
-    if expected_size > 0:
+    # Reuse a previously uploaded file only when the client can prove it is
+    # byte-identical (size + browser last-modified stamp + a hash of a
+    # leading sample), never on filename/size alone — two different clips
+    # can share both by coincidence.
+    fingerprint = {
+        "size": expected_size,
+        "last_modified": last_modified,
+        "partial_sha256": partial_sha256,
+    }
+    if expected_size > 0 and last_modified > 0 and len(partial_sha256) == 64:
         candidates = sorted(
             (
                 candidate for candidate in UPLOAD_DIR.glob(f"*/{filename}")
                 if not candidate.parent.name.startswith("chunk-")
                 and candidate.is_file()
                 and candidate.stat().st_size == expected_size
+                and _read_fingerprint(candidate) == fingerprint
             ),
             key=lambda candidate: candidate.stat().st_mtime,
             reverse=True,
@@ -683,6 +715,7 @@ def initialize_upload():
             "field": field, "filename": filename, "path": str(path),
             "received": expected_size if reused else 0,
             "reused": reused,
+            "fingerprint": fingerprint,
         }
     return jsonify({"upload_id": upload_id, "reused": reused})
 
