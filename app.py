@@ -156,9 +156,9 @@ def preview_payload() -> dict[str, Any]:
     if request.is_json:
         value = request.get_json(silent=True)
         if value is None:
-            raise RocketOverlayError("تعذر قراءة بيانات المعاينة المرسلة.")
+            raise RocketOverlayError("Could not read the submitted preview data.")
         if not isinstance(value, dict):
-            raise RocketOverlayError("بيانات المعاينة يجب أن تكون كائناً.")
+            raise RocketOverlayError("Preview data must be an object.")
         return value
     return request.form.to_dict()
 
@@ -181,9 +181,9 @@ def payload_float(
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
-        raise RocketOverlayError(f"القيمة الرقمية غير صحيحة للحقل: {name}") from exc
+        raise RocketOverlayError(f"Invalid numeric value for field: {name}") from exc
     if not np.isfinite(value):
-        raise RocketOverlayError(f"القيمة الرقمية غير محدودة للحقل: {name}")
+        raise RocketOverlayError(f"Numeric value is not finite for field: {name}")
     return value
 
 
@@ -196,7 +196,7 @@ def payload_int(
     try:
         return int(raw)
     except (TypeError, ValueError) as exc:
-        raise RocketOverlayError(f"القيمة الصحيحة غير صالحة للحقل: {name}") from exc
+        raise RocketOverlayError(f"Invalid integer value for field: {name}") from exc
 
 
 def payload_bool(payload: dict[str, Any], name: str, default: bool) -> bool:
@@ -210,14 +210,14 @@ def payload_bool(payload: dict[str, Any], name: str, default: bool) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise RocketOverlayError(f"قيمة التشغيل غير صحيحة للحقل: {name}")
+    raise RocketOverlayError(f"Invalid boolean value for field: {name}")
 
 
 def resolve_preview_column(
     frame: pd.DataFrame,
     explicit: str,
     kind: str,
-    arabic_name: str,
+    column_label: str,
     optional: bool = False,
 ) -> str | None:
     if explicit.lower() in {"__none__", "none", "null"}:
@@ -227,9 +227,9 @@ def resolve_preview_column(
     except RocketOverlayError as exc:
         if optional and not explicit:
             return None
-        columns = "، ".join(str(column) for column in frame.columns)
+        columns = ", ".join(str(column) for column in frame.columns)
         raise RocketOverlayError(
-            f"تعذر تحديد عمود {arabic_name}. الأعمدة المتاحة: {columns}"
+            f"Could not identify the {column_label} column. Available columns: {columns}"
         ) from exc
 
 
@@ -237,22 +237,22 @@ def normalize_preview_telemetry(
     raw_frame: pd.DataFrame, payload: dict[str, Any]
 ) -> pd.DataFrame:
     if raw_frame.empty:
-        raise RocketOverlayError("ملف القياسات لا يحتوي على صفوف.")
+        raise RocketOverlayError("Telemetry file contains no rows.")
 
     time_column = resolve_preview_column(
-        raw_frame, payload_text(payload, "time_column"), "time", "الزمن"
+        raw_frame, payload_text(payload, "time_column"), "time", "time"
     )
     pressure_column = resolve_preview_column(
         raw_frame,
         payload_text(payload, "pressure_column"),
         "pressure",
-        "الضغط",
+        "pressure",
     )
     thrust_column = resolve_preview_column(
         raw_frame,
         payload_text(payload, "thrust_column"),
         "thrust",
-        "الدفع",
+        "thrust",
         optional=True,
     )
 
@@ -271,7 +271,7 @@ def normalize_preview_telemetry(
     clean = clean.dropna().sort_values("time")
     clean = clean.groupby("time", as_index=False).mean(numeric_only=True)
     if len(clean) < 2:
-        raise RocketOverlayError("يلزم صفّان صالحان على الأقل لإنشاء المعاينة.")
+        raise RocketOverlayError("At least two valid rows are required to build the preview.")
 
     first_time = float(clean["time"].iloc[0])
     last_time = float(clean["time"].iloc[-1])
@@ -305,10 +305,10 @@ def normalize_preview_telemetry(
         zero_source = "automatic"
     time_scale = payload_float(payload, "time_scale", 1.0)
     if time_scale <= 0:
-        raise RocketOverlayError("مقياس الزمن يجب أن يكون أكبر من صفر.")
+        raise RocketOverlayError("Time scale must be greater than zero.")
     clean["time"] = (clean["time"] - telemetry_zero) * time_scale
     if not np.all(np.diff(clean["time"].to_numpy(dtype=float)) > 0):
-        raise RocketOverlayError("قيم الزمن يجب أن تكون متزايدة بعد التنظيف.")
+        raise RocketOverlayError("Time values must be strictly increasing after cleanup.")
     clean = clean.reset_index(drop=True)
     clean.attrs["has_thrust"] = thrust_column is not None
     clean.attrs["time_column"] = time_column
@@ -393,17 +393,17 @@ def resolve_preview_template(
     if not template_id:
         if template_version or requested_sha256:
             raise RocketOverlayError(
-                "معرّف القالب مطلوب عند إرسال الإصدار أو البصمة الرقمية."
+                "Template id is required when sending a version or digest."
             )
         return None, None, False
     if not template_version or not requested_sha256:
         raise RocketOverlayError(
-            "يجب إرسال معرّف القالب وإصداره وبصمته الرقمية معاً."
+            "Template id, version, and digest must all be sent together."
         )
     if len(requested_sha256) != 64 or any(
         character not in "0123456789abcdef" for character in requested_sha256
     ):
-        raise RocketOverlayError("بصمة حزمة القالب SHA-256 غير صالحة.")
+        raise RocketOverlayError("Invalid SHA-256 digest for the template package.")
 
     registry_get = getattr(template_registry, "get", None)
     if callable(registry_get):
@@ -417,13 +417,13 @@ def resolve_preview_template(
             )
             details = "; ".join(str(reason) for reason in reasons)
             raise RocketOverlayError(
-                "لا يمكن استخدام قالب محظور أو غير مكتمل"
+                "Cannot use a blocked or incomplete template"
                 + (f": {details}" if details else ".")
             )
     resolved = template_registry.resolve(template_id, template_version)
     if not hmac.compare_digest(resolved.sha256.lower(), requested_sha256):
         raise RocketOverlayError(
-            "بصمة القالب المحدد لا تطابق النسخة المثبتة؛ أعد اختيار القالب."
+            "The selected template's digest does not match the installed version; reselect the template."
         )
 
     cache_key = (resolved.id, resolved.version, resolved.sha256)
@@ -435,7 +435,7 @@ def resolve_preview_template(
         if package.template_id != resolved.id or package.template_version != resolved.version:
             package.close()
             raise RocketOverlayError(
-                "هوية ملفات القالب لا تطابق السجل المثبت."
+                "Template file identity does not match the installed record."
             )
         try:
             renderer = RotplRenderer(package)
@@ -549,11 +549,11 @@ def save_upload(field: str, job_dir: Path, extensions: set[str], required: bool 
     uploaded = request.files.get(field)
     if not uploaded or not uploaded.filename:
         if required:
-            raise RocketOverlayError(f"الملف المطلوب غير موجود: {field}")
+            raise RocketOverlayError(f"Required file is missing: {field}")
         return None
     suffix = Path(uploaded.filename).suffix.lower()
     if suffix not in extensions:
-        raise RocketOverlayError(f"صيغة الملف غير مدعومة: {uploaded.filename}")
+        raise RocketOverlayError(f"Unsupported file format: {uploaded.filename}")
     name = secure_filename(uploaded.filename) or f"{field}{suffix}"
     path = job_dir / name
     uploaded.save(path)
@@ -572,10 +572,10 @@ def consume_upload(
     with chunk_uploads_lock:
         item = chunk_uploads.pop(token, None)
     if not item or item["field"] != field:
-        raise RocketOverlayError(f"رمز رفع الملف غير صالح: {field}")
+        raise RocketOverlayError(f"Invalid upload token: {field}")
     source = Path(item["path"])
     if not source.exists() or source.stat().st_size != item["received"]:
-        raise RocketOverlayError(f"لم يكتمل رفع الملف: {field}")
+        raise RocketOverlayError(f"File upload is incomplete: {field}")
     destination = job_dir / item["filename"]
     source.replace(destination)
     fingerprint = item.get("fingerprint") or {}
@@ -592,9 +592,9 @@ def read_columns(path: Path, sheet: str | int = 0) -> list[str]:
         else:
             frame = pd.read_csv(path, nrows=12)
     except Exception as exc:
-        raise RocketOverlayError(f"تعذر قراءة ملف القياسات: {exc}") from exc
+        raise RocketOverlayError(f"Could not read the telemetry file: {exc}") from exc
     if frame.empty and not len(frame.columns):
-        raise RocketOverlayError("ملف القياسات لا يحتوي على أعمدة.")
+        raise RocketOverlayError("Telemetry file has no columns.")
     return [str(column) for column in frame.columns]
 
 
@@ -603,7 +603,7 @@ def form_float(name: str, default: float) -> float:
     try:
         return default if value == "" else float(value)
     except ValueError as exc:
-        raise RocketOverlayError(f"القيمة غير صحيحة للحقل: {name}") from exc
+        raise RocketOverlayError(f"Invalid value for field: {name}") from exc
 
 
 def form_int(name: str, default: int) -> int:
@@ -611,7 +611,7 @@ def form_int(name: str, default: int) -> int:
     try:
         return default if value == "" else int(value)
     except ValueError as exc:
-        raise RocketOverlayError(f"القيمة غير صحيحة للحقل: {name}") from exc
+        raise RocketOverlayError(f"Invalid value for field: {name}") from exc
 
 
 def run_job(job_id: str, cfg: Config) -> None:
@@ -627,7 +627,7 @@ def run_job(job_id: str, cfg: Config) -> None:
             jobs[job_id].update(
                 status="complete",
                 progress=100,
-                message="اكتمل إنشاء الفيديو",
+                message="Video creation complete",
                 result_url=f"/outputs/{job_id}/{cfg.output.name}",
                 thumbnail_url=f"/outputs/{job_id}/{thumbnail.name}" if thumbnail.exists() else None,
                 summary_url=f"/outputs/{job_id}/{summary.name}" if summary.exists() else None,
@@ -676,9 +676,9 @@ def initialize_upload():
         "logo": LOGO_EXTENSIONS,
     }
     if field not in allowed or not filename:
-        return error("بيانات الملف غير صحيحة.")
+        return error("Invalid file data.")
     if Path(filename).suffix.lower() not in allowed[field]:
-        return error(f"صيغة الملف غير مدعومة: {filename}")
+        return error(f"Unsupported file format: {filename}")
     upload_id = uuid.uuid4().hex
     upload_dir = UPLOAD_DIR / f"chunk-{upload_id}"
     upload_dir.mkdir(parents=True)
@@ -724,11 +724,11 @@ def initialize_upload():
 def append_upload(upload_id: str):
     chunk = request.get_data(cache=False)
     if not chunk:
-        return error("جزء الملف فارغ.")
+        return error("File chunk is empty.")
     with chunk_uploads_lock:
         item = chunk_uploads.get(upload_id)
         if not item:
-            return error("جلسة رفع الملف غير موجودة.", 404)
+            return error("Upload session not found.", 404)
         if item.get("reused"):
             return jsonify({"upload_id": upload_id, "received": item["received"]})
         path = Path(item["path"])
@@ -755,10 +755,10 @@ def inspect_data():
             )
         except Exception as exc:
             raise RocketOverlayError(
-                f"تعذر قراءة ملف القياسات كاملاً: {exc}"
+                f"Could not fully read the telemetry file: {exc}"
             ) from exc
         if frame.empty and not len(frame.columns):
-            raise RocketOverlayError("ملف القياسات لا يحتوي على أعمدة.")
+            raise RocketOverlayError("Telemetry file has no columns.")
         columns = [str(column) for column in frame.columns]
         preview = frame.head(5)
         detected = {}
@@ -858,7 +858,7 @@ def inspect_data():
 def preview_logo(preview_id: str):
     session = get_preview_session(preview_id)
     if session is None:
-        return error("جلسة المعاينة غير موجودة أو انتهت صلاحيتها.", 404)
+        return error("Preview session not found or has expired.", 404)
 
     if request.method == "DELETE":
         old_path: Path | None = None
@@ -866,7 +866,7 @@ def preview_logo(preview_id: str):
             with preview_sessions_lock:
                 current = preview_sessions.get(preview_id)
                 if current is not session:
-                    return error("جلسة المعاينة غير موجودة أو انتهت صلاحيتها.", 404)
+                    return error("Preview session not found or has expired.", 404)
                 if current.get("logo_path"):
                     old_path = Path(current["logo_path"])
                 current["logo_path"] = None
@@ -880,19 +880,19 @@ def preview_logo(preview_id: str):
 
     uploaded = request.files.get("logo")
     if not uploaded or not uploaded.filename:
-        return error("اختر ملف شعار لرفعه.")
+        return error("Choose a logo file to upload.")
     suffix = Path(uploaded.filename).suffix.lower()
     if suffix not in LOGO_EXTENSIONS:
-        return error("صيغة الشعار غير مدعومة. استخدم PNG أو JPG أو WEBP.")
+        return error("Unsupported logo format. Use PNG, JPG, or WEBP.")
 
     raw = uploaded.read(PREVIEW_LOGO_MAX_BYTES + 1)
     if len(raw) > PREVIEW_LOGO_MAX_BYTES:
-        return error("حجم الشعار يتجاوز الحد المسموح وهو 10 ميجابايت.", 413)
+        return error("Logo size exceeds the 10 MB limit.", 413)
     decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     if decoded is None or decoded.ndim not in {2, 3}:
-        return error("تعذر قراءة صورة الشعار أو أن الملف تالف.")
+        return error("Could not read the logo image, or the file is corrupted.")
     if decoded.shape[0] > 8192 or decoded.shape[1] > 8192:
-        return error("أبعاد الشعار كبيرة جداً؛ الحد الأقصى 8192 بكسل.")
+        return error("Logo dimensions are too large; the maximum is 8192 pixels.")
 
     safe_name = secure_filename(uploaded.filename) or f"logo{suffix}"
     session_dir = PREVIEW_DIR / preview_id
@@ -901,7 +901,7 @@ def preview_logo(preview_id: str):
     try:
         new_path.write_bytes(raw)
     except OSError as exc:
-        return error(f"تعذر حفظ الشعار المؤقت: {exc}", 500)
+        return error(f"Could not save the temporary logo: {exc}", 500)
 
     old_path = None
     with session["cache_lock"]:
@@ -909,7 +909,7 @@ def preview_logo(preview_id: str):
             current = preview_sessions.get(preview_id)
             if current is not session:
                 new_path.unlink(missing_ok=True)
-                return error("جلسة المعاينة غير موجودة أو انتهت صلاحيتها.", 404)
+                return error("Preview session not found or has expired.", 404)
             if current.get("logo_path"):
                 old_path = Path(current["logo_path"])
             current["logo_path"] = new_path
@@ -930,21 +930,21 @@ def preview_logo(preview_id: str):
 def render_preview(preview_id: str):
     session = get_preview_session(preview_id)
     if session is None:
-        return error("جلسة المعاينة غير موجودة أو انتهت صلاحيتها.", 404)
+        return error("Preview session not found or has expired.", 404)
 
     try:
         payload = preview_payload()
         width = payload_int(payload, "width", 1280)
         height = payload_int(payload, "height", 720)
         if width < 320 or height < 180:
-            raise RocketOverlayError("أبعاد المعاينة يجب ألا تقل عن 320×180.")
+            raise RocketOverlayError("Preview dimensions must be at least 320×180.")
         if (
             width > PREVIEW_MAX_WIDTH
             or height > PREVIEW_MAX_HEIGHT
             or width * height > PREVIEW_MAX_PIXELS
         ):
             raise RocketOverlayError(
-                "أبعاد المعاينة تتجاوز الحد الآمن 1920×1080."
+                "Preview dimensions exceed the safe limit of 1920×1080."
             )
         custom_template_requested = bool(payload_text(payload, "template_id"))
         if custom_template_requested:
@@ -966,7 +966,7 @@ def render_preview(preview_id: str):
             "range_line": "stellar_console",
         }.get(theme, theme)
         if theme not in broadcast_overlay.BROADCAST_THEMES:
-            raise RocketOverlayError("ثيم المعاينة المحدد غير معروف.")
+            raise RocketOverlayError("The selected preview theme is unknown.")
 
         accent = payload_text(payload, "accent", "#38BDF8")
         if (
@@ -974,7 +974,7 @@ def render_preview(preview_id: str):
             or not accent.startswith("#")
             or any(char not in "0123456789abcdefABCDEF" for char in accent[1:])
         ):
-            raise RocketOverlayError("لون الهوية يجب أن يكون بصيغة #RRGGBB.")
+            raise RocketOverlayError("Accent color must be in #RRGGBB format.")
 
         telemetry_key = preview_telemetry_cache_key(payload)
         pressure_limit_text = payload_text(payload, "pressure_limit")
@@ -1085,20 +1085,20 @@ def render_preview(preview_id: str):
             ".png", overlay, [cv2.IMWRITE_PNG_COMPRESSION, 3]
         )
         if not encoded_ok:
-            raise RocketOverlayError("تعذر ترميز صورة المعاينة بصيغة PNG.")
+            raise RocketOverlayError("Could not encode the preview image as PNG.")
     except RotplNotFoundError as exc:
-        return error(f"تعذر إنشاء المعاينة: {exc}", 404)
+        return error(f"Could not build the preview: {exc}", 404)
     except (
         RocketOverlayError,
         broadcast_overlay.BroadcastOverlayError,
         RotplError,
         RotplRenderError,
     ) as exc:
-        return error(f"تعذر إنشاء المعاينة: {exc}")
+        return error(f"Could not build the preview: {exc}")
     except (KeyError, TypeError, ValueError, cv2.error) as exc:
-        return error(f"تعذر إنشاء المعاينة بسبب بيانات غير صالحة: {exc}")
+        return error(f"Could not build the preview due to invalid data: {exc}")
     except Exception as exc:
-        return error(f"حدث خطأ داخلي أثناء إنشاء المعاينة: {exc}", 500)
+        return error(f"An internal error occurred while building the preview: {exc}", 500)
 
     response = Response(encoded.tobytes(), mimetype="image/png")
     response.headers["Cache-Control"] = "no-store"
@@ -1157,7 +1157,7 @@ def create_job():
         source_fps = float(source_capture.get(cv2.CAP_PROP_FPS))
         source_capture.release()
         if source_width <= 0 or source_height <= 0:
-            raise RocketOverlayError("تعذر تحديد دقة الفيديو الأصلية.")
+            raise RocketOverlayError("Could not determine the source video resolution.")
         # Delivery codecs require even dimensions; normal camera files already
         # satisfy this, while unusual sources are rounded safely.
         source_width -= source_width % 2
@@ -1170,13 +1170,13 @@ def create_job():
         if any((template_id, template_version, requested_template_sha)):
             if not all((template_id, template_version, requested_template_sha)):
                 raise RocketOverlayError(
-                    "يجب إرسال معرّف القالب وإصداره وبصمته الرقمية معاً."
+                    "Template id, version, and digest must all be sent together."
                 )
             if len(requested_template_sha) != 64 or any(
                 character not in "0123456789abcdef"
                 for character in requested_template_sha
             ):
-                raise RocketOverlayError("بصمة حزمة القالب SHA-256 غير صالحة.")
+                raise RocketOverlayError("Invalid SHA-256 digest for the template package.")
             template_record = template_registry.get(template_id, template_version)
             validation = template_record.get("validation", {})
             if not validation.get("activatable", False):
@@ -1187,7 +1187,7 @@ def create_job():
                 )
                 details = "; ".join(str(reason) for reason in reasons)
                 raise RocketOverlayError(
-                    "لا يمكن تصدير قالب محظور أو غير مكتمل"
+                    "Cannot export a blocked or incomplete template"
                     + (f": {details}" if details else ".")
                 )
             selected_template = template_registry.resolve(
@@ -1197,7 +1197,7 @@ def create_job():
                 selected_template.sha256.lower(), requested_template_sha
             ):
                 raise RocketOverlayError(
-                    "بصمة القالب المحدد لا تطابق النسخة المثبتة؛ أعد اختياره."
+                    "The selected template's digest does not match the installed version; reselect it."
                 )
 
         resolution_value = request.form.get("resolution", "source")
@@ -1208,7 +1208,7 @@ def create_job():
         else:
             resolution = resolution_value.split("x")
             if len(resolution) != 2:
-                raise RocketOverlayError("دقة الإخراج غير صحيحة.")
+                raise RocketOverlayError("Invalid output resolution.")
             output_width, output_height = map(int, resolution)
             source_ratio = source_width / source_height
             output_ratio = output_width / output_height
@@ -1220,8 +1220,8 @@ def create_job():
                 requested_label = f"{output_width}×{output_height}"
                 output_width, output_height = source_width, source_height
                 resolution_notice = (
-                    f"تم تجاهل التكبير إلى {requested_label} واستخدام دقة المصدر "
-                    f"{source_width}×{source_height}؛ التكبير لا يضيف تفاصيل للصورة."
+                    f"Ignored the upscale to {requested_label} and used the source "
+                    f"resolution {source_width}×{source_height} instead; upscaling adds no detail."
                 )
 
         sheet_value = request.form.get("sheet", "0").strip()
@@ -1240,7 +1240,7 @@ def create_job():
         if broadcast_theme not in {
             "launch", "mission_control", "stellar_console"
         }:
-            raise RocketOverlayError("ثيم البث المحدد غير معروف.")
+            raise RocketOverlayError("The selected broadcast theme is unknown.")
         raw_scene = request.form.get("scene_config", "").strip()
         scene_config = validate_scene_config(json.loads(raw_scene)) if raw_scene else None
         cfg = Config(
@@ -1343,7 +1343,7 @@ def create_job():
                 "id": job_id,
                 "status": "queued",
                 "progress": 0,
-                "message": "بانتظار بدء المعالجة",
+                "message": "Waiting to start processing",
                 "notice": resolution_notice or None,
                 "output_resolution": f"{output_width}x{output_height}",
                 "template": (
@@ -1377,7 +1377,7 @@ def default_scene():
 def job_status(job_id: str):
     with jobs_lock:
         job = jobs.get(job_id)
-        return jsonify(job) if job else error("المهمة غير موجودة.", 404)
+        return jsonify(job) if job else error("Job not found.", 404)
 
 
 def template_api_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -1401,7 +1401,7 @@ def list_templates():
         ]
         return jsonify(listing)
     except RotplError as exc:
-        return error(f"تعذر قراءة سجل القوالب: {exc}", 500)
+        return error(f"Could not read the template registry: {exc}", 500)
 
 
 @app.post("/api/templates")
@@ -1414,10 +1414,10 @@ def upload_template():
         request.content_length is not None
         and request.content_length > MAX_ARCHIVE_BYTES + 1024 * 1024
     ):
-        return error("حجم حزمة القالب يتجاوز الحد المسموح وهو 64 ميجابايت.", 413)
+        return error("Template package size exceeds the 64 MB limit.", 413)
     uploaded = request.files.get("template")
     if not uploaded or not uploaded.filename:
-        return error("اختر حزمة قالب بصيغة .rotpl.")
+        return error("Choose a template package with a .rotpl extension.")
     original_suffix = Path(uploaded.filename).suffix.lower()
     filename = secure_filename(uploaded.filename)
     if original_suffix == ".rotpl" and Path(filename).suffix.lower() != ".rotpl":
@@ -1431,7 +1431,7 @@ def upload_template():
     except RotplConflictError as exc:
         return error(str(exc), 409)
     except RotplError as exc:
-        return error(f"تعذر تثبيت القالب: {exc}", 500)
+        return error(f"Could not install the template: {exc}", 500)
 
 
 @app.get("/api/templates/<template_id>")
@@ -1452,14 +1452,14 @@ def template_details(template_id: str):
     except RotplValidationError as exc:
         return error(str(exc), 400)
     except RotplError as exc:
-        return error(f"تعذر قراءة القالب: {exc}", 500)
+        return error(f"Could not read the template: {exc}", 500)
 
 
 @app.post("/api/templates/<template_id>/activate")
 def activate_template(template_id: str):
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not str(payload.get("version", "")).strip():
-        return error("رقم إصدار القالب مطلوب.")
+        return error("Template version is required.")
     version = str(payload["version"]).strip()
     try:
         active = template_registry.activate(template_id, version)
@@ -1475,7 +1475,7 @@ def activate_template(template_id: str):
     except RotplActivationError as exc:
         return error(str(exc), 409)
     except RotplError as exc:
-        return error(f"تعذر تفعيل القالب: {exc}", 500)
+        return error(f"Could not activate the template: {exc}", 500)
 
 
 @app.post("/api/templates/rollback")
@@ -1492,14 +1492,14 @@ def rollback_template():
     except RotplActivationError as exc:
         return error(str(exc), 409)
     except RotplError as exc:
-        return error(f"تعذر استرجاع القالب السابق: {exc}", 500)
+        return error(f"Could not roll back to the previous template: {exc}", 500)
 
 
 @app.get("/api/templates/<template_id>/thumbnail")
 def template_thumbnail(template_id: str):
     version = request.args.get("version", "").strip()
     if not version:
-        return error("رقم إصدار القالب مطلوب.")
+        return error("Template version is required.")
     try:
         thumbnail = template_registry.asset_path(
             template_id, version, "preview/thumbnail.png"
@@ -1514,7 +1514,7 @@ def template_thumbnail(template_id: str):
     except RotplValidationError as exc:
         return error(str(exc), 400)
     except RotplError as exc:
-        return error(f"تعذر قراءة صورة القالب: {exc}", 500)
+        return error(f"Could not read the template thumbnail: {exc}", 500)
 
 
 @app.get("/outputs/<job_id>/<path:filename>")

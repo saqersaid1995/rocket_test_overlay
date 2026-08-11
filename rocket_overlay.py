@@ -1836,11 +1836,11 @@ class FFmpegRawVideoWriter:
             )
         if "Immediate exit requested" in details:
             return RocketOverlayError(
-                "توقف محرك التصدير قبل اكتمال الملف. أُزيل الملف الجزئي؛ "
-                "استخدم الدقة الأصلية ثم أعد المحاولة."
+                "The export encoder stopped before the file finished. The partial "
+                "file was removed; use the source resolution and try again."
             )
         return RocketOverlayError(
-            f"تعذر إكمال ترميز الفيديو عالي الجودة{status}."
+            f"Could not finish encoding the high-quality video{status}."
         )
 
     def write(self, frame: np.ndarray) -> bool:
@@ -2095,7 +2095,7 @@ class FFmpegHLGOverlayWriter:
             print(f"FFmpeg HDR encoding failed:\n{details}", file=sys.stderr)
         status = "" if return_code is None else f" (exit code {return_code})"
         return RocketOverlayError(
-            f"تعذر إكمال تصدير HDR المطابق للمصدر{status}."
+            f"Could not finish the source-matching HDR export{status}."
         )
 
     def write(self, frame: np.ndarray) -> bool:
@@ -2468,8 +2468,8 @@ def render(
         for opened_capture in captures:
             opened_capture.release()
         fail(
-            "وضع مطابقة جودة المصدر HDR يتطلب الدقة الأصلية وكاميرا واحدة "
-            "من دون قص أو تكبير أو تحسين أو تثبيت أو مقدمة/خاتمة."
+            "HDR source-quality matching requires source resolution, a single "
+            "camera, and no crop, zoom, enhancement, stabilization, or intro/outro."
         )
 
     # The Broadcast Edition compositor is now the delivery source of truth.

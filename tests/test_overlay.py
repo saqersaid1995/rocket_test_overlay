@@ -684,7 +684,7 @@ class WebPreviewTests(unittest.TestCase):
             cfg = thread_class.call_args.kwargs["args"][1]
             self.assertEqual((cfg.width, cfg.height), (426, 240))
             self.assertEqual(payload["output_resolution"], "426x240")
-            self.assertIn("تكبير", payload["notice"])
+            self.assertIn("upscale", payload["notice"])
 
     def test_source_resolution_preserves_uploaded_video_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
