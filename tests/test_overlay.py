@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 import hashlib
 import importlib.util
+import re
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,7 @@ from rocket_overlay import (
     telemetry_has_thrust,
     determine_test_phase,
     validate_config_values,
+    validate_cut_list,
     validate_scene_config,
 )
 
@@ -272,6 +274,52 @@ class ConfigTests(unittest.TestCase):
                 "broadcast_theme": theme,
             }
             self.assertEqual(validate_config_values(values)["broadcast_theme"], theme)
+
+    def test_validate_cut_list_accepts_ascending_non_overlapping_ranges(self):
+        self.assertEqual(
+            validate_cut_list([[0, 1.5], (1.5, 3), [4, 5]]),
+            [(0.0, 1.5), (1.5, 3.0), (4.0, 5.0)],
+        )
+
+    def test_validate_cut_list_rejects_overlap(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[0, 2], [1, 3]])
+
+    def test_validate_cut_list_rejects_unsorted_ranges(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[2, 3], [0, 1]])
+
+    def test_validate_cut_list_rejects_negative_or_inverted_range(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[-1, 1]])
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[2, 1]])
+
+    def test_validate_cut_list_rejects_too_many_ranges(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[i, i + 0.5] for i in range(201)])
+
+    def test_validate_cut_list_rejects_malformed_entries(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[0, 1, 2]])
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list("not a list")
+
+    def test_validate_config_values_blocks_cut_list_with_hdr_preservation(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "cut_list": [[0, 1]],
+            "preserve_source_quality": True,
+        }
+        with self.assertRaises(RocketOverlayError):
+            validate_config_values(values)
+
+    def test_validate_config_values_allows_cut_list_without_hdr(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "cut_list": [[0, 1]],
+        }
+        self.assertEqual(validate_config_values(values)["cut_list"], [[0, 1]])
         with self.assertRaisesRegex(RocketOverlayError, "Broadcast theme"):
             validate_config_values({
                 "video": Path("v"), "data": Path("d"), "output": Path("o"),
@@ -1114,6 +1162,112 @@ class RenderSmokeTests(unittest.TestCase):
             capture.release()
             self.assertTrue(ok)
             self.assertEqual(frame.shape[:2], (540, 960))
+
+    def test_cut_list_skips_source_range(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            fps = 5.0
+            # One distinct solid color per second so kept/removed ranges are
+            # verifiable by content, not just by frame count.
+            colors = [(20, 30, 180), (30, 180, 30), (180, 30, 20)]
+            writer = cv2.VideoWriter(
+                str(source), cv2.VideoWriter_fourcc(*"mp4v"), fps, (960, 540)
+            )
+            self.assertTrue(writer.isOpened())
+            for color in colors:
+                for _ in range(int(fps)):
+                    writer.write(np.full((540, 960, 3), color, dtype=np.uint8))
+            writer.release()
+            data = root / "data.csv"
+            pd.DataFrame({
+                "time": [0.0, 1.0, 2.0],
+                "pressure": [0.0, 5.0, 0.0],
+            }).to_csv(data, index=False)
+            output = root / "cut.mp4"
+            render(Config(
+                video=source, data=data, output=output,
+                thrust_column="__none__", width=960, height=540,
+                intro_duration_s=0.0, outro_duration_s=0.0,
+                keep_audio=False, thumbnail=False,
+                scene_config=default_scene_config(),
+                cut_list=[(0.0, 1.0), (2.0, 3.0)],
+            ))
+            capture = cv2.VideoCapture(str(output))
+            frames = []
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frames.append(frame)
+            capture.release()
+            # Middle second (color index 1) is cut: 15 source frames -> 10 kept.
+            self.assertEqual(len(frames), 10)
+            center = (270, 480)
+            dominant = [int(np.argmax(color)) for color in colors]
+
+            def sampled_dominant(frame):
+                return int(np.argmax(frame[center]))
+
+            self.assertEqual(sampled_dominant(frames[0]), dominant[0])
+            self.assertEqual(sampled_dominant(frames[4]), dominant[0])
+            self.assertEqual(sampled_dominant(frames[5]), dominant[2])
+            self.assertEqual(sampled_dominant(frames[9]), dominant[2])
+
+    def test_render_rejects_cut_list_with_hdr_preservation(self):
+        with self.assertRaises(RocketOverlayError):
+            render(Config(
+                video=Path("missing.mp4"), data=Path("missing.csv"),
+                output=Path("missing-out.mp4"),
+                cut_list=[(0.0, 1.0)],
+                preserve_source_quality=True,
+            ))
+
+    def test_cut_list_audio_matches_kept_video_duration(self):
+        executable = ffmpeg_executable()
+        if executable is None:
+            self.skipTest("FFmpeg is not available in this environment.")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            subprocess.run(
+                [
+                    executable, "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=red:s=960x540:d=3:r=5",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                    "-shortest", str(source),
+                ],
+                check=True,
+            )
+            data = root / "data.csv"
+            pd.DataFrame({
+                "time": [0.0, 1.0, 2.0, 3.0],
+                "pressure": [0.0, 5.0, 5.0, 0.0],
+            }).to_csv(data, index=False)
+            output = root / "cut_audio.mp4"
+            render(Config(
+                video=source, data=data, output=output,
+                thrust_column="__none__", width=960, height=540,
+                intro_duration_s=0.0, outro_duration_s=0.0,
+                keep_audio=True, thumbnail=False,
+                scene_config=default_scene_config(),
+                cut_list=[(0.0, 1.0), (2.0, 3.0)],
+            ))
+            capture = cv2.VideoCapture(str(output))
+            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            capture.release()
+            # Middle second is cut: 3 kept-source-seconds become 2 at 5fps.
+            self.assertEqual(frame_count, 10)
+
+            probe = subprocess.run(
+                [executable, "-hide_banner", "-i", str(output)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            )
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", probe.stderr)
+            self.assertIsNotNone(match)
+            hours, minutes, seconds = match.groups()
+            duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            self.assertAlmostEqual(duration, 2.0, delta=0.3)
 
     def test_pressure_only_render_creates_delivery_assets(self):
         with tempfile.TemporaryDirectory() as directory:

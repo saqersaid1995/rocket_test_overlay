@@ -1243,6 +1243,11 @@ def create_job():
             raise RocketOverlayError("The selected broadcast theme is unknown.")
         raw_scene = request.form.get("scene_config", "").strip()
         scene_config = validate_scene_config(json.loads(raw_scene)) if raw_scene else None
+        raw_cut_list = request.form.get("cut_list", "").strip()
+        cut_list = (
+            [(float(start), float(end)) for start, end in json.loads(raw_cut_list)]
+            if raw_cut_list else None
+        )
         cfg = Config(
             video=video,
             video_2=video_2,
@@ -1326,6 +1331,7 @@ def create_job():
                 request.form.get("preserve_source_quality", "false") == "true"
             ),
             scene_config=scene_config,
+            cut_list=cut_list,
             template_id=selected_template.id if selected_template else None,
             template_version=(
                 selected_template.version if selected_template else None

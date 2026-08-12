@@ -152,20 +152,26 @@
         <div class="transport">
           <button type="button" id="playButton">&#9654;</button>
           <button type="button" id="jumpIgnition">Jump to ignition</button>
+          <button type="button" id="razorTool" title="Split at playhead">&#9986; Razor</button>
           <span id="currentTime">00:00.00</span><span>/</span><span id="duration">00:00.00</span>
         </div>
+        <p class="razor-hint hidden" id="razorHint">Razor active — click any track to split. Cuts apply to every camera, audio, and telemetry together so pressure timing stays correct; that's why reordering isn't offered, only split &amp; delete.</p>
         <div class="multitrack" id="multitrack">
           <div class="track-labels">
-            <div class="track-label"><b>V1</b><span>CAM 1</span></div>
-            <div class="track-label"><b>V2</b><span>CAM 2</span></div>
-            <div class="track-label"><b>V3</b><span>CAM 3</span></div>
+            <div class="track-label" data-view="1"><b>V1</b><span>CAM 1</span></div>
+            <div class="track-label" data-view="2"><b>V2</b><span>CAM 2</span></div>
+            <div class="track-label" data-view="3"><b>V3</b><span>CAM 3</span></div>
             <div class="track-label"><b>D1</b><span>TELEMETRY</span></div>
+            <div class="track-label"><b>A1</b><span>AUDIO</span></div>
+            <div class="track-label"><b>E1</b><span>CUTS</span></div>
           </div>
           <div class="track-lanes" id="trackLanes">
             <div class="track-lane"><div class="clip-block active" data-clip="1"><span class="clip-label" id="clipLabel1">CAM 1</span></div></div>
             <div class="track-lane"><div class="clip-block" data-clip="2" id="clipBlock2"><span class="clip-label" id="clipLabel2">CAM 2</span></div></div>
             <div class="track-lane"><div class="clip-block" data-clip="3" id="clipBlock3"><span class="clip-label" id="clipLabel3">CAM 3</span></div></div>
             <div class="track-lane telemetry-lane"><svg id="telemetryTrackSvg" viewBox="0 0 1000 40" preserveAspectRatio="none"></svg></div>
+            <div class="track-lane audio-lane"><svg id="audioWaveformSvg" viewBox="0 0 1000 40" preserveAspectRatio="none"></svg><span class="audio-lane-hint" id="audioLaneHint">No audio decoded yet</span></div>
+            <div class="track-lane cuts-lane" id="cutsLane"></div>
             <i id="ignitionMarker"></i>
             <i id="timelinePlayhead"></i>
             <input id="timelineRange" type="range" min="0" max="1000" value="0">
@@ -343,6 +349,7 @@
         <input form="renderForm" type="hidden" name="sha256" id="selectedTemplateSha256" value="">
         <input form="renderForm" type="hidden" name="video_fraction" value="0.70">
         <input form="renderForm" type="hidden" name="intro_duration_s" value="0">
+        <input form="renderForm" type="hidden" name="cut_list" id="cutListField" value="">
         <label>Outro duration<input form="renderForm" type="number" name="outro_duration_s" value="0" min="0" max="15" step=".1"></label>
         <label class="check"><input type="checkbox" id="thumbnail" checked> Generate thumbnail</label>
         <label class="check"><input type="checkbox" id="keepAudio" checked> Keep original audio</label>

@@ -543,6 +543,7 @@ videoInput.addEventListener("change", () => {
   video.src = previewUrl; video.style.display = "block";
   stage.classList.add("has-source");
   document.querySelector("#emptyPreview").classList.add("hidden");
+  decodeAudioWaveform(videoInput.files[0]);
 });
 videoInput2.addEventListener("change", () => fileName(videoInput2, "#videoName2"));
 videoInput3.addEventListener("change", () => fileName(videoInput3, "#videoName3"));
@@ -683,6 +684,7 @@ video.addEventListener("loadedmetadata", () => {
   configureResolutionOptions(video.videoWidth, video.videoHeight);
   stage.style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
   syncSourceQualityMode();
+  resetCutSegments();
   updateIgnitionMarker(); updateCameraPreview(); renderPreview();
 });
 function updatePlaybackPreview() {
@@ -1708,13 +1710,193 @@ function renderTelemetryTrack() {
   if (!duration || series.length < 2) { svg.innerHTML = ""; return; }
   const ignition = Number(form.elements.ignition_video_s.value || 0);
   const maxPressure = Math.max(1, ...series.map(item => item.pressure || 0));
-  const points = series.map(item => {
+  const baseline = 39;
+  const coords = series.map(item => {
     const masterTime = item.time + ignition;
     const x = clamp(masterTime / duration, 0, 1) * 1000;
-    const y = 38 - clamp(item.pressure / maxPressure, 0, 1) * 34;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  svg.innerHTML = `<polyline points="${points}" fill="none" stroke="#79c895" stroke-width="1.4"/>`;
+    const y = baseline - clamp(item.pressure / maxPressure, 0, 1) * 36;
+    return [x, y];
+  });
+  const points = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const firstX = coords[0][0].toFixed(1);
+  const lastX = coords[coords.length - 1][0].toFixed(1);
+  const fillPoints = `${firstX},${baseline} ${points} ${lastX},${baseline}`;
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="telemetryFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#8dffb8" stop-opacity="0.55"/>
+        <stop offset="100%" stop-color="#8dffb8" stop-opacity="0.02"/>
+      </linearGradient>
+      <filter id="telemetryGlow" x="-20%" y="-100%" width="140%" height="300%">
+        <feGaussianBlur stdDeviation="1.1" result="blur"/>
+        <feMerge>
+          <feMergeNode in="blur"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>
+    </defs>
+    <polygon points="${fillPoints}" fill="url(#telemetryFill)" stroke="none"/>
+    <polyline points="${points}" fill="none" stroke="#8dffb8" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" filter="url(#telemetryGlow)"/>
+  `;
+}
+
+// Client-side waveform preview for the timeline's audio row. Purely a visual
+// scrubbing/sync aid — decoded in the browser from the already-selected primary
+// video File, never sent to the backend and never affects the export payload.
+let audioWaveformPeaks = null;
+let audioWaveformToken = 0;
+async function decodeAudioWaveform(file) {
+  const svg = document.querySelector("#audioWaveformSvg");
+  const lane = document.querySelector(".audio-lane");
+  const hint = document.querySelector("#audioLaneHint");
+  const token = ++audioWaveformToken;
+  audioWaveformPeaks = null;
+  if (svg) svg.innerHTML = "";
+  if (lane) lane.classList.remove("has-waveform");
+  if (hint) hint.textContent = "Decoding audio…";
+  if (!file) return;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error("Web Audio unsupported");
+    const buffer = await file.arrayBuffer();
+    const context = new AudioContextClass();
+    let decoded;
+    try {
+      decoded = await context.decodeAudioData(buffer);
+    } finally {
+      context.close();
+    }
+    if (token !== audioWaveformToken) return;
+    const channel = decoded.getChannelData(0);
+    const buckets = 1000;
+    const samplesPerBucket = Math.max(1, Math.floor(channel.length / buckets));
+    const peaks = new Array(buckets);
+    for (let i = 0; i < buckets; i++) {
+      const start = i * samplesPerBucket;
+      const end = i === buckets - 1 ? channel.length : start + samplesPerBucket;
+      let min = 0, max = 0;
+      for (let j = start; j < end; j++) {
+        const value = channel[j];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      peaks[i] = [min, max];
+    }
+    audioWaveformPeaks = peaks;
+    if (hint) hint.textContent = "";
+    if (lane) lane.classList.add("has-waveform");
+    renderAudioWaveform();
+  } catch (error) {
+    if (token !== audioWaveformToken) return;
+    audioWaveformPeaks = null;
+    if (hint) hint.textContent = "Waveform unavailable for this file";
+  }
+}
+function renderAudioWaveform() {
+  const svg = document.querySelector("#audioWaveformSvg");
+  if (!svg || !audioWaveformPeaks) return;
+  const mid = 20;
+  const bars = audioWaveformPeaks.map(([min, max], i) => {
+    const x = i;
+    const y1 = (mid - max * 18).toFixed(1);
+    const y2 = (mid - min * 18).toFixed(1);
+    return `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="#5fb3d9" stroke-width="1"/>`;
+  }).join("");
+  svg.innerHTML = bars;
+}
+
+// Shared cut list: one ordered set of kept [start, end) ranges in the primary
+// camera's own clock, covering the whole project (every camera, the audio,
+// and the telemetry curve at once). Split only ever subdivides an existing
+// segment and delete only ever hides one, so there is no operation that can
+// reorder segments — pressure/thrust readings therefore never lose their
+// real (uncut) timestamp, which is why reordering isn't offered at all.
+let cutSegments = [];
+let razorActive = false;
+const MIN_SEGMENT_S = 0.05;
+
+function resetCutSegments() {
+  const duration = video.duration || 0;
+  cutSegments = duration ? [{ start: 0, end: duration, deleted: false }] : [];
+  serializeCutList();
+}
+function serializeCutList() {
+  const field = document.querySelector("#cutListField");
+  if (!field) return;
+  const kept = cutSegments
+    .filter(segment => !segment.deleted)
+    .map(segment => [Number(segment.start.toFixed(3)), Number(segment.end.toFixed(3))]);
+  field.value = kept.length ? JSON.stringify(kept) : "";
+}
+function splitAt(masterTime) {
+  const target = cutSegments.find(
+    segment => !segment.deleted && masterTime > segment.start + MIN_SEGMENT_S
+      && masterTime < segment.end - MIN_SEGMENT_S
+  );
+  if (!target) return;
+  const index = cutSegments.indexOf(target);
+  cutSegments.splice(index, 1,
+    { start: target.start, end: masterTime, deleted: false },
+    { start: masterTime, end: target.end, deleted: false },
+  );
+  serializeCutList();
+  updateTimelineUI();
+}
+function deleteSegment(segment) {
+  const remaining = cutSegments.filter(s => !s.deleted && s !== segment);
+  if (!remaining.length) {
+    notify("Cannot delete the last remaining segment.");
+    return;
+  }
+  segment.deleted = true;
+  serializeCutList();
+  updateTimelineUI();
+}
+function renderCutsLane() {
+  const lane = document.querySelector("#cutsLane");
+  if (!lane) return;
+  document.querySelectorAll(".cut-gap-marker").forEach(node => node.remove());
+  const duration = video.duration || 0;
+  if (!duration) { lane.innerHTML = ""; return; }
+  const kept = cutSegments.filter(segment => !segment.deleted);
+  lane.innerHTML = "";
+  kept.forEach(segment => {
+    const leftPct = clamp(segment.start / duration, 0, 1) * 100;
+    const widthPct = Math.max(0.3, clamp((segment.end - segment.start) / duration, 0, 1) * 100);
+    const block = document.createElement("div");
+    block.className = "cut-segment" + (razorActive ? " razor-active" : "");
+    block.style.left = `${leftPct}%`;
+    block.style.width = `${widthPct}%`;
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "segment-delete";
+    deleteButton.textContent = "×";
+    deleteButton.title = "Delete this segment";
+    deleteButton.addEventListener("pointerdown", event => event.stopPropagation());
+    deleteButton.addEventListener("click", event => {
+      event.stopPropagation();
+      deleteSegment(segment);
+    });
+    block.appendChild(deleteButton);
+    lane.appendChild(block);
+  });
+  // Dimmed hatched gaps on the other rows make a cut read as one linked edit
+  // across every track, even though the underlying list is shared/global.
+  const gapContainers = document.querySelectorAll(
+    "#trackLanes > .track-lane:not(.cuts-lane)"
+  );
+  const deletedRanges = cutSegments.filter(segment => segment.deleted);
+  deletedRanges.forEach(segment => {
+    const leftPct = clamp(segment.start / duration, 0, 1) * 100;
+    const widthPct = Math.max(0.3, clamp((segment.end - segment.start) / duration, 0, 1) * 100);
+    gapContainers.forEach(container => {
+      const marker = document.createElement("div");
+      marker.className = "cut-gap-marker";
+      marker.style.left = `${leftPct}%`;
+      marker.style.width = `${widthPct}%`;
+      container.appendChild(marker);
+    });
+  });
 }
 
 function updateTimelineUI() {
@@ -1737,12 +1919,14 @@ function updateTimelineUI() {
     block.style.width = `${widthPct}%`;
   }
   renderTelemetryTrack();
+  renderCutsLane();
 }
 function updateIgnitionMarker(){ updateTimelineUI(); }
 function formatTime(seconds){if(!Number.isFinite(seconds))return"00:00.00";const m=Math.floor(seconds/60),s=seconds-m*60;return`${String(m).padStart(2,"0")}:${s.toFixed(2).padStart(5,"0")}`}
 
-// PROGRAM/CAM1/2/3 viewer tabs are a reskin of the existing #cameraPreviewMode
-// select — clicking a tab just sets the select's value and dispatches the
+// PROGRAM/CAM1/2/3 viewer tabs (and the V1/V2/V3 timeline track labels, which
+// offer the same switch) are a reskin of the existing #cameraPreviewMode
+// select — clicking either just sets the select's value and dispatches the
 // same "change" event the select already handles, so updateCameraPreview()
 // stays the single source of truth for what's actually shown.
 function syncViewTabs() {
@@ -1750,13 +1934,20 @@ function syncViewTabs() {
   document.querySelectorAll(".view-tab").forEach(button => {
     button.classList.toggle("active", button.dataset.view === value);
   });
+  document.querySelectorAll(".track-label[data-view]").forEach(label => {
+    label.classList.toggle("active", label.dataset.view === value);
+  });
+}
+function selectCameraView(view) {
+  const select = document.querySelector("#cameraPreviewMode");
+  select.value = view;
+  select.dispatchEvent(new Event("change"));
 }
 document.querySelectorAll(".view-tab").forEach(button => {
-  button.addEventListener("click", () => {
-    const select = document.querySelector("#cameraPreviewMode");
-    select.value = button.dataset.view;
-    select.dispatchEvent(new Event("change"));
-  });
+  button.addEventListener("click", () => selectCameraView(button.dataset.view));
+});
+document.querySelectorAll(".track-label[data-view]").forEach(label => {
+  label.addEventListener("click", () => selectCameraView(label.dataset.view));
 });
 
 // The 4-step wizard nav: clicking a tab shows only that step's panel.
@@ -1835,6 +2026,30 @@ document.querySelectorAll(".clip-block[data-clip]").forEach(block => {
   });
 });
 
+// Razor tool: while active, clicking any track row splits the shared cut
+// list at that point in the master timeline instead of scrubbing or
+// dragging a clip. Registered on the capture phase so it intercepts before
+// #timelineRange's native drag and before a clip-block's own drag handler —
+// except for a segment's own delete button, which always gets its click.
+const razorButton = document.querySelector("#razorTool");
+const razorHint = document.querySelector("#razorHint");
+razorButton.addEventListener("click", () => {
+  razorActive = !razorActive;
+  razorButton.classList.toggle("active", razorActive);
+  if (razorHint) razorHint.classList.toggle("hidden", !razorActive);
+  renderCutsLane();
+});
+document.querySelector("#trackLanes").addEventListener("pointerdown", event => {
+  if (!razorActive || !video.duration) return;
+  if (event.target.closest(".segment-delete")) return;
+  const rect = document.querySelector("#trackLanes").getBoundingClientRect();
+  if (!rect.width) return;
+  const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+  splitAt(fraction * video.duration);
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
 // Scene-editor toolbar actions (undo/redo/save/export/import/reset) have no
 // buttons in the new UI, so they are intentionally left unwired. The
 // functions they used to call (mutateSelected, restore, saveDraft, etc.)
@@ -1896,10 +2111,19 @@ function syncSourceQualityMode() {
     form.elements.crop_x.value = ".5";
     form.elements.crop_y.value = ".5";
     form.elements.outro_duration_s.value = "0";
+    // Cut editing is SDR-only, mirroring intro/outro above: HDR archival
+    // preservation has no seeking, so an active cut list is force-cleared
+    // here as well as hard-rejected server-side.
+    razorActive = false;
+    razorButton.classList.remove("active");
+    if (razorHint) razorHint.classList.add("hidden");
+    resetCutSegments();
+    updateTimelineUI();
     updateCameraPreview();
   }
   resolution.disabled = enabled;
   compatibilityCodec.disabled = enabled;
+  razorButton.disabled = enabled;
   processingIds.forEach(id => { document.querySelector(`#${id}`).disabled = enabled; });
   transformNames.forEach(name => { form.elements[name].disabled = enabled; });
 }
@@ -1946,6 +2170,7 @@ async function startExport(event) {
     body.set("crop_x", ".5");
     body.set("crop_y", ".5");
     body.set("outro_duration_s", "0");
+    body.set("cut_list", "");
   }
   body.delete("scene_config");
   body.set("broadcast_theme", selectedBroadcastTheme());
