@@ -1717,6 +1717,12 @@ function renderTelemetryTrack() {
     const y = baseline - clamp(item.pressure / maxPressure, 0, 1) * 36;
     return [x, y];
   });
+  // Telemetry rarely covers the video's full duration (recording starts near
+  // ignition, not at the video's pre-roll). Holding the first/last reading
+  // flat out to the row's edges keeps this track visually as continuous as
+  // the audio waveform beside it, instead of leaving a blank gap.
+  if (coords[0][0] > 0) coords.unshift([0, coords[0][1]]);
+  if (coords[coords.length - 1][0] < 1000) coords.push([1000, coords[coords.length - 1][1]]);
   const points = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const firstX = coords[0][0].toFixed(1);
   const lastX = coords[coords.length - 1][0].toFixed(1);
