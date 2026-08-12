@@ -36,6 +36,7 @@ from rocket_overlay import (
     suggest_telemetry_zero_s,
     telemetry_has_thrust,
     determine_test_phase,
+    validate_camera_program,
     validate_config_values,
     validate_cut_list,
     validate_scene_config,
@@ -325,6 +326,47 @@ class ConfigTests(unittest.TestCase):
                 "video": Path("v"), "data": Path("d"), "output": Path("o"),
                 "broadcast_theme": "unknown",
             })
+
+    def test_validate_camera_program_accepts_ascending_non_overlapping_segments(self):
+        self.assertEqual(
+            validate_camera_program([[0, 1, 1], (1, 2.5, 3), [2.5, 4, 2]]),
+            [(0.0, 1.0, 1), (1.0, 2.5, 3), (2.5, 4.0, 2)],
+        )
+
+    def test_validate_camera_program_rejects_overlap(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 2, 1], [1, 3, 2]])
+
+    def test_validate_camera_program_rejects_invalid_camera_index(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 1, 4]])
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 1, 0]])
+
+    def test_validate_camera_program_rejects_malformed_entries(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 1]])
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program("not a list")
+
+    def test_validate_config_values_requires_program_mode_for_camera_program(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "camera_program": [[0, 1, 1]],
+            "camera_mode": "switch",
+        }
+        with self.assertRaisesRegex(RocketOverlayError, "camera mode"):
+            validate_config_values(values)
+
+    def test_validate_config_values_allows_camera_program_in_program_mode(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "camera_program": [[0, 1, 1]],
+            "camera_mode": "program",
+        }
+        self.assertEqual(
+            validate_config_values(values)["camera_program"], [[0, 1, 1]]
+        )
 
     def test_nominal_fps_probe_uses_ffmpeg_tbr_for_vfr_sources(self):
         probe_nominal_fps.cache_clear()
@@ -624,6 +666,38 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(split.shape, first.shape)
         self.assertLess(float(split[:, :80].mean()), float(split[:, 80:].mean()))
+
+    def test_program_mode_selects_camera_by_time_segment(self):
+        first = np.full((100, 160, 3), (10, 20, 30), dtype=np.uint8)
+        second = np.full((100, 160, 3), (40, 50, 60), dtype=np.uint8)
+        third = np.full((100, 160, 3), (70, 80, 90), dtype=np.uint8)
+        program = [(0.0, 1.0, 1), (1.0, 2.0, 3), (2.0, 3.0, 2)]
+        early = camera_layout_frame(
+            [first, second, third], "program", 0.5, 0.0, 2.0,
+            camera_program=program,
+        )
+        middle = camera_layout_frame(
+            [first, second, third], "program", 1.5, 0.0, 2.0,
+            camera_program=program,
+        )
+        late = camera_layout_frame(
+            [first, second, third], "program", 2.5, 0.0, 2.0,
+            camera_program=program,
+        )
+        outside = camera_layout_frame(
+            [first, second, third], "program", 5.0, 0.0, 2.0,
+            camera_program=program,
+        )
+        self.assertTrue(np.array_equal(early, first))
+        self.assertTrue(np.array_equal(middle, third))
+        self.assertTrue(np.array_equal(late, second))
+        # Time outside every segment (and an empty/None program) falls back
+        # to the primary camera, never crashes.
+        self.assertTrue(np.array_equal(outside, first))
+        no_program = camera_layout_frame(
+            [first, second, third], "program", 1.5, 0.0, 2.0,
+        )
+        self.assertTrue(np.array_equal(no_program, first))
 
     def test_camera_focus_changes_visible_crop(self):
         frame = np.zeros((100, 300, 3), dtype=np.uint8)
@@ -1162,6 +1236,53 @@ class RenderSmokeTests(unittest.TestCase):
             capture.release()
             self.assertTrue(ok)
             self.assertEqual(frame.shape[:2], (540, 960))
+
+    def test_program_mode_render_switches_camera_by_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [root / "camera1.mp4", root / "camera2.mp4"]
+            colors = [(20, 30, 180), (180, 30, 20)]
+            fps = 5.0
+            for source, color in zip(sources, colors):
+                writer = cv2.VideoWriter(
+                    str(source), cv2.VideoWriter_fourcc(*"mp4v"), fps, (960, 540)
+                )
+                self.assertTrue(writer.isOpened())
+                for _ in range(int(fps) * 4):
+                    writer.write(np.full((540, 960, 3), color, dtype=np.uint8))
+                writer.release()
+            data = root / "data.csv"
+            pd.DataFrame({
+                "time": [0.0, 2.0, 4.0],
+                "pressure": [0.0, 5.0, 0.0],
+            }).to_csv(data, index=False)
+            output = root / "program.mp4"
+            render(Config(
+                video=sources[0], video_2=sources[1],
+                camera_mode="program", camera_2_ignition_s=0.0,
+                camera_program=[(0.0, 2.0, 1), (2.0, 4.0, 2)],
+                data=data, output=output, thrust_column="__none__",
+                width=960, height=540, intro_duration_s=0.0,
+                outro_duration_s=0.0, keep_audio=False, thumbnail=False,
+                scene_config=default_scene_config(),
+            ))
+            capture = cv2.VideoCapture(str(output))
+            frames = []
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frames.append(frame)
+            capture.release()
+            self.assertEqual(len(frames), int(fps) * 4)
+            center = (270, 480)
+            dominant = [int(np.argmax(color)) for color in colors]
+
+            def sampled_dominant(frame):
+                return int(np.argmax(frame[center]))
+
+            self.assertEqual(sampled_dominant(frames[5]), dominant[0])
+            self.assertEqual(sampled_dominant(frames[15]), dominant[1])
 
     def test_cut_list_skips_source_range(self):
         with tempfile.TemporaryDirectory() as directory:

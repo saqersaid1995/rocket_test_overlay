@@ -1248,6 +1248,14 @@ def create_job():
             [(float(start), float(end)) for start, end in json.loads(raw_cut_list)]
             if raw_cut_list else None
         )
+        raw_camera_program = request.form.get("camera_program", "").strip()
+        camera_program = (
+            [
+                (float(start), float(end), int(camera))
+                for start, end, camera in json.loads(raw_camera_program)
+            ]
+            if raw_camera_program else None
+        )
         cfg = Config(
             video=video,
             video_2=video_2,
@@ -1332,6 +1340,7 @@ def create_job():
             ),
             scene_config=scene_config,
             cut_list=cut_list,
+            camera_program=camera_program,
             template_id=selected_template.id if selected_template else None,
             template_version=(
                 selected_template.version if selected_template else None

@@ -558,7 +558,14 @@ function setCameraSource(input, target, urlKey) {
 }
 videoInput2.addEventListener("change", () => setCameraSource(videoInput2, video2, 2));
 videoInput3.addEventListener("change", () => setCameraSource(videoInput3, video3, 3));
-document.querySelector("#cameraMode").addEventListener("change", updateCameraPreview);
+document.querySelector("#cameraMode").addEventListener("change", () => {
+  updateCameraPreview();
+  if (document.querySelector("#cameraMode").value === "program" && !programSegments.length) {
+    resetProgramSegments();
+  }
+  serializeCameraProgram();
+  renderProgramLane();
+});
 document.querySelector("#cameraPreviewMode").addEventListener("change", updateCameraPreview);
 
 function cameraSourceTime(cameraNumber) {
@@ -685,6 +692,7 @@ video.addEventListener("loadedmetadata", () => {
   stage.style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
   syncSourceQualityMode();
   resetCutSegments();
+  resetProgramSegments();
   updateIgnitionMarker(); updateCameraPreview(); renderPreview();
 });
 function updatePlaybackPreview() {
@@ -1905,6 +1913,82 @@ function renderCutsLane() {
   });
 }
 
+// PROGRAM row: assigns which single camera is "on air" during each segment
+// of the final video, only meaningful when camera_mode is "program". Unlike
+// the shared CUTS list, coverage must stay total (every moment shows some
+// camera), so there is no delete — only split (click empty lane) and
+// cycle-camera (click a segment).
+let programSegments = [];
+function resolveActiveCameraNumbers() {
+  const numbers = [1];
+  if (videoInput2.files[0]) numbers.push(2);
+  if (videoInput3.files[0]) numbers.push(3);
+  return numbers;
+}
+function resetProgramSegments() {
+  const duration = video.duration || 0;
+  programSegments = duration ? [{ start: 0, end: duration, camera: 1 }] : [];
+  serializeCameraProgram();
+}
+function serializeCameraProgram() {
+  const field = document.querySelector("#cameraProgramField");
+  if (!field) return;
+  const inProgramMode = document.querySelector("#cameraMode").value === "program";
+  if (!inProgramMode || !programSegments.length) { field.value = ""; return; }
+  field.value = JSON.stringify(
+    programSegments.map(s => [Number(s.start.toFixed(3)), Number(s.end.toFixed(3)), s.camera])
+  );
+}
+function splitProgramAt(masterTime) {
+  const target = programSegments.find(
+    s => masterTime > s.start + MIN_SEGMENT_S && masterTime < s.end - MIN_SEGMENT_S
+  );
+  if (!target) return;
+  const index = programSegments.indexOf(target);
+  programSegments.splice(index, 1,
+    { start: target.start, end: masterTime, camera: target.camera },
+    { start: masterTime, end: target.end, camera: target.camera },
+  );
+  serializeCameraProgram();
+  renderProgramLane();
+}
+function cycleProgramSegmentCamera(segment) {
+  const numbers = resolveActiveCameraNumbers();
+  if (numbers.length < 2) {
+    notify("Add a second camera to build a program cut list.");
+    return;
+  }
+  const currentIndex = numbers.indexOf(segment.camera);
+  segment.camera = numbers[(currentIndex + 1 + numbers.length) % numbers.length];
+  serializeCameraProgram();
+  renderProgramLane();
+}
+function renderProgramLane() {
+  const lane = document.querySelector("#programLane");
+  if (!lane) return;
+  const duration = video.duration || 0;
+  const inProgramMode = document.querySelector("#cameraMode").value === "program";
+  lane.classList.toggle("editable", inProgramMode && Boolean(duration));
+  lane.querySelectorAll(".program-segment").forEach(node => node.remove());
+  if (!inProgramMode || !duration) return;
+  programSegments.forEach(segment => {
+    const leftPct = clamp(segment.start / duration, 0, 1) * 100;
+    const widthPct = Math.max(0.3, clamp((segment.end - segment.start) / duration, 0, 1) * 100);
+    const block = document.createElement("div");
+    block.className = "program-segment";
+    block.dataset.camera = String(segment.camera);
+    block.style.left = `${leftPct}%`;
+    block.style.width = `${widthPct}%`;
+    block.textContent = `CAM ${segment.camera}`;
+    block.title = "Click to change the camera for this segment";
+    block.addEventListener("click", event => {
+      event.stopPropagation();
+      cycleProgramSegmentCamera(segment);
+    });
+    lane.appendChild(block);
+  });
+}
+
 function updateTimelineUI() {
   const duration = video.duration || 0;
   const ignitionTime = Number(form.elements.ignition_video_s.value) || 0;
@@ -1926,6 +2010,7 @@ function updateTimelineUI() {
   }
   renderTelemetryTrack();
   renderCutsLane();
+  renderProgramLane();
 }
 function updateIgnitionMarker(){ updateTimelineUI(); }
 function formatTime(seconds){if(!Number.isFinite(seconds))return"00:00.00";const m=Math.floor(seconds/60),s=seconds-m*60;return`${String(m).padStart(2,"0")}:${s.toFixed(2).padStart(5,"0")}`}
@@ -2044,8 +2129,26 @@ razorButton.addEventListener("click", () => {
   razorButton.classList.toggle("active", razorActive);
   if (razorHint) razorHint.classList.toggle("hidden", !razorActive);
   renderCutsLane();
+  document.querySelector("#programLane")?.classList.toggle("razor-active", razorActive);
 });
 document.querySelector("#trackLanes").addEventListener("pointerdown", event => {
+  // The PROGRAM row always has full coverage (every moment shows some
+  // camera, no gaps), so there is never "empty background" to click for a
+  // split the way the CUTS row has — every point belongs to some segment.
+  // The razor tool therefore does double duty: with it active, a click
+  // anywhere in the PROGRAM row splits that segment (intercepted here,
+  // before the segment's own click handler); with it off, clicking a
+  // segment instead cycles its assigned camera via that handler.
+  if (event.target.closest("#programLane")) {
+    if (!razorActive || document.querySelector("#cameraMode").value !== "program" || !video.duration) return;
+    const rect = document.querySelector("#trackLanes").getBoundingClientRect();
+    if (!rect.width) return;
+    const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    splitProgramAt(fraction * video.duration);
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (!razorActive || !video.duration) return;
   if (event.target.closest(".segment-delete")) return;
   const rect = document.querySelector("#trackLanes").getBoundingClientRect();
@@ -2122,6 +2225,7 @@ function syncSourceQualityMode() {
     // here as well as hard-rejected server-side.
     razorActive = false;
     razorButton.classList.remove("active");
+    document.querySelector("#programLane")?.classList.remove("razor-active");
     if (razorHint) razorHint.classList.add("hidden");
     resetCutSegments();
     updateTimelineUI();

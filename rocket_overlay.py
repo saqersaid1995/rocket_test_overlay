@@ -146,6 +146,12 @@ class Config:
     # telemetry lookup at once, so telemetry readings never lose their real
     # physical timestamp. SDR delivery only - see preserve_hlg_source gate.
     cut_list: Optional[list[tuple[float, float]]] = None
+    # Ordered (start_s, end_s, camera_index) segments in the primary camera's
+    # own clock, used only when camera_mode == "program". camera_index is
+    # 1/2/3, matching the camera_N naming used everywhere else. Only takes
+    # effect for cameras actually attached to the job; time outside any
+    # segment (or with no program at all) falls back to the primary camera.
+    camera_program: Optional[list[tuple[float, float, int]]] = None
     # A registry-resolved declarative package.  The identity fields are kept
     # with each job so the selected immutable template can be audited later.
     template_id: Optional[str] = None
@@ -267,6 +273,14 @@ def validate_config_values(values: dict) -> dict:
                 "Cut editing is not available with source-quality (HDR) "
                 "preservation; disable it or clear the cut list."
             )
+    camera_program = values.get("camera_program")
+    if camera_program:
+        validate_camera_program(camera_program)
+        if values.get("camera_mode") != "program":
+            fail(
+                "Camera program requires camera mode to be set to program; "
+                "clear the program or switch modes."
+            )
     template_path = values.get("template_path")
     identity = {
         name: values.get(name)
@@ -312,6 +326,36 @@ def validate_cut_list(cut_list: object) -> list[tuple[float, float]]:
         if current[0] < previous[1]:
             fail("Cut list ranges must be sorted and non-overlapping.")
     return ranges
+
+
+def validate_camera_program(value: object) -> list[tuple[float, float, int]]:
+    """Validate a program cut list: ascending, non-overlapping (start, end, camera) triples.
+
+    Only validates shape here - render() clamps against the real duration
+    and drops segments for cameras not actually attached to the job.
+    """
+    if not isinstance(value, (list, tuple)):
+        fail("Camera program must be a list of [start, end, camera] entries.")
+    if len(value) > 200:
+        fail("Camera program cannot contain more than 200 segments.")
+    segments: list[tuple[float, float, int]] = []
+    for entry in value:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            fail("Each camera program entry must be a [start, end, camera] triple.")
+        try:
+            start, end = float(entry[0]), float(entry[1])
+            camera = int(entry[2])
+        except (TypeError, ValueError):
+            fail("Camera program start/end/camera values must be numbers.")
+        if start < 0 or end <= start:
+            fail("Each camera program segment must satisfy 0 <= start < end.")
+        if camera not in (1, 2, 3):
+            fail("Camera program camera index must be 1, 2, or 3.")
+        segments.append((start, end, camera))
+    for previous, current in zip(segments, segments[1:]):
+        if current[0] < previous[1]:
+            fail("Camera program segments must be sorted and non-overlapping.")
+    return segments
 
 
 SCENE_ELEMENT_TYPES = {
@@ -2338,6 +2382,7 @@ def camera_layout_frame(
     ignition_s: float,
     third_switch_delay_s: float,
     camera_crops: Optional[list[tuple[float, float, float]]] = None,
+    camera_program: Optional[list[tuple[float, float, int]]] = None,
 ) -> np.ndarray:
     """Combine synchronized sources into one frame for the existing compositor."""
     available_with_index = [
@@ -2368,6 +2413,17 @@ def camera_layout_frame(
                 0 if chosen is frames[0] else
                 (2 if len(frames) >= 3 and chosen is frames[2] else 1)
             )
+        return fitted(chosen, target_w, target_h, chosen_index)
+    if mode == "program":
+        chosen_index = 0
+        for start, end, camera_number in camera_program or []:
+            if start <= video_time < end:
+                chosen_index = camera_number - 1
+                break
+        if chosen_index >= len(frames) or frames[chosen_index] is None:
+            chosen, chosen_index = primary, 0
+        else:
+            chosen = frames[chosen_index]
         return fitted(chosen, target_w, target_h, chosen_index)
     if mode == "split":
         active = available_with_index[:3]
@@ -2498,7 +2554,7 @@ def render(
     for camera_path in (cfg.video_2, cfg.video_3):
         if camera_path is not None and not camera_path.exists():
             fail(f"Camera video not found: {camera_path}")
-    if cfg.camera_mode not in {"single", "switch", "split", "pip"}:
+    if cfg.camera_mode not in {"single", "switch", "split", "pip", "program"}:
         fail(f"Unsupported camera mode: {cfg.camera_mode}")
     if not cfg.data.exists():
         fail(f"Telemetry file not found: {cfg.data}")
@@ -2581,6 +2637,23 @@ def render(
             for opened_capture in captures:
                 opened_capture.release()
             fail("Cut list leaves no video to render.")
+
+    # A camera program only matters in "program" mode; resolve it against the
+    # real duration and the cameras actually attached to this job, same as
+    # the cut list above. Segments referencing a camera that isn't attached,
+    # or with no program at all, fall back to the primary camera.
+    resolved_camera_program: Optional[list[tuple[float, float, int]]] = None
+    if cfg.camera_mode == "program" and cfg.camera_program:
+        resolved_camera_program = []
+        for start, end, camera_index in cfg.camera_program:
+            if camera_index > len(captures):
+                continue
+            clamped_start = max(0.0, min(start, duration))
+            clamped_end = max(0.0, min(end, duration))
+            if clamped_end > clamped_start:
+                resolved_camera_program.append(
+                    (clamped_start, clamped_end, camera_index)
+                )
 
     source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -2693,7 +2766,7 @@ def render(
                 frame = camera_layout_frame(
                     camera_frames, cfg.camera_mode, video_t,
                     cfg.ignition_video_s, cfg.camera_3_switch_delay_s,
-                    camera_crops,
+                    camera_crops, resolved_camera_program,
                 )
             else:
                 if kept_cut_list is not None:
