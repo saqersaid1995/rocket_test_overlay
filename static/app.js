@@ -624,6 +624,16 @@ function updateCameraPreview() {
     const visible = chosen.src ? chosen : video;
     visible.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
     applyCameraFocus(visible, cameras.indexOf(visible) + 1);
+  } else if (mode === "program" && active.length > 1) {
+    // Mirrors camera_layout_frame()'s "program" branch in the render
+    // pipeline, so the live PROGRAM preview matches what gets exported.
+    const segment = programSegments.find(
+      s => video.currentTime >= s.start && video.currentTime < s.end
+    );
+    const chosen = cameras[(segment ? segment.camera : 1) - 1];
+    const visible = chosen?.src ? chosen : video;
+    visible.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
+    applyCameraFocus(visible, cameras.indexOf(visible) + 1);
   } else {
     video.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
     applyCameraFocus(video, 1);
