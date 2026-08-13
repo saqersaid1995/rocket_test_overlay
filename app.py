@@ -30,7 +30,6 @@ from rotpl_registry import (
     RotplConflictError,
     RotplError,
     RotplNotFoundError,
-    RotplRegistry,
     ResolvedTemplate,
     RotplValidationError,
 )
@@ -40,14 +39,17 @@ from rotpl_renderer import (
     RotplRenderer,
     TemplateContext,
 )
+from app_state import (
+    BASE_DIR,
+    OUTPUT_DIR,
+    PREVIEW_DIR,
+    TEMPLATE_PACKAGE_DIR,
+    UPLOAD_DIR,
+    WORK_DIR,
+    template_registry,
+)
+from live_routes import live_bp
 
-
-BASE_DIR = Path(__file__).resolve().parent
-WORK_DIR = BASE_DIR / "workspace"
-UPLOAD_DIR = WORK_DIR / "uploads"
-OUTPUT_DIR = WORK_DIR / "outputs"
-PREVIEW_DIR = WORK_DIR / "previews"
-TEMPLATE_PACKAGE_DIR = WORK_DIR / "template_packages"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 DATA_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv", ".txt"}
 LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -61,26 +63,27 @@ PREVIEW_TELEMETRY_CACHE_SIZE = 8
 PREVIEW_ASSETS_CACHE_SIZE = 24
 PREVIEW_TEMPLATE_CACHE_SIZE = 4
 
-for directory in (UPLOAD_DIR, OUTPUT_DIR, PREVIEW_DIR, TEMPLATE_PACKAGE_DIR):
-    directory.mkdir(parents=True, exist_ok=True)
-
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024 * 1024
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.register_blueprint(live_bp)
 jobs: dict[str, dict[str, Any]] = {}
 jobs_lock = threading.Lock()
 chunk_uploads: dict[str, dict[str, Any]] = {}
 chunk_uploads_lock = threading.Lock()
 preview_sessions: dict[str, dict[str, Any]] = {}
 preview_sessions_lock = threading.Lock()
-template_registry = RotplRegistry(TEMPLATE_PACKAGE_DIR)
 
 
 @app.after_request
 def prevent_stale_studio(response):
     """The studio shell and assets must update together during local editing."""
-    if request.path == "/" or request.path.startswith("/static/"):
+    if (
+        request.path in ("/", "/editor")
+        or request.path.startswith("/static/")
+        or request.path.startswith("/live/")
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return response
 
@@ -641,7 +644,12 @@ def run_job(job_id: str, cfg: Config) -> None:
 
 
 @app.get("/")
-def index():
+def hub():
+    return render_template("hub.html")
+
+
+@app.get("/editor")
+def editor():
     return render_template("index.html")
 
 
@@ -1542,4 +1550,5 @@ if __name__ == "__main__":
         host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "5000")),
         debug=False,
+        threaded=True,
     )

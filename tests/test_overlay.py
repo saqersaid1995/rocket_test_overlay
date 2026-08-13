@@ -738,7 +738,7 @@ class ConfigTests(unittest.TestCase):
 class WebPreviewTests(unittest.TestCase):
     def test_index_exposes_all_broadcast_theme_choices(self):
         with app.test_client() as client:
-            response = client.get("/")
+            response = client.get("/editor")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         for theme in ("launch", "mission_control", "stellar_console"):
