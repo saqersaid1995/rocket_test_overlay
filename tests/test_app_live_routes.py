@@ -49,7 +49,11 @@ class _Registry:
         }
 
 
-class LiveRoutesTests(unittest.TestCase):
+class _LiveApiTestBase:
+    """Shared setUp/helpers only — NOT a unittest.TestCase itself, so
+    subclassing it (alongside unittest.TestCase) doesn't re-run every
+    test_* method already defined on another subclass."""
+
     def setUp(self) -> None:
         self.client = webapp.app.test_client()
         self.temp = Path(tempfile.mkdtemp())
@@ -109,6 +113,8 @@ class LiveRoutesTests(unittest.TestCase):
             manifest_path=package / "manifest.json", layout_path=package / "layout.json",
         )
 
+
+class LiveRoutesTests(_LiveApiTestBase, unittest.TestCase):
     # -- session lifecycle --------------------------------------------------
 
     def test_create_session_requires_mission_name_and_t0(self):
@@ -243,6 +249,100 @@ class LiveRoutesTests(unittest.TestCase):
                 },
             )
             self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+
+class CameraLayoutRouteTests(_LiveApiTestBase, unittest.TestCase):
+
+    def test_set_layout_round_trips_and_new_camera_gets_default(self):
+        session_id = self._create_session()
+        response = self.client.post(
+            f"/api/live/{session_id}/layout",
+            json={"layout": {"program": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5}}},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        state = self.client.get(f"/api/live/{session_id}/state").get_json()
+        self.assertEqual(state["camera_layout"]["program"]["x"], 0.1)
+
+        video_path = self.temp / "cam.mp4"
+        _write_test_video(video_path)
+        self.client.post(f"/api/live/{session_id}/camera/1", json={"uri": str(video_path)})
+        state = self.client.get(f"/api/live/{session_id}/state").get_json()
+        self.assertIn("1", state["camera_layout"])  # default rect, no override sent
+
+    def test_set_layout_rejects_malformed_payload(self):
+        session_id = self._create_session()
+        response = self.client.post(
+            f"/api/live/{session_id}/layout", json={"layout": {"program": {"x": "nope"}}}
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class ChecklistCrudRouteTests(_LiveApiTestBase, unittest.TestCase):
+
+    def test_create_edit_delete_checklist_item(self):
+        session_id = self._create_session()
+        response = self.client.post(
+            f"/api/live/{session_id}/checklist/items",
+            json={"label": "Range Officer Ready", "required": True, "hold_point": True},
+        )
+        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
+        item_id = response.get_json()["item"]["id"]
+
+        state = self.client.get(f"/api/live/{session_id}/state").get_json()
+        ids = [item["id"] for item in state["checklist"]]
+        self.assertIn(item_id, ids)
+
+        response = self.client.patch(
+            f"/api/live/{session_id}/checklist/items/{item_id}",
+            json={"label": "Range Officer GO"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["item"]["label"], "Range Officer GO")
+
+        response = self.client.delete(f"/api/live/{session_id}/checklist/items/{item_id}")
+        self.assertEqual(response.status_code, 200)
+        state = self.client.get(f"/api/live/{session_id}/state").get_json()
+        ids = [item["id"] for item in state["checklist"]]
+        self.assertNotIn(item_id, ids)
+
+    def test_create_rejects_empty_label(self):
+        session_id = self._create_session()
+        response = self.client.post(
+            f"/api/live/{session_id}/checklist/items", json={"label": "   "}
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_edit_unknown_item_returns_404(self):
+        session_id = self._create_session()
+        response = self.client.patch(
+            f"/api/live/{session_id}/checklist/items/does-not-exist", json={"label": "x"}
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_checklist_items_route_does_not_collide_with_state_set_route(self):
+        # POST .../checklist/items must hit the create route, not be captured
+        # as item_id="items" by POST .../checklist/<item_id>.
+        session_id = self._create_session()
+        response = self.client.post(
+            f"/api/live/{session_id}/checklist/items", json={"label": "Collision Probe"}
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIn("id", response.get_json()["item"])
+
+    def test_existing_state_set_route_still_works_unmodified(self):
+        # Same assertions as test_checklist_toggle_and_hold_resume_abort,
+        # re-verified here to guard against a routing regression from the
+        # new /checklist/items routes specifically.
+        session_id = self._create_session()
+        response = self.client.post(
+            f"/api/live/{session_id}/checklist/safety_officer", json={"state": "go"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["item"]["state"], "go")
+        response = self.client.post(
+            f"/api/live/{session_id}/checklist/weather_hold", json={"state": "go"}
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

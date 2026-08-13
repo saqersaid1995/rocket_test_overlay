@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hmac
 import math
+import re
 import threading
 import time
 import uuid
@@ -87,6 +88,16 @@ class LaunchDetails:
     max_velocity_mps: float = 8000.0
 
 
+def _slugify_checklist_id(label: str, existing_ids: set[str]) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "item"
+    candidate = base
+    suffix = 2
+    while candidate in existing_ids:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
 def default_checklist(mission_type: MissionType) -> list[dict[str, Any]]:
     """Fresh (mutable) default checklist rows for a new session."""
     shared = [
@@ -142,6 +153,8 @@ class CameraSource:
         self._latest_frame: Optional[np.ndarray] = None
         self._latest_ts: float = 0.0
         self._connected = False
+        self._frame_shape: Optional[tuple[int, int]] = None
+        self._read_timestamps: deque = deque(maxlen=30)
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -159,6 +172,33 @@ class CameraSource:
     def latest(self) -> tuple[Optional[np.ndarray], float, bool]:
         with self._lock:
             return self._latest_frame, self._latest_ts, self._connected
+
+    def stats(self) -> dict[str, Any]:
+        """Real, honestly-measured per-camera technical info.
+
+        ``frame_age_s`` (not "latency") is how stale the currently-shown
+        frame is — true glass-to-glass network latency isn't measurable
+        from decoded frames alone.
+        """
+        with self._lock:
+            shape = self._frame_shape
+            latest_ts = self._latest_ts
+            connected = self._connected
+            timestamps = list(self._read_timestamps)
+        height, width = shape if shape else (None, None)
+        fps = None
+        if len(timestamps) >= 2:
+            span = timestamps[-1] - timestamps[0]
+            if span > 0:
+                fps = (len(timestamps) - 1) / span
+        frame_age_s = (time.time() - latest_ts) if latest_ts else None
+        return {
+            "connected": connected,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "frame_age_s": frame_age_s,
+        }
 
     def _set_connected(self, connected: bool) -> None:
         with self._lock:
@@ -187,6 +227,8 @@ class CameraSource:
                 with self._lock:
                     self._latest_frame = frame
                     self._latest_ts = time.time()
+                    self._frame_shape = frame.shape[:2]
+                    self._read_timestamps.append(self._latest_ts)
                 if self._stop_event.wait(CAMERA_TICK_S):
                     break
             cap.release()
@@ -598,6 +640,41 @@ class CompositorWorker(threading.Thread):
 
 
 # --------------------------------------------------------------------------
+# Multiview camera layout
+# --------------------------------------------------------------------------
+
+PROGRAM_DEFAULT_RECT = {"x": 0.0, "y": 0.0, "w": 0.68, "h": 1.0}
+
+
+def _default_camera_rect(slot_index: int) -> dict[str, float]:
+    """Sane starting position for a camera tile with no saved override.
+
+    First 3 slots stack in a right-hand column; further cameras cascade
+    with a small offset so they don't perfectly overlap and the operator
+    can still find and drag them apart.
+    """
+    cascade = slot_index // 3
+    in_group = slot_index % 3
+    offset = 0.04 * cascade
+    x = min(max(0.70 - offset, 0.05), 0.70)
+    y = min(max(in_group * 0.34 + offset, 0.0), 0.69)
+    return {"x": x, "y": y, "w": 0.30, "h": 0.31}
+
+
+def compute_camera_layout(
+    overrides: dict[str, dict[str, float]], camera_ids: list[str]
+) -> dict[str, dict[str, float]]:
+    """Merge saved per-tile overrides with computed defaults for the rest."""
+    ordered_ids = sorted(camera_ids, key=int)
+    layout: dict[str, dict[str, float]] = {
+        "program": dict(overrides.get("program", PROGRAM_DEFAULT_RECT))
+    }
+    for slot_index, camera_id in enumerate(ordered_ids):
+        layout[camera_id] = dict(overrides.get(camera_id, _default_camera_rect(slot_index)))
+    return layout
+
+
+# --------------------------------------------------------------------------
 # LiveSession + registry
 # --------------------------------------------------------------------------
 
@@ -612,6 +689,7 @@ class LiveSession:
 
         self.cameras: dict[int, CameraSource] = {}
         self.program_camera_index: Optional[int] = None
+        self.camera_layout: dict[str, dict[str, float]] = {}
         self.telemetry = TelemetryStore()
 
         self.checklist = default_checklist(mission.mission_type)
@@ -665,6 +743,48 @@ class LiveSession:
         self.log(f"Checklist '{item['label']}' set to {state}")
         return item
 
+    def add_checklist_item(
+        self, label: str, required: bool = True, hold_point: bool = False
+    ) -> dict[str, Any]:
+        label = label.strip()
+        if not label:
+            raise ValueError("label is required.")
+        item_id = _slugify_checklist_id(label, {item["id"] for item in self.checklist})
+        item = {
+            "id": item_id,
+            "label": label,
+            "required": bool(required),
+            "hold_point": bool(hold_point),
+            "source": "manual",
+            "state": "pending",
+            "note": None,
+        }
+        self.checklist.append(item)
+        self.log(f"Checklist item added: {label}")
+        return item
+
+    def edit_checklist_item(self, item_id: str, **fields: Any) -> dict[str, Any]:
+        item = self.checklist_item(item_id)
+        if item is None:
+            raise KeyError(f"Unknown checklist item: {item_id}")
+        if "label" in fields:
+            stripped = str(fields["label"]).strip()
+            if not stripped:
+                raise ValueError("label is required.")
+            item["label"] = stripped
+        if "required" in fields:
+            item["required"] = bool(fields["required"])
+        if "hold_point" in fields:
+            item["hold_point"] = bool(fields["hold_point"])
+        self.log(f"Checklist item edited: {item['label']}")
+        return item
+
+    def remove_checklist_item(self, item_id: str) -> None:
+        if self.checklist_item(item_id) is None:
+            raise KeyError(f"Unknown checklist item: {item_id}")
+        self.checklist = [item for item in self.checklist if item["id"] != item_id]
+        self.log(f"Checklist item removed: {item_id}")
+
     # -- countdown ----------------------------------------------------------
 
     def mission_t(self) -> float:
@@ -701,6 +821,31 @@ class LiveSession:
             raise KeyError(f"Camera {index} is not attached")
         self.program_camera_index = index
         self.log(f"Program camera set to {index}")
+
+    def set_camera_layout(self, layout: Any) -> None:
+        if not isinstance(layout, dict):
+            raise ValueError("layout must be an object of tile id -> {x,y,w,h}.")
+        validated: dict[str, dict[str, float]] = {}
+        for tile_id, rect in layout.items():
+            if not isinstance(tile_id, str) or not (
+                tile_id == "program" or tile_id.isdigit()
+            ):
+                raise ValueError(f"Invalid tile id: {tile_id!r}")
+            if not isinstance(rect, dict):
+                raise ValueError(f"Rect for {tile_id!r} must be an object.")
+            try:
+                x, y = float(rect["x"]), float(rect["y"])
+                w, h = float(rect["w"]), float(rect["h"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Rect for {tile_id!r} needs numeric x,y,w,h.") from exc
+            validated[tile_id] = {
+                "x": min(max(x, 0.0), 1.0),
+                "y": min(max(y, 0.0), 1.0),
+                "w": min(max(w, 0.03), 1.0),
+                "h": min(max(h, 0.03), 1.0),
+            }
+        self.camera_layout = validated
+        self.log("Camera layout updated")
 
     # -- telemetry ----------------------------------------------------------
 
@@ -784,14 +929,15 @@ class LiveSession:
     def state_snapshot(self) -> dict[str, Any]:
         mission_t = self.mission_t()
         telemetry_snapshot = self.telemetry.snapshot()
-        cameras = {
-            str(index): {
+        cameras = {}
+        for index, source in self.cameras.items():
+            stats = source.stats()
+            cameras[str(index)] = {
                 "uri": source.uri,
-                "connected": source.latest()[2],
+                "connected": stats.pop("connected"),
                 "program": index == self.program_camera_index,
+                **stats,  # width, height, fps, frame_age_s
             }
-            for index, source in self.cameras.items()
-        }
         return {
             "id": self.id,
             "mission_type": self.mission.mission_type,
@@ -809,6 +955,7 @@ class LiveSession:
             "checklist_ready": self.checklist_all_required_go(),
             "cameras": cameras,
             "program_camera_index": self.program_camera_index,
+            "camera_layout": compute_camera_layout(self.camera_layout, list(cameras.keys())),
             "telemetry": telemetry_snapshot,
             "environment_limits": {
                 "max_wind_speed_mps": self.mission.max_wind_speed_mps,

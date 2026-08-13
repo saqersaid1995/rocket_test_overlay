@@ -221,6 +221,19 @@ def set_program_camera(session_id: str):
     return jsonify({"session": session.state_snapshot()})
 
 
+@live_bp.post("/api/live/<session_id>/layout")
+def set_camera_layout(session_id: str):
+    session = _get_session_or_404(session_id)
+    if session is None:
+        return _error("Live session not found or has expired.", 404)
+    payload = _json_body()
+    try:
+        session.set_camera_layout(payload.get("layout"))
+    except ValueError as exc:
+        return _error(str(exc))
+    return jsonify({"session": session.state_snapshot()})
+
+
 @live_bp.get("/api/live/<session_id>/camera/<int:camera_index>/stream")
 def camera_stream(session_id: str, camera_index: int):
     session = _get_session_or_404(session_id)
@@ -323,6 +336,57 @@ def set_checklist_item(session_id: str, item_id: str):
     except (PermissionError, ValueError) as exc:
         return _error(str(exc))
     return jsonify({"item": item, "session": session.state_snapshot()})
+
+
+@live_bp.post("/api/live/<session_id>/checklist/items")
+def create_checklist_item(session_id: str):
+    session = _get_session_or_404(session_id)
+    if session is None:
+        return _error("Live session not found or has expired.", 404)
+    payload = _json_body()
+    try:
+        item = session.add_checklist_item(
+            str(payload.get("label") or ""),
+            required=bool(payload.get("required", True)),
+            hold_point=bool(payload.get("hold_point", False)),
+        )
+    except ValueError as exc:
+        return _error(str(exc))
+    return jsonify({"item": item, "session": session.state_snapshot()}), 201
+
+
+@live_bp.patch("/api/live/<session_id>/checklist/items/<item_id>")
+def edit_checklist_item(session_id: str, item_id: str):
+    session = _get_session_or_404(session_id)
+    if session is None:
+        return _error("Live session not found or has expired.", 404)
+    payload = _json_body()
+    fields: dict[str, Any] = {}
+    if "label" in payload:
+        fields["label"] = str(payload["label"])
+    if "required" in payload:
+        fields["required"] = bool(payload["required"])
+    if "hold_point" in payload:
+        fields["hold_point"] = bool(payload["hold_point"])
+    try:
+        item = session.edit_checklist_item(item_id, **fields)
+    except KeyError as exc:
+        return _error(str(exc), 404)
+    except ValueError as exc:
+        return _error(str(exc))
+    return jsonify({"item": item, "session": session.state_snapshot()})
+
+
+@live_bp.delete("/api/live/<session_id>/checklist/items/<item_id>")
+def delete_checklist_item(session_id: str, item_id: str):
+    session = _get_session_or_404(session_id)
+    if session is None:
+        return _error("Live session not found or has expired.", 404)
+    try:
+        session.remove_checklist_item(item_id)
+    except KeyError as exc:
+        return _error(str(exc), 404)
+    return jsonify({"session": session.state_snapshot()})
 
 
 @live_bp.post("/api/live/<session_id>/hold")

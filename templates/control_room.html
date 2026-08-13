@@ -14,9 +14,7 @@
 
 <div class="control-room">
   <div class="program-column">
-    <div class="program-frame">
-      <img id="programFrame" alt="Program feed" src="">
-    </div>
+    <div class="multiview-canvas" id="multiviewCanvas"></div>
     <div class="mission-clock-bar">
       <div>
         <div class="mission-clock" id="missionClock">T- 00:00.00</div>
@@ -28,7 +26,7 @@
         <button class="btn small danger" id="abortButton">Abort</button>
       </div>
     </div>
-    <div class="camera-strip" id="cameraStrip"></div>
+    <div class="camera-attach-bar" id="cameraAttachBar"></div>
   </div>
 
   <div class="side-panels">
@@ -43,8 +41,19 @@
     </div>
 
     <div class="panel">
+      <h3>Camera details</h3>
+      <div id="cameraDetailsRows"></div>
+    </div>
+
+    <div class="panel">
       <h3>Readiness &amp; countdown <small id="checklistReady"></small></h3>
       <div id="checklistRows"></div>
+      <div class="checklist-add">
+        <input type="text" id="checklistNewLabel" placeholder="New checklist item…">
+        <label><input type="checkbox" id="checklistNewRequired" checked> Required</label>
+        <label><input type="checkbox" id="checklistNewHold"> Hold point</label>
+        <button class="btn small" id="checklistAddButton">+ Add item</button>
+      </div>
     </div>
 
     <div class="panel">

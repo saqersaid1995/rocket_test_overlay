@@ -62,23 +62,32 @@ label input:focus,label select:focus{border-color:var(--cyan)}
 /* ---------- control room ---------- */
 .control-room{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:0;height:calc(100vh - 56px)}
 .program-column{display:flex;flex-direction:column;min-width:0;background:#06090d}
-.program-frame{flex:1;min-height:0;display:grid;place-items:center;background:#000;padding:14px}
-.program-frame img{max-width:100%;max-height:100%;border:1px solid var(--line);border-radius:6px;background:#000}
 .mission-clock-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-top:1px solid var(--line);background:var(--panel)}
 .mission-clock{font-family:Consolas,monospace;font-size:34px;font-weight:700;letter-spacing:.02em}
 .mission-status-chip{display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:6px 14px;font-weight:700;font-size:12px;letter-spacing:.04em}
 .mission-status-chip i{width:8px;height:8px;border-radius:50%;background:currentColor}
 .clock-actions{display:flex;gap:8px}
-.camera-strip{display:flex;gap:10px;padding:12px 20px;border-top:1px solid var(--line);overflow-x:auto}
-.camera-tile{flex:none;width:150px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel2);cursor:pointer}
-.camera-tile.active{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan)}
-.camera-tile img{width:100%;height:84px;object-fit:cover;display:block;background:#000}
-.camera-tile .meta{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;font-size:10px;color:var(--muted)}
-.camera-tile .dot{width:6px;height:6px;border-radius:50%;background:var(--red)}
-.camera-tile.connected .dot{background:var(--green)}
-.camera-attach{flex:none;width:150px;border:1px dashed var(--line2);border-radius:8px;display:flex;flex-direction:column;gap:6px;padding:8px;justify-content:center}
-.camera-attach input{width:100%;height:26px;font-size:10px;border-radius:5px;background:#111923;border:1px solid var(--line);color:var(--text);padding:0 6px}
-.camera-attach button{height:24px;font-size:10px}
+
+/* free-form multiview canvas: draggable/resizable camera + program tiles */
+.multiview-canvas{position:relative;flex:1;min-height:0;margin:14px;border-radius:6px;overflow:hidden;background:#000}
+.mv-tile{position:absolute;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel2);touch-action:none}
+.mv-tile.program{border-color:var(--cyan)}
+.mv-tile.is-program-source{box-shadow:inset 0 0 0 2px var(--green)}
+.mv-tile.dragging{z-index:50;border-color:var(--cyan)}
+.mv-tile img{width:100%;height:100%;object-fit:cover;display:block;background:#000;pointer-events:none}
+.mv-tile .resize-handle{position:absolute;right:0;bottom:0;width:14px;height:14px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,var(--line2) 50%);z-index:2}
+.mv-tile .mv-badge{position:absolute;left:6px;bottom:6px;background:rgba(6,9,13,.78);border-radius:5px;padding:3px 7px;font-size:9.5px;font-family:Consolas,monospace;display:flex;gap:6px;align-items:center;pointer-events:none}
+.mv-tile .mv-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--red);flex:none}
+.mv-tile .mv-badge .dot.live{background:var(--green)}
+.mv-tile .mv-badge .dot.stale{background:var(--amber)}
+.mv-tile .mv-tile-btn{position:absolute;right:6px;top:6px;z-index:2;height:22px;padding:0 9px;font-size:9.5px}
+.mv-tile .mv-tile-label{position:absolute;left:6px;top:6px;z-index:2;font-size:9.5px;font-family:Consolas,monospace;background:rgba(6,9,13,.78);border-radius:5px;padding:3px 7px}
+
+.camera-attach-bar{display:flex;gap:8px;align-items:center;padding:10px 20px;border-top:1px solid var(--line)}
+.camera-attach-bar input{height:28px;font-size:10.5px;border-radius:5px;background:#111923;border:1px solid var(--line);color:var(--text);padding:0 8px}
+.camera-attach-bar input[type=number]{width:64px}
+.camera-attach-bar input[type=text]{flex:1;min-width:160px}
+.camera-attach-bar button{height:28px;font-size:10.5px}
 
 .side-panels{overflow-y:auto;border-left:1px solid var(--line);background:var(--panel);scrollbar-color:#3a4856 transparent;scrollbar-width:thin}
 .panel{border-bottom:1px solid var(--line);padding:14px 18px}
@@ -106,6 +115,17 @@ label input:focus,label select:focus{border-color:var(--cyan)}
 .state-btn button.go.active{background:#12281f;border-color:var(--green);color:var(--green)}
 .state-btn button.no_go.active{background:#241519;border-color:var(--red);color:var(--red)}
 .state-btn button:disabled{opacity:.35;cursor:not-allowed}
+
+.checklist-item .label input[type=text]{height:24px;font-size:11.5px;border-radius:5px;background:#111923;border:1px solid var(--cyan);color:var(--text);padding:0 6px}
+.checklist-item .chip{height:20px;padding:0 8px;font-size:9px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);cursor:pointer}
+.checklist-item .chip.active{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-soft)}
+.checklist-item .ci-delete{border:0;background:transparent;color:var(--muted);font-size:14px;cursor:pointer;line-height:1;padding:0 2px}
+.checklist-item .ci-delete:hover{color:var(--red)}
+.checklist-item .row-actions{display:flex;align-items:center;gap:6px}
+
+.checklist-add{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.checklist-add input[type=text]{flex:1;min-width:140px;height:28px;border-radius:5px;background:#111923;border:1px solid var(--line);color:var(--text);padding:0 8px;font-size:11px}
+.checklist-add label{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:10.5px}
 
 .template-card{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:10px}
 .template-card.active{border-color:var(--cyan);background:var(--cyan-soft)}

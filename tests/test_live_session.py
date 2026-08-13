@@ -25,8 +25,10 @@ from live_session import (
     MissionStateMachine,
     StaticFireDetails,
     LiveSession,
+    PROGRAM_DEFAULT_RECT,
     build_launch_template_context,
     build_static_fire_template_context,
+    compute_camera_layout,
     default_checklist,
 )
 
@@ -268,6 +270,136 @@ class TemplateContextTests(unittest.TestCase):
             )
             self.assertEqual(context.values["status.code"], "abort")
             self.assertEqual(context.values["status.label"], "ABORT")
+
+
+class CameraStatsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.temp, ignore_errors=True)
+
+    def test_stats_report_measured_resolution_and_fps(self):
+        video_path = self.temp / "cam.mp4"
+        _write_test_video(video_path, frames=20, size=(96, 64))
+        source = CameraSource(str(video_path))
+        source.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            stats = source.stats()
+            while time.monotonic() < deadline and stats["fps"] is None:
+                time.sleep(0.05)
+                stats = source.stats()
+            self.assertEqual(stats["width"], 96)
+            self.assertEqual(stats["height"], 64)
+            self.assertIsNotNone(stats["fps"])
+            self.assertGreater(stats["fps"], 0)
+            self.assertIsNotNone(stats["frame_age_s"])
+            self.assertGreaterEqual(stats["frame_age_s"], 0.0)
+            self.assertTrue(stats["connected"])
+        finally:
+            source.stop()
+
+    def test_stats_before_any_frame_are_all_none(self):
+        source = CameraSource(str(self.temp / "missing.mp4"), loop=False)
+        stats = source.stats()
+        self.assertIsNone(stats["width"])
+        self.assertIsNone(stats["fps"])
+        self.assertIsNone(stats["frame_age_s"])
+        self.assertFalse(stats["connected"])
+
+
+class CameraLayoutTests(unittest.TestCase):
+    def test_compute_layout_fills_defaults_for_unpositioned_tiles(self):
+        layout = compute_camera_layout({}, ["1", "2"])
+        self.assertEqual(layout["program"], PROGRAM_DEFAULT_RECT)
+        self.assertIn("1", layout)
+        self.assertIn("2", layout)
+        self.assertNotEqual(layout["1"], layout["2"])
+
+    def test_compute_layout_respects_saved_overrides(self):
+        override = {"1": {"x": 0.1, "y": 0.2, "w": 0.5, "h": 0.5}}
+        layout = compute_camera_layout(override, ["1"])
+        self.assertEqual(layout["1"], override["1"])
+
+    def test_compute_layout_cascades_past_three_cameras(self):
+        layout = compute_camera_layout({}, ["1", "2", "3", "4"])
+        self.assertNotEqual(layout["1"], layout["4"])
+        for rect in layout.values():
+            self.assertGreaterEqual(rect["x"], 0.0)
+            self.assertLessEqual(rect["x"] + rect["w"], 1.0 + 1e-9)
+
+    def test_set_camera_layout_validates_and_clamps(self):
+        session = LiveSession(
+            "layout-test",
+            MissionConfig(mission_name="Layout Test", t0_epoch=time.time() + 10.0),
+            StaticFireDetails(),
+        )
+        session.set_camera_layout({"program": {"x": -1, "y": 2, "w": 0.001, "h": 5}})
+        rect = session.camera_layout["program"]
+        self.assertEqual(rect["x"], 0.0)
+        self.assertEqual(rect["y"], 1.0)
+        self.assertEqual(rect["w"], 0.03)
+        self.assertEqual(rect["h"], 1.0)
+        with self.assertRaises(ValueError):
+            session.set_camera_layout({"not_a_valid_id": {"x": 0, "y": 0, "w": 1, "h": 1}})
+        with self.assertRaises(ValueError):
+            session.set_camera_layout("not a dict")
+
+
+class ChecklistCrudTests(unittest.TestCase):
+    def _session(self):
+        return LiveSession(
+            "checklist-test",
+            MissionConfig(mission_name="Checklist Test", t0_epoch=time.time() + 10.0),
+            StaticFireDetails(),
+        )
+
+    def test_add_edit_remove_round_trip(self):
+        session = self._session()
+        item = session.add_checklist_item("Range Officer Ready", required=True, hold_point=True)
+        self.assertEqual(item["id"], "range_officer_ready")
+        self.assertEqual(item["source"], "manual")
+        self.assertEqual(item["state"], "pending")
+
+        edited = session.edit_checklist_item(item["id"], label="Range Officer GO", required=False)
+        self.assertEqual(edited["label"], "Range Officer GO")
+        self.assertFalse(edited["required"])
+        self.assertTrue(edited["hold_point"])  # untouched field stays as-is
+
+        session.remove_checklist_item(item["id"])
+        self.assertIsNone(session.checklist_item(item["id"]))
+
+    def test_duplicate_label_gets_unique_slug(self):
+        session = self._session()
+        first = session.add_checklist_item("Comms Check")
+        second = session.add_checklist_item("Comms Check")
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["id"], "comms_check")
+        self.assertEqual(second["id"], "comms_check-2")
+
+    def test_empty_label_rejected(self):
+        session = self._session()
+        with self.assertRaises(ValueError):
+            session.add_checklist_item("   ")
+
+    def test_edit_and_remove_unknown_item_raise_keyerror(self):
+        session = self._session()
+        with self.assertRaises(KeyError):
+            session.edit_checklist_item("does-not-exist", label="x")
+        with self.assertRaises(KeyError):
+            session.remove_checklist_item("does-not-exist")
+
+    def test_deleting_weather_hold_does_not_crash_state_machine(self):
+        session = self._session()
+        session.remove_checklist_item("weather_hold")
+        session.ingest_telemetry({"wind_speed": 50.0}, None)
+        machine = MissionStateMachine(session, tick_interval=0.05)
+        machine.start()
+        try:
+            time.sleep(0.3)
+            self.assertIsNone(session.checklist_item("weather_hold"))
+        finally:
+            machine.stop()
+            machine.join(timeout=1.0)
 
 
 if __name__ == "__main__":
