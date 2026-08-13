@@ -1,46 +1,29 @@
 ---
-name: rotpl-template
-description: Design, brief, build, validate, and upload custom ROTPL broadcast-overlay templates for the rocket_test_overlay video compositor. Use whenever the user wants to create/design/update a video overlay template for rocket motor static-fire test footage, wants a design brief for an external design tool (Claude Design or similar), mentions ".rotpl"/"manifest.json"/"layout.json" for this app, asks what data a template can bind to, or brings back a finished design that needs to become a working template package. Also use it for "why won't my template activate" or when the user wants design files packaged/uploaded into the app reliably without hand-zipping or hand-typing font hashes. Consult this before re-deriving ROTPL's schema from rotpl_registry.py/rotpl_renderer.py by hand or hand-building a .rotpl zip — the validated schema and a tested build/upload pipeline are already here.
+name: rotpl-build
+description: Convert a finished ROTPL broadcast-overlay design (screenshot, HTML mockup, or description) into a real, validated, uploadable .rotpl template package for the rocket_test_overlay video compositor - reliably, without re-explaining the schema or hand-zipping files. Use this whenever the user brings back a finished template design and wants it turned into a working file, mentions ".rotpl"/"manifest.json"/"layout.json" for this app, asks what data/variables a template can bind to, asks "why won't my template activate," or wants design files packaged/uploaded into the app without manually zipping or hand-typing font hashes. Consult this before re-deriving ROTPL's schema from rotpl_registry.py/rotpl_renderer.py by hand or hand-building a .rotpl zip - the validated schema and a tested build/upload pipeline are already here. For producing the design brief that starts a new template (the step before this one), use the rotpl-brief skill instead.
 ---
 
-# ROTPL template design & authoring
+# ROTPL template building
 
 ROTPL is this repo's custom broadcast-overlay template format: a `.rotpl` file is a ZIP containing
-`manifest.json` (template metadata + validation contract) + `layout.json` (the actual visual design,
-as a list of positioned elements) + optional font/image files. The rendering engine is
+`manifest.json` (template metadata + validation contract) + `layout.json` (the actual visual design, as
+a list of positioned elements) + optional font/image files. The rendering engine is
 `opencv-declarative-v1` — it draws each element with OpenCV/Pillow from the JSON description; there is
 no HTML/CSS/JS inside a `.rotpl` file at all.
 
 This skill exists so you never have to re-read `rotpl_registry.py` (validation rules) or
-`rotpl_renderer.py` (drawing engine) from scratch to do template work — the schema those files enforce
-is fully captured in `references/`, cross-checked against the actual source and a passing test fixture.
+`rotpl_renderer.py` (drawing engine) from scratch, and never have to hand-zip a package and hope it's
+right — the schema is captured in `references/`, and `scripts/` does the actual building/validating/
+uploading against this repo's real code, not a re-implementation of it.
 
 The user works in Arabic. Explain things to them in Arabic; the JSON/schema/code you produce stays in
 English (it's literal syntax, not prose).
 
-## The two things this skill does
+## Converting a finished design into a working `.rotpl` package
 
-### A. Produce a design brief for an external design tool (e.g. Claude Design)
-
-Claude Design (or any similar tool) produces a **visual mockup** — HTML/CSS, an image, a Figma-like
-layout. It cannot output a working `.rotpl` package directly; the gap between "a picture of an overlay"
-and "a validated `layout.json` with exact pixel coordinates and binding paths" is what step B closes.
-
-So step A's job is just to make sure the mockup uses **real data and real constraints**, so it doesn't
-have to be reworked later. Hand the external tool `assets/design-brief.txt` as-is (read it, then paste
-its contents into the conversation with that tool) — it states the canvas size, the full real data
-catalog, and the 9 allowed element kinds. Regenerate it only if the user asks for something the current
-brief doesn't cover (e.g. a different canvas size) — edit `assets/design-brief.txt` itself so it stays
-the single reusable prompt, don't just improvise new wording inline.
-
-If the user asks "what data can a template show," the data catalog in `assets/design-brief.txt` (also
-detailed with types/defaults in `references/runtime-bindings.md`) is the complete, authoritative answer
-— don't invent fields that aren't listed there.
-
-### B. Convert a finished design into a working `.rotpl` package
-
-Once the user brings back a design (screenshot, HTML, or just a description of what they want), build
-the actual package:
+The user brings a design (screenshot, HTML, or just a description of what they want) — usually produced
+via the **rotpl-brief** skill's design brief in an external tool like Claude Design. Turn it into a real
+package:
 
 1. **Read `references/layout-elements.md` first** — it has the exact field schema and a real working
    example for each of the 9 element kinds you're allowed to use (`text`, `logo`, `image`, `rect`,
@@ -64,7 +47,7 @@ the actual package:
 5. **Build it with `scripts/build_rotpl.py`, never by hand-zipping.** Put `manifest.json`,
    `layout.json`, and any `fonts/`/asset files into one source directory, then run:
    ```
-   python3 .claude/skills/rotpl-template/scripts/build_rotpl.py <source_dir> <output.rotpl>
+   python3 .claude/skills/rotpl-build/scripts/build_rotpl.py <source_dir> <output.rotpl>
    ```
    This computes each font's real `sha256`/`size_bytes` from the actual file bytes (a hand-typed hash
    is the single most common way a package silently fails to activate), zips the directory, and runs
@@ -74,7 +57,7 @@ the actual package:
    failed validation outright.
 6. **Upload (and optionally activate) with `scripts/upload_rotpl.py`** against the running app:
    ```
-   python3 .claude/skills/rotpl-template/scripts/upload_rotpl.py <output.rotpl> --activate
+   python3 .claude/skills/rotpl-build/scripts/upload_rotpl.py <output.rotpl> --activate
    ```
    (drop `--activate` to only install as a draft). Requires `python3 app.py` to already be running.
    This is more reliable than describing the upload to the user, since it exercises the actual
@@ -104,9 +87,8 @@ uploading a draft that contains them.
 - `assets/example-manifest.json` + `assets/example-layout.json` — a minimal, valid, currently-passing
   manifest/layout pair (mirrors `tests/test_rotpl_registry.py`'s fixture). Copy these as the starting
   point for any new package rather than authoring from scratch.
-- `assets/design-brief.txt` — the ready-to-paste prompt for an external design tool (see workflow A).
 - `scripts/build_rotpl.py` — assembles a source directory into a validated `.rotpl`, auto-filling font
-  hashes (see workflow B step 5). All three scripts have been run end-to-end against a real local app
-  instance (build → validate → upload → activate all succeeded) — trust them over hand-authoring.
+  hashes (step 5). All three scripts have been run end-to-end against a real local app instance
+  (build → validate → upload → activate all succeeded) — trust them over hand-authoring.
 - `scripts/upload_rotpl.py` — uploads to a running app and optionally activates in one step (step 6).
 - `scripts/validate_rotpl_package.py` — re-validates an existing `.rotpl` without rebuilding it.
