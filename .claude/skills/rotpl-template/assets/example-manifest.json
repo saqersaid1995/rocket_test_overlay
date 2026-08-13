@@ -1,0 +1,35 @@
+{
+  "schema": "rocket-overlay-template",
+  "schema_version": "1.0.0",
+  "id": "example.template",
+  "template_version": "1.0.0",
+  "name": {"en": "Example Template"},
+  "description": "Minimal valid starting point - copy and extend.",
+  "engine": {"renderer": "opencv-declarative-v1", "minimum_version": "2.0.0"},
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "aspect_ratio": "16:9",
+    "units": "px",
+    "color_space": "sRGB",
+    "alpha_mode": "straight"
+  },
+  "entry": "layout.json",
+  "fonts": [
+    {
+      "font_id": "display-bold",
+      "file": "fonts/Display-Bold.ttf",
+      "family": "Display",
+      "weight": 700
+    }
+  ],
+  "font_fallback": "none",
+  "variables": {
+    "test.title": {"type": "text", "required": true, "default": "STATIC FIRE TEST"}
+  },
+  "required_bindings": ["test.title"],
+  "optional_bindings": ["telemetry.pressure.normalized"],
+  "required_channels": ["pressure"],
+  "optional_channels": ["thrust"],
+  "missing_data": {"thrust": "show_na"}
+}

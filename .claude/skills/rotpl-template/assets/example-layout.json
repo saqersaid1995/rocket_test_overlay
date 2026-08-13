@@ -1,0 +1,72 @@
+{
+  "schema": "rocket-overlay-layout",
+  "canvas": {"width": 1920, "height": 1080},
+  "layers": {"video": 0, "scrims": 10, "panels": 20, "gauges": 30, "chrome": 40, "dynamic": 50, "brand": 60},
+  "elements": [
+    {
+      "id": "scrim_bottom",
+      "type": "gradient_scrim",
+      "z": 10,
+      "x": 0, "y": 780, "w": 1920, "h": 300,
+      "direction": "up",
+      "color": "#05070A",
+      "opacity_start": 0.78,
+      "opacity_end": 0.0
+    },
+    {
+      "id": "txt_title",
+      "type": "text",
+      "z": 50,
+      "bind": "test.title",
+      "x": 88, "y": 940,
+      "font_id": "display-bold",
+      "font_size": 40,
+      "anchor": "left",
+      "color": "#FFFFFF",
+      "opacity": 1,
+      "max_width": 900,
+      "overflow": "shrink",
+      "min_font_size": 26,
+      "missing_policy": "hide"
+    },
+    {
+      "id": "txt_mission_clock",
+      "type": "text",
+      "z": 50,
+      "bind": "frame.mission_clock",
+      "x": 88, "y": 990,
+      "font_id": "display-bold",
+      "font_size": 26,
+      "anchor": "left",
+      "color_bind": "brand.accent_color",
+      "opacity": 1,
+      "missing_policy": "hide"
+    },
+    {
+      "id": "pressure_bar",
+      "type": "bar_gauge",
+      "z": 30,
+      "x": 88, "y": 1030, "w": 300, "h": 6,
+      "bind": "telemetry.pressure.normalized",
+      "fill_from": "left",
+      "color_bind": "brand.accent_color",
+      "track_color": "#FFFFFF",
+      "track_opacity": 0.15,
+      "missing_policy": "hide"
+    },
+    {
+      "id": "txt_pressure_value",
+      "type": "text",
+      "z": 50,
+      "bind": "telemetry.pressure.formatted",
+      "unit_suffix_bind": "telemetry.pressure.unit",
+      "x": 88, "y": 1020,
+      "font_id": "display-bold",
+      "font_size": 18,
+      "anchor": "left",
+      "color": "#FFFFFF",
+      "opacity": 0.9,
+      "missing_policy": "hide"
+    }
+  ]
+}

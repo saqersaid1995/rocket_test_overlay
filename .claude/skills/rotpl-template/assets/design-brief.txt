@@ -1,0 +1,33 @@
+Design a broadcast-style video overlay for a rocket motor static-fire test, canvas 1920x1080.
+
+Use ONLY these real data fields (do not invent data that isn't listed here):
+
+Brand: organization name, footer tagline, accent color, logo image.
+
+Test identity: title, subtitle, run number, motor type, date, site, coordinates, oxidizer, fuel,
+ablative material, camera label, capture fps.
+
+Live telemetry: pressure (formatted value + unit, plus a 0-1 normalized value for gauges), thrust
+(same shape, but may be entirely unavailable on a pressure-only test - design should degrade
+gracefully, e.g. hide or gray out thrust elements rather than showing a broken blank), peak pressure,
+peak thrust, total impulse, burn duration.
+
+Time / status: mission clock formatted as "T+ 00:04.20" / "T- 00:02.00", a status label that is
+exactly one of ABORT / PRE-IGNITION / HOT FIRE / TEST COMPLETE, with a color that automatically
+matches the status.
+
+Mission phases list: exactly four phases in order - AUTO SEQUENCE, IGNITION, FULL THRUST, BURNOUT -
+each with its own state (pending / active / complete) and a time label like "T+0.6s".
+
+Only use these element kinds, since the rendering engine behind this only supports these: static or
+data-bound text, a logo/image, filled rectangles (optionally rounded corners), straight lines
+(optionally moving to track a value, e.g. a peak marker), a gradient scrim for legibility over video,
+a vertical gauge, a horizontal bar gauge, and a phase list. No line/area charts, no free-form vector
+shapes, no icons beyond what can be built from rectangles/lines.
+
+Style: mission-control / broadcast aesthetic, legible when composited over live video footage, dark
+UI chrome with one clear accent color used consistently for the live/active state.
+
+Deliver: a single full-canvas mockup (image or HTML/CSS) showing the overlay composited over a
+representative video still, plus a plain list of exactly which element(s) each real data field above
+maps to, so it can be translated into the final template format afterward.
