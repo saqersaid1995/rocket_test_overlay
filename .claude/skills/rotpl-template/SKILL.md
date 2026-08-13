@@ -1,6 +1,6 @@
 ---
 name: rotpl-template
-description: Design, brief, and build custom ROTPL broadcast-overlay templates for the rocket_test_overlay video compositor. Use this whenever the user wants to create, design, or update a video overlay template/theme for rocket motor static-fire test footage, wants a design brief to hand to an external design tool (Claude Design or otherwise) for a new overlay look, mentions ".rotpl", "manifest.json"/"layout.json" for this app, asks what data/variables a template can bind to, or brings back a finished visual design (screenshot, HTML, Figma-style mockup) that needs to become a working template package. Also use it if the user asks "what data is available for templates" or "why doesn't my template load/activate" for this app. Always consult this skill before re-deriving ROTPL's schema from rotpl_registry.py/rotpl_renderer.py by hand — the exact validated schema is already captured here.
+description: Design, brief, build, validate, and upload custom ROTPL broadcast-overlay templates for the rocket_test_overlay video compositor. Use whenever the user wants to create/design/update a video overlay template for rocket motor static-fire test footage, wants a design brief for an external design tool (Claude Design or similar), mentions ".rotpl"/"manifest.json"/"layout.json" for this app, asks what data a template can bind to, or brings back a finished design that needs to become a working template package. Also use it for "why won't my template activate" or when the user wants design files packaged/uploaded into the app reliably without hand-zipping or hand-typing font hashes. Consult this before re-deriving ROTPL's schema from rotpl_registry.py/rotpl_renderer.py by hand or hand-building a .rotpl zip — the validated schema and a tested build/upload pipeline are already here.
 ---
 
 # ROTPL template design & authoring
@@ -61,12 +61,28 @@ the actual package:
    `manifest.fonts` with a real `.ttf`/`.otf` file in the archive (conventionally under `fonts/`). If
    you don't have real font files, ask the user for them rather than fabricating font bytes — a missing
    or invalid font blocks activation (draft install succeeds, activation doesn't).
-5. **Zip it up** as `manifest.json`, `layout.json`, and any `fonts/`/asset files at the paths declared
-   in the manifest, save with a `.rotpl` extension.
-6. **Upload via the running app** (`POST /api/templates`, multipart field name **must be** `template`)
-   or hand the file to the user to upload themselves in the Design step of the web UI. Report back the
-   validation response — if it's a draft with `blocked_reasons` (not yet activatable), explain exactly
-   what's blocking it (usually a missing font file or an unused `required_binding`).
+5. **Build it with `scripts/build_rotpl.py`, never by hand-zipping.** Put `manifest.json`,
+   `layout.json`, and any `fonts/`/asset files into one source directory, then run:
+   ```
+   python3 .claude/skills/rotpl-template/scripts/build_rotpl.py <source_dir> <output.rotpl>
+   ```
+   This computes each font's real `sha256`/`size_bytes` from the actual file bytes (a hand-typed hash
+   is the single most common way a package silently fails to activate), zips the directory, and runs
+   this repo's real `validate_rotpl()` against the result — so you get a genuine
+   valid/activatable/errors report from the actual validator, not a guess. Exit code `0` means ready to
+   activate, `2` means it installs but is blocked (see the printed `blocked_reasons`), `1` means it
+   failed validation outright.
+6. **Upload (and optionally activate) with `scripts/upload_rotpl.py`** against the running app:
+   ```
+   python3 .claude/skills/rotpl-template/scripts/upload_rotpl.py <output.rotpl> --activate
+   ```
+   (drop `--activate` to only install as a draft). Requires `python3 app.py` to already be running.
+   This is more reliable than describing the upload to the user, since it exercises the actual
+   `POST /api/templates` / `POST /api/templates/<id>/activate` endpoints and prints their real JSON
+   responses. If the app isn't running, either start it first or hand the built `.rotpl` file to the
+   user to upload themselves in the Design step of the web UI.
+   To re-check an existing package later without rebuilding it (e.g. "why won't my template
+   activate"), use `scripts/validate_rotpl_package.py <path.rotpl>` instead.
 
 ## The one gotcha that causes silent failures
 
@@ -89,3 +105,8 @@ uploading a draft that contains them.
   manifest/layout pair (mirrors `tests/test_rotpl_registry.py`'s fixture). Copy these as the starting
   point for any new package rather than authoring from scratch.
 - `assets/design-brief.txt` — the ready-to-paste prompt for an external design tool (see workflow A).
+- `scripts/build_rotpl.py` — assembles a source directory into a validated `.rotpl`, auto-filling font
+  hashes (see workflow B step 5). All three scripts have been run end-to-end against a real local app
+  instance (build → validate → upload → activate all succeeded) — trust them over hand-authoring.
+- `scripts/upload_rotpl.py` — uploads to a running app and optionally activates in one step (step 6).
+- `scripts/validate_rotpl_package.py` — re-validates an existing `.rotpl` without rebuilding it.
