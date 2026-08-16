@@ -1,0 +1,14 @@
+{% extends "operations/base.html" %}
+{% block title %}{{ program.code }}{% endblock %}
+{% block eyebrow %}PROGRAMS / {{ program.code }}{% endblock %}
+{% block content %}
+<section class="page-heading detail-heading">
+  <div><span class="kicker">{{ program.program_type|upper }}</span><h1>{{ program.name }}</h1><p>{{ program.code }} · Owned by {{ program.owner or 'Unassigned' }}</p></div>
+  <div class="heading-actions"><a class="secondary-button" href="{{ url_for('operations.edit_program', program_id=program.id) }}">Edit record</a></div>
+</section>
+<section class="detail-grid">
+  <article class="surface program-brief"><header><span class="status {{ program.status|lower|replace(' ', '-') }}">{{ program.status }}</span><small>Last updated {{ program.updated_at[:10] }}</small></header><h2>Program objective</h2><p>{{ program.objective or 'No objective has been recorded.' }}</p><dl><div><dt>Start date</dt><dd>{{ program.start_date or 'Not set' }}</dd></div><div><dt>Target date</dt><dd>{{ program.target_date or 'Not set' }}</dd></div></dl></article>
+  <article class="surface"><header class="surface-head"><div><span class="kicker">PROGRAM HISTORY</span><h2>Activity log</h2></div></header><ol class="activity-list">{% for event in events %}<li><i></i><div><strong>{{ event.summary }}</strong><small>{{ event.created_at[:16]|replace('T', ' ') }} UTC</small></div></li>{% endfor %}</ol></article>
+</section>
+<section class="danger-zone"><div><strong>Archive program</strong><p>Archived records remain available for audit and reporting.</p></div><form method="post" action="{{ url_for('operations.archive_program', program_id=program.id) }}" onsubmit="return confirm('Archive this program?')"><button>Archive</button></form></section>
+{% endblock %}
