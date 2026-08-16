@@ -1,0 +1,48 @@
+{% extends "operations/base.html" %}
+{% block title %}Command Center{% endblock %}
+{% block eyebrow %}COMMAND CENTER / OVERVIEW{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div><span class="kicker">OPERATIONAL PICTURE</span><h1>Command Center</h1><p>Program status, priorities, and recent activity across Stellar Kinetics.</p></div>
+  <a class="primary-button" href="{{ url_for('operations.new_program') }}">+ Create program</a>
+</section>
+
+<section class="metric-grid">
+  <article><small>ACTIVE PROGRAMS</small><strong>{{ counts.get('Active', 0) }}</strong><span class="signal green">Executing</span></article>
+  <article><small>IN PLANNING</small><strong>{{ counts.get('Planning', 0) }}</strong><span class="signal blue">Preparation</span></article>
+  <article><small>ON HOLD</small><strong>{{ counts.get('On Hold', 0) }}</strong><span class="signal amber">Needs action</span></article>
+  <article><small>COMPLETED</small><strong>{{ counts.get('Completed', 0) }}</strong><span class="signal neutral">Closed</span></article>
+</section>
+
+<div class="dashboard-grid">
+  <section class="surface">
+    <header class="surface-head"><div><span class="kicker">PORTFOLIO</span><h2>Priority programs</h2></div><a href="{{ url_for('operations.programs') }}">View all →</a></header>
+    {% if programs %}
+      <div class="program-list">
+        {% for program in programs %}
+          <a href="{{ url_for('operations.program_detail', program_id=program.id) }}">
+            <span class="program-code">{{ program.code }}</span>
+            <div><strong>{{ program.name }}</strong><small>{{ program.program_type }} · {{ program.owner or 'Owner not assigned' }}</small></div>
+            <em class="status {{ program.status|lower|replace(' ', '-') }}">{{ program.status }}</em>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state"><span>◇</span><h3>No programs yet</h3><p>Create the first program to establish the operational portfolio.</p><a href="{{ url_for('operations.new_program') }}">Create first program</a></div>
+    {% endif %}
+  </section>
+
+  <section class="surface">
+    <header class="surface-head"><div><span class="kicker">AUDIT TRAIL</span><h2>Recent activity</h2></div></header>
+    {% if events %}
+      <ol class="activity-list">
+        {% for event in events %}
+          <li><i></i><div><strong>{{ event.summary }}</strong><small>{{ event.created_at[:16]|replace('T', ' ') }} UTC</small></div></li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <div class="empty-state compact"><p>Activity will appear as operational records are created and updated.</p></div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
