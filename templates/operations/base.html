@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Operations{% endblock %} · Stellar Kinetics</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='operations.css') }}">
+</head>
+<body>
+  <div class="ops-shell">
+    <aside class="ops-sidebar">
+      <a class="ops-brand" href="{{ url_for('operations.dashboard') }}">
+        <span>SK</span>
+        <div><strong>STELLAR KINETICS</strong><small>Mission & Test Operations</small></div>
+      </a>
+      <nav aria-label="Operations">
+        <a class="{{ 'active' if request.endpoint == 'operations.dashboard' }}" href="{{ url_for('operations.dashboard') }}"><i>01</i> Command Center</a>
+        <a class="{{ 'active' if request.endpoint and 'program' in request.endpoint }}" href="{{ url_for('operations.programs') }}"><i>02</i> Programs</a>
+        <span class="nav-future"><i>03</i> Missions <b>Phase 2</b></span>
+        <span class="nav-future"><i>04</i> Vehicles <b>Phase 3</b></span>
+        <span class="nav-future"><i>05</i> Ground Tests <b>Phase 4</b></span>
+        <span class="nav-future"><i>06</i> Launch Operations <b>Phase 5</b></span>
+      </nav>
+      <div class="sidebar-foot"><span class="status-dot"></span><div><strong>Operations database</strong><small>Local persistence active</small></div></div>
+    </aside>
+
+    <main class="ops-main">
+      <header class="ops-topbar">
+        <div>{% block eyebrow %}OPERATIONS{% endblock %}</div>
+        <div class="topbar-actions"><span>{{ today if today else '' }}</span><a href="/">Open Overlay Studio ↗</a></div>
+      </header>
+      <section class="ops-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+      </section>
+    </main>
+  </div>
+</body>
+</html>
