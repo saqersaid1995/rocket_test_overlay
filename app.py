@@ -1489,6 +1489,18 @@ def output_file(job_id: str, filename: str):
     return send_from_directory(OUTPUT_DIR / job_id, filename, conditional=True)
 
 
+
+
+# Operations is isolated under /operations; Rocket Overlay Studio remains at /.
+from operations import init_operations_db, operations_bp
+
+app.config["SECRET_KEY"] = (
+    os.environ.get("FLASK_SECRET_KEY") or "rocket-overlay-local-operations"
+)
+app.register_blueprint(operations_bp)
+init_operations_db()
+
+
 if __name__ == "__main__":
     app.run(
         host=os.environ.get("HOST", "0.0.0.0"),
