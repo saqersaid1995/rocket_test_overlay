@@ -25,6 +25,18 @@ def init_db():
   c.executescript((ROOT/"schema.sql").read_text())
   stamp=now(); c.execute("INSERT OR IGNORE INTO organisations VALUES(?,?,?,?)",(ORG,"SK","Stellar Kinetics",stamp))
   c.execute("INSERT OR IGNORE INTO users VALUES(?,?,?,?,?,?)",("user-local-admin",ORG,"local@stellar.invalid","Local Administrator","ACTIVE",stamp))
+  c.execute("""INSERT OR IGNORE INTO programmes
+   (id,organisation_id,code,name,objective,lifecycle_state,version,created_at,updated_at)
+   VALUES(?,?,?,?,?,'ACTIVE',1,?,?)""",("programme-qualsrm",ORG,"QUALSRM","QualSRM Flight Qualification","Qualify the integrated sounding rocket, ground segment and recovery chain through controlled flight operations.",stamp,stamp))
+  c.execute("""INSERT OR IGNORE INTO missions
+   (id,organisation_id,programme_id,code,name,mission_type,objective,success_criteria,lifecycle_state,launch_site,version,created_at,updated_at)
+   VALUES(?,?,?,?,?,?,?,?,?,'Oman — site pending',1,?,?)""",("mission-qualsrm-01",ORG,"programme-qualsrm","QUALSRM-01","Qualification Flight","Sounding Rocket","Demonstrate integrated vehicle readiness and controlled flight to the design envelope.","Safe launch; stable unguided flight; target apogee 1.5 km AGL; parachute deployment; vehicle recovery; barometric flight record recovered.","INTEGRATION",stamp,stamp))
+  c.execute("""INSERT OR IGNORE INTO test_campaigns
+   (id,organisation_id,programme_id,code,name,test_type,lifecycle_state,planned_start,planned_end,version,created_at,updated_at)
+   VALUES(?,?,?,?,?,?,?,'2026-06-19','2026-08-31',1,?,?)""",("test-qualsrm-propulsion",ORG,"programme-qualsrm","TC-PROP-QUAL","RNX-71V Propulsion Qualification","Propulsion Static Fire","ANALYSED",stamp,stamp))
+  c.execute("""INSERT OR IGNORE INTO launch_campaigns
+   (id,organisation_id,mission_id,lifecycle_state,version,created_at,updated_at)
+   VALUES(?,?,?,'PLANNING',1,?,?)""",("launch-qualsrm-01",ORG,"mission-qualsrm-01",stamp,stamp))
 def audit(c,kind,entity,action,payload):
  c.execute("""INSERT INTO audit_events(event_id,organisation_id,actor_id,acting_role,occurred_at,correlation_id,entity_type,entity_id,action,previous_version,new_version,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
  (str(uuid.uuid4()),ORG,"user-local-admin","SYSTEM_ADMINISTRATOR",now(),str(uuid.uuid4()),kind,entity,action,None,1,payload))
@@ -40,7 +52,21 @@ def command_center():
   programmes=c.execute("SELECT * FROM programmes WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 6").fetchall()
   missions=c.execute("SELECT m.*,p.code programme_code FROM missions m JOIN programmes p ON p.id=m.programme_id ORDER BY m.updated_at DESC LIMIT 6").fetchall()
   events=c.execute("SELECT * FROM audit_events ORDER BY sequence DESC LIMIT 8").fetchall()
- return render_template("ops.html",view="dashboard",counts=counts,programmes=programmes,missions=missions,events=events)
+ workspace={
+  "mission":"QUALSRM-01","programme":"QUALSRM","phase":"INTEGRATION","target_apogee":"1.50 km AGL",
+  "vehicle":"QSRM-FV01","propulsion":"RNX-71V","recovery":"Single parachute","guidance":"Unguided",
+  "systems":[
+   ("PROP","Propulsion","AMBER","Static-fire evidence requires final disposition"),
+   ("STR","Structures","BLUE","Integration baseline in work"),
+   ("AVN","Avionics","AMBER","Barometric altimeter verification open"),
+   ("REC","Recovery","AMBER","Deployment test evidence required"),
+   ("GSE","Ground Systems","BLUE","Launcher and ignition interfaces in work"),
+   ("RNG","Range","GREY","Site and airspace package not baselined")],
+  "gates":[("MDR","Mission Design Review",72,"IN REVIEW"),("TRR","Test Readiness Review",64,"OPEN"),("FRR","Flight Readiness Review",18,"LOCKED"),("LRR","Launch Readiness Review",0,"LOCKED")],
+  "timeline":[("01","Mission definition","COMPLETE"),("02","Vehicle integration","ACTIVE"),("03","Ground qualification","ACTIVE"),("04","Flight readiness","PENDING"),("05","Launch campaign","PENDING"),("06","Recovery & review","PENDING")],
+  "constraints":[("C-01","Launch site approval","OWNER REQUIRED","HIGH"),("C-02","Airspace coordination","NOT STARTED","HIGH"),("C-03","Recovery deployment evidence","OPEN","MEDIUM"),("C-04","Final vehicle mass properties","OPEN","MEDIUM")]
+ }
+ return render_template("ops.html",view="dashboard",counts=counts,programmes=programmes,missions=missions,events=events,workspace=workspace)
 
 @app.route("/programmes",methods=["GET","POST"])
 def programmes():
