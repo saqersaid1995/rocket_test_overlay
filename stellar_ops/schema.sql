@@ -1,13 +1,13 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE organisations (
+CREATE TABLE IF NOT EXISTS organisations (
     id TEXT PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     email TEXT NOT NULL,
@@ -17,7 +17,7 @@ CREATE TABLE users (
     UNIQUE (organisation_id, email)
 );
 
-CREATE TABLE role_assignments (
+CREATE TABLE IF NOT EXISTS role_assignments (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     user_id TEXT NOT NULL REFERENCES users(id),
@@ -29,7 +29,7 @@ CREATE TABLE role_assignments (
     granted_by TEXT NOT NULL REFERENCES users(id)
 );
 
-CREATE TABLE programmes (
+CREATE TABLE IF NOT EXISTS programmes (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     code TEXT NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE programmes (
     UNIQUE (organisation_id, code)
 );
 
-CREATE TABLE missions (
+CREATE TABLE IF NOT EXISTS missions (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     programme_id TEXT NOT NULL REFERENCES programmes(id),
@@ -63,7 +63,7 @@ CREATE TABLE missions (
     UNIQUE (organisation_id, code)
 );
 
-CREATE TABLE configuration_items (
+CREATE TABLE IF NOT EXISTS configuration_items (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     item_number TEXT NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE configuration_items (
     UNIQUE (organisation_id, item_number)
 );
 
-CREATE TABLE configuration_revisions (
+CREATE TABLE IF NOT EXISTS configuration_revisions (
     id TEXT PRIMARY KEY,
     configuration_item_id TEXT NOT NULL REFERENCES configuration_items(id),
     revision TEXT NOT NULL,
@@ -87,7 +87,7 @@ CREATE TABLE configuration_revisions (
     UNIQUE (configuration_item_id, revision)
 );
 
-CREATE TABLE serialised_assets (
+CREATE TABLE IF NOT EXISTS serialised_assets (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     configuration_item_id TEXT NOT NULL REFERENCES configuration_items(id),
@@ -99,7 +99,7 @@ CREATE TABLE serialised_assets (
     UNIQUE (organisation_id, serial_number)
 );
 
-CREATE TABLE test_campaigns (
+CREATE TABLE IF NOT EXISTS test_campaigns (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     programme_id TEXT NOT NULL REFERENCES programmes(id),
@@ -116,7 +116,7 @@ CREATE TABLE test_campaigns (
     UNIQUE (organisation_id, code)
 );
 
-CREATE TABLE test_runs (
+CREATE TABLE IF NOT EXISTS test_runs (
     id TEXT PRIMARY KEY,
     campaign_id TEXT NOT NULL REFERENCES test_campaigns(id),
     run_number INTEGER NOT NULL,
@@ -130,7 +130,7 @@ CREATE TABLE test_runs (
     UNIQUE (campaign_id, run_number)
 );
 
-CREATE TABLE launch_campaigns (
+CREATE TABLE IF NOT EXISTS launch_campaigns (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     mission_id TEXT NOT NULL REFERENCES missions(id),
@@ -143,7 +143,7 @@ CREATE TABLE launch_campaigns (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE hazards (
+CREATE TABLE IF NOT EXISTS hazards (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     programme_id TEXT REFERENCES programmes(id),
@@ -165,7 +165,7 @@ CREATE TABLE hazards (
     UNIQUE (organisation_id, hazard_number)
 );
 
-CREATE TABLE controlled_documents (
+CREATE TABLE IF NOT EXISTS controlled_documents (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     document_number TEXT NOT NULL,
@@ -176,7 +176,7 @@ CREATE TABLE controlled_documents (
     UNIQUE (organisation_id, document_number)
 );
 
-CREATE TABLE document_revisions (
+CREATE TABLE IF NOT EXISTS document_revisions (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES controlled_documents(id),
     revision TEXT NOT NULL,
@@ -190,7 +190,7 @@ CREATE TABLE document_revisions (
     UNIQUE (document_id, revision)
 );
 
-CREATE TABLE readiness_gates (
+CREATE TABLE IF NOT EXISTS readiness_gates (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     gate_type TEXT NOT NULL,
@@ -203,7 +203,7 @@ CREATE TABLE readiness_gates (
     version INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE TABLE approvals (
+CREATE TABLE IF NOT EXISTS approvals (
     id TEXT PRIMARY KEY,
     gate_id TEXT REFERENCES readiness_gates(id),
     subject_type TEXT NOT NULL,
@@ -217,7 +217,7 @@ CREATE TABLE approvals (
     decided_at TEXT NOT NULL
 );
 
-CREATE TABLE actions (
+CREATE TABLE IF NOT EXISTS actions (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     subject_type TEXT NOT NULL,
@@ -231,7 +231,7 @@ CREATE TABLE actions (
     version INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE TABLE evidence_objects (
+CREATE TABLE IF NOT EXISTS evidence_objects (
     id TEXT PRIMARY KEY,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
     subject_type TEXT NOT NULL,
@@ -247,7 +247,7 @@ CREATE TABLE evidence_objects (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE audit_events (
+CREATE TABLE IF NOT EXISTS audit_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
     organisation_id TEXT NOT NULL REFERENCES organisations(id),
@@ -266,10 +266,10 @@ CREATE TABLE audit_events (
     payload_json TEXT NOT NULL
 );
 
-CREATE INDEX idx_missions_programme ON missions(programme_id, lifecycle_state);
-CREATE INDEX idx_tests_programme ON test_campaigns(programme_id, lifecycle_state);
-CREATE INDEX idx_assets_configuration ON serialised_assets(configuration_item_id, acceptance_state);
-CREATE INDEX idx_hazards_mission ON hazards(mission_id, lifecycle_state);
-CREATE INDEX idx_audit_entity ON audit_events(entity_type, entity_id, sequence);
-CREATE INDEX idx_audit_correlation ON audit_events(correlation_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_missions_programme ON missions(programme_id, lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_tests_programme ON test_campaigns(programme_id, lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_assets_configuration ON serialised_assets(configuration_item_id, acceptance_state);
+CREATE INDEX IF NOT EXISTS idx_hazards_mission ON hazards(mission_id, lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_events(entity_type, entity_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_audit_correlation ON audit_events(correlation_id, sequence);
 
