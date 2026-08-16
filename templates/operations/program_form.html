@@ -1,0 +1,27 @@
+{% extends "operations/base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block eyebrow %}PROGRAMS / {{ title|upper }}{% endblock %}
+{% block content %}
+<section class="page-heading"><div><span class="kicker">CONTROLLED RECORD</span><h1>{{ title }}</h1><p>Define the program identity, ownership, objective, and delivery window.</p></div></section>
+{% if errors %}<div class="error-panel"><strong>Review the following:</strong><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
+<form class="record-form" method="post">
+  <div class="form-section"><header><span>01</span><div><h2>Program identity</h2><p>Use a durable code that will remain stable across related missions.</p></div></header>
+    <div class="form-grid">
+      <label>Program code<input name="code" maxlength="24" required value="{{ values.code or '' }}" placeholder="LV-QUAL"></label>
+      <label>Program name<input name="name" maxlength="120" required value="{{ values.name or '' }}" placeholder="QualSRM Flight Demonstration"></label>
+      <label>Program type<select name="program_type">{% for item in program_types %}<option {{ 'selected' if values.program_type == item }}>{{ item }}</option>{% endfor %}</select></label>
+      <label>Status<select name="status">{% for item in statuses %}<option {{ 'selected' if values.status == item }}>{{ item }}</option>{% endfor %}</select></label>
+    </div>
+  </div>
+  <div class="form-section"><header><span>02</span><div><h2>Ownership and intent</h2><p>State who owns delivery and what outcome the program exists to achieve.</p></div></header>
+    <div class="form-grid">
+      <label class="wide">Program owner<input name="owner" maxlength="100" value="{{ values.owner or '' }}" placeholder="Program lead"></label>
+      <label class="wide">Objective<textarea name="objective" maxlength="2000" rows="5" placeholder="Define the intended operational outcome...">{{ values.objective or '' }}</textarea></label>
+    </div>
+  </div>
+  <div class="form-section"><header><span>03</span><div><h2>Schedule</h2><p>Dates are planning controls and can be refined as the program matures.</p></div></header>
+    <div class="form-grid"><label>Start date<input type="date" name="start_date" value="{{ values.start_date or '' }}"></label><label>Target completion<input type="date" name="target_date" value="{{ values.target_date or '' }}"></label></div>
+  </div>
+  <footer class="form-actions"><a href="{{ url_for('operations.programs') }}">Cancel</a><button class="primary-button" type="submit">Save program</button></footer>
+</form>
+{% endblock %}
