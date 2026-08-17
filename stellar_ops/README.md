@@ -13,6 +13,16 @@ PORT=5001 python -m stellar_ops.app
 
 Open forwarded port 5001. Health check: `/health`.
 
+The root route opens the Mission Control Workspace. The original engineering setup console remains available at `/control`.
+
+## Mission Control Workspace
+
+The workspace provides role-based console presets for Test Director, Instrumentation, Propulsion, Data & Video, and Observer. Panels can be reordered, widened, removed, added, saved, shown in kiosk mode, or opened in synchronized pop-out windows for additional monitors. Included panels cover mission state, multi-channel plots, derived propulsion values, procedure position, station poll, alarms, events, camera wall, channel quality, network health, and evidence recording.
+
+The global Time Conductor supports live view, display pause without stopping recording, replay context, configurable visible time windows, and ignition positioning. Camera tiles use virtual optical feeds only in `SIMULATION`; `LIVE` never fabricates a connected stream.
+
+Test Runs and saved workspaces persist in SQLite. Alarm acknowledgements, shelving, run changes, and workspace changes are audited. A live alarm condition cannot be manually closed until its source recovers.
+
 The control console supports three explicit telemetry source modes:
 
 - `SIMULATION`: generated training signals.
