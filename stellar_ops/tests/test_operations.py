@@ -536,6 +536,74 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(release["outcome"], "SUCCESS")
         self.assertEqual(review["status"], "ACTIVE")
 
+    def prepare_review_stage(self, code="QREVIEW-010"):
+        operation_id = self.prepare_execution_stage(code)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=self.execution_release_payload()).status_code, 200)
+        with control_module.connect() as db:
+            db.execute("UPDATE operations SET mode='LIVE',state='CHECKOUT' WHERE id=?", (control_module.OPERATION_ID,))
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations()).status_code, 200)
+        with control_module.connect() as db:
+            db.execute("UPDATE operations SET state='POST_FIRE' WHERE id=?", (control_module.OPERATION_ID,))
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution/close", json={
+            "outcome": "SUCCESS", "summary": "Static fire completed and the article was declared safe."}).status_code, 200)
+        return operation_id
+
+    def post_review_payload(self):
+        evidence_codes = ["EXECUTION_RELEASE", "EVENT_LOG", "TELEMETRY_PACKAGE", "VIDEO_EVIDENCE",
+                          "CONFIGURATION_BASELINE", "APPROVED_PROCEDURE", "READINESS_DECISION",
+                          "REHEARSAL_RECORD", "SAFING_DECLARATION"]
+        return {"review_code": "QREVIEW-POR", "review_chair": "Test Director", "review_date": "2026-09-04",
+                "overall_conclusion": "The qualification objective was achieved within the approved configuration and limits.",
+                "lessons_learned": "Retain the verified timing and evidence configuration for the next campaign.",
+                "evidence_package_reference": "EVIDENCE/QREVIEW/FINAL", "evidence_package_sha256": "a" * 64,
+                "objectives": [{"objective_code": "OBJ-01", "objective_text": "Hardware identity verified",
+                                "assessment": "MET", "evidence_reference": "RESULTS/OBJECTIVE-01",
+                                "rationale": "Serial identity and as-run configuration matched the released baseline."}],
+                "evidence_items": [{"item_code": code, "name": code.replace("_", " ").title(), "required": True,
+                                    "status": "VERIFIED", "reference": f"EVIDENCE/{code}", "sha256": "b" * 64,
+                                    "disposition": ""} for code in evidence_codes], "corrective_actions": []}
+
+    def test_post_operation_review_blocks_missing_evidence_and_open_actions(self):
+        operation_id = self.prepare_review_stage()
+        page = self.client.get(f"/ops/{operation_id}/review")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Review & Closure", page.data)
+        payload = self.post_review_payload()
+        telemetry = next(x for x in payload["evidence_items"] if x["item_code"] == "TELEMETRY_PACKAGE")
+        telemetry.update(status="MISSING", reference="", sha256="", disposition="Recorder package awaiting controlled export")
+        payload["corrective_actions"] = [{"action_code": "CA-01", "title": "Archive timing trace", "source": "Post-operation review",
+                                           "severity": "HIGH", "owner": "Data Lead", "due_date": "2026-09-05",
+                                           "status": "OPEN", "closure_evidence": "", "transfer_reference": "", "notes": ""}]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/review/close")
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("TELEMETRY_PACKAGE", blocked.get_json()["error"])
+        telemetry.update(status="VERIFIED", reference="EVIDENCE/TELEMETRY_PACKAGE", sha256="c" * 64, disposition="")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/review/close")
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("CA-01", blocked.get_json()["error"])
+
+    def test_final_closure_is_hashed_immutable_and_completes_workflow(self):
+        operation_id = self.prepare_review_stage("QREVIEW-020")
+        payload = self.post_review_payload()
+        payload["corrective_actions"] = [{"action_code": "CA-02", "title": "Carry improved camera marker forward", "source": "Lessons learned",
+                                           "severity": "LOW", "owner": "Data Lead", "due_date": "2026-09-10",
+                                           "status": "TRANSFERRED", "closure_evidence": "", "transfer_reference": "CAMPAIGN-BACKLOG-42", "notes": ""}]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 200)
+        closed = self.client.post(f"/api/ops/{operation_id}/review/close", json={"closed_by": "Test Director"})
+        self.assertEqual(closed.status_code, 200)
+        self.assertEqual(len(closed.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage,status FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            review = db.execute("SELECT state,closure_sha256 FROM post_operation_reviews WHERE operation_id=?", (operation_id,)).fetchone()
+            section = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='REVIEW'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "CLOSED")
+        self.assertEqual(operation["status"], "CLOSED")
+        self.assertEqual(review["state"], "CLOSED")
+        self.assertEqual(section["status"], "COMPLETE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()
