@@ -4,6 +4,8 @@ import json
 import time
 from datetime import datetime, timezone
 
+from .database import add_column
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -16,6 +18,7 @@ def parse_time(value: str) -> float:
 RUNTIME_SCHEMA = """
 CREATE TABLE IF NOT EXISTS recording_sessions(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL,
+ run_id INTEGER,
  source_mode TEXT NOT NULL, started_at TEXT NOT NULL, stopped_at TEXT,
  state TEXT NOT NULL, started_by TEXT NOT NULL, sample_count_start INTEGER NOT NULL DEFAULT 0,
  sample_count_stop INTEGER, notes TEXT);
@@ -28,11 +31,15 @@ CREATE TABLE IF NOT EXISTS replay_runtime(
 CREATE TABLE IF NOT EXISTS alarm_keys(
  operation_id TEXT NOT NULL, alarm_key TEXT NOT NULL, alarm_id INTEGER NOT NULL,
  PRIMARY KEY(operation_id,alarm_key));
+CREATE TABLE IF NOT EXISTS limit_runtime(
+ operation_id TEXT NOT NULL, alarm_key TEXT NOT NULL, bad_count INTEGER NOT NULL DEFAULT 0,
+ good_count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(operation_id,alarm_key));
 """
 
 
 def ensure_schema(db) -> None:
     db.executescript(RUNTIME_SCHEMA)
+    add_column(db,"recording_sessions","run_id INTEGER")
 
 
 def _channel_maps(db, operation_id: str) -> list[dict]:
@@ -120,18 +127,40 @@ def runtime_snapshot(db, operation: dict, simulation: dict) -> dict:
 
 
 def recording_status(db, operation_id: str) -> dict:
-    ensure_schema(db); row=db.execute("SELECT * FROM recording_sessions WHERE operation_id=? ORDER BY id DESC LIMIT 1",(operation_id,)).fetchone()
+    ensure_schema(db); run=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(operation_id,)).fetchone()
+    if run: db.execute("UPDATE recording_sessions SET run_id=? WHERE operation_id=? AND run_id IS NULL",(run["id"],operation_id))
+    row=db.execute("SELECT * FROM recording_sessions WHERE operation_id=? AND run_id IS ? ORDER BY id DESC LIMIT 1",(operation_id,run["id"] if run else None)).fetchone()
     return dict(row) if row else {"state":"STOPPED","id":None,"source_mode":None}
 
 
 def evaluate_alarms(db, operation_id: str, telemetry: dict) -> None:
     ensure_schema(db)
-    for channel_id,item in telemetry.get("channels",{}).items():
-        key=f"QUALITY:{channel_id}"; bad=item["quality"] in {"STALE","DISCONNECTED","INVALID","OUT_OF_RANGE","UNCALIBRATED"}
+    operation=db.execute("SELECT state FROM operations WHERE id=?",(operation_id,)).fetchone()
+    profile=db.execute("SELECT settings_json FROM limit_profiles WHERE operation_id=? AND enabled=1 AND phase=? ORDER BY name LIMIT 1",(operation_id,operation["state"] if operation else "CHECKOUT")).fetchone()
+    settings=json.loads(profile["settings_json"]) if profile else {"persistence_samples":1,"hysteresis_percent":2}
+    persistence=max(1,int(settings.get("persistence_samples",1)))
+    limits={row["id"]:dict(row) for row in db.execute("SELECT id,warning,critical FROM channels WHERE operation_id=?",(operation_id,))}
+    run=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(operation_id,)).fetchone()
+
+    def transition(key: str, bad: bool, priority: str, source: str, message: str, required: int = 1) -> None:
+        state=db.execute("SELECT * FROM limit_runtime WHERE operation_id=? AND alarm_key=?",(operation_id,key)).fetchone()
+        bad_count=(state["bad_count"] if state else 0)+1 if bad else 0; good_count=0 if bad else (state["good_count"] if state else 0)+1
+        db.execute("""INSERT INTO limit_runtime VALUES(?,?,?,?) ON CONFLICT(operation_id,alarm_key)
+            DO UPDATE SET bad_count=excluded.bad_count,good_count=excluded.good_count""",(operation_id,key,bad_count,good_count))
         existing=db.execute("SELECT alarm_id FROM alarm_keys WHERE operation_id=? AND alarm_key=?",(operation_id,key)).fetchone()
-        if bad and not existing:
-            cur=db.execute("INSERT INTO alarms(operation_id,opened_at,priority,source,message,state) VALUES(?,?,?,?,?,'ACTIVE_UNACKNOWLEDGED')",
-                           (operation_id,utc_now(),"P1" if item["quality"]=="OUT_OF_RANGE" else "P2",channel_id,f"Channel quality is {item['quality']}"))
+        if bad and bad_count>=required and not existing:
+            cur=db.execute("INSERT INTO alarms(operation_id,opened_at,priority,source,message,state,run_id) VALUES(?,?,?,?,?,'ACTIVE_UNACKNOWLEDGED',?)",
+                           (operation_id,utc_now(),priority,source,message,run["id"] if run else None))
             db.execute("INSERT INTO alarm_keys VALUES(?,?,?)",(operation_id,key,cur.lastrowid))
-        elif not bad and existing:
+        elif not bad and existing and good_count>=required:
             db.execute("UPDATE alarms SET state='CLOSED' WHERE id=?",(existing["alarm_id"],)); db.execute("DELETE FROM alarm_keys WHERE operation_id=? AND alarm_key=?",(operation_id,key))
+
+    for channel_id,item in telemetry.get("channels",{}).items():
+        quality_bad=item["quality"] in {"STALE","DISCONNECTED","INVALID","UNCALIBRATED"}
+        transition(f"QUALITY:{channel_id}",quality_bad,"P2",channel_id,f"Channel quality is {item['quality']}",1)
+        definition=limits.get(channel_id,{})
+        value=float(item.get("value",0)); critical=definition.get("critical"); warning=definition.get("warning")
+        critical_bad=critical is not None and value>=critical
+        warning_bad=not critical_bad and warning is not None and value>=warning
+        transition(f"LIMIT_CRITICAL:{channel_id}",critical_bad,"P1",channel_id,f"Value {value:g} exceeds critical high limit {critical:g}" if critical is not None else "Critical limit cleared",persistence)
+        transition(f"LIMIT_WARNING:{channel_id}",warning_bad,"P2",channel_id,f"Value {value:g} exceeds warning high limit {warning:g}" if warning is not None else "Warning limit cleared",persistence)
