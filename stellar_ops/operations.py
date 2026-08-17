@@ -260,6 +260,85 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def seed_training_operation(db: sqlite3.Connection, mission_id: int, stamp: str) -> None:
+    """Create an idempotent, clearly labelled end-to-end training record."""
+    if db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone():
+        return
+    fingerprint=lambda label:hashlib.sha256(label.encode()).hexdigest()
+    cursor=db.execute("""INSERT INTO operation_registry(mission_id,runtime_operation_id,code,title,operation_type,site,planned_start,objective,success_criteria_json,owner,risk_class,status,current_stage,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(mission_id,OPERATION_ID,"DEMO-SF-001","RNX-71V Training Static Fire","STATIC_FIRE","Al Buraimi Training Stand","2026-09-15T08:00",
+        "Demonstrate the complete controlled workflow using representative, non-operational sample data.",json.dumps(["Stable ignition achieved","Chamber pressure remains inside the approved envelope","Telemetry and video evidence package is complete"]),
+        "Training Test Director","TRAINING ONLY","TRAINING DEMO","REVIEW",stamp,stamp))
+    operation_id=cursor.lastrowid
+    for sequence,(key,name) in enumerate(WORKFLOW,1):
+        status="ACTIVE" if key=="REVIEW" else "COMPLETE"
+        db.execute("INSERT INTO operation_workflow_sections VALUES(?,?,?,?,?,?,?,?)",(operation_id,key,name,sequence,status,"TRAINING TEAM",None,stamp))
+    db.execute("INSERT INTO test_articles(operation_id,article_class,serial_number,name,family,configuration_revision,build_status,state,notes,identified_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"MOTOR_ASSEMBLY","RNX71V-DEMO-001","RNX-71V Demonstration Motor","RNX-71V","REV-C","INTEGRATED","IDENTIFIED","Training record — not flight or test authority",stamp,stamp,stamp))
+    for kind,serial in (("CASE","CASE-DEMO-01"),("NOZZLE","NZL-DEMO-01"),("PROPELLANT_BATCH","RNX-DEMO-BATCH"),("IGNITER","IGN-DEMO-01")):
+        db.execute("INSERT INTO article_components(operation_id,component_type,position,serial_or_lot,part_number,revision,status,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                   (operation_id,kind,"PRIMARY",serial,f"PN-{kind}-01","REV-C","VERIFIED","Representative training genealogy",stamp))
+    article_id=db.execute("SELECT id FROM test_articles WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    db.execute("INSERT INTO configuration_baselines(operation_id,baseline_code,revision,state,article_id,notes,canonical_sha256,created_at,updated_at,released_at,released_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-CB","REV-C","RELEASED",article_id,"Representative released baseline",fingerprint("demo-baseline"),stamp,stamp,stamp,"Training Configuration Manager"))
+    baseline_id=db.execute("SELECT id FROM configuration_baselines WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    for kind in ("ARTICLE","PROCEDURE","CHANNEL_MAP","LIMIT_PROFILE","DEVICE_MANIFEST","CAMERA_MANIFEST","SOFTWARE"):
+        db.execute("INSERT INTO baseline_items(baseline_id,item_type,reference,revision,required,verification_status,source,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                   (baseline_id,kind,f"DEMO/CONFIG/{kind}","REV-C",1,"VERIFIED","TRAINING RECORD","Sample controlled reference",stamp))
+    db.execute("INSERT INTO staffing_plans(operation_id,state,approved_at,approved_by,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+               (operation_id,"APPROVED",stamp,"Training Test Director","Representative qualified team",stamp,stamp))
+    staffing_id=db.execute("SELECT id FROM staffing_plans WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    roles=(("TD","Aisha Al Harthy","EXECUTION_COMMAND",1),("RSO","Omar Al Balushi","INDEPENDENT_SAFETY",1),("LCO","Salim Al Maawali","FIRE_CONTROL",1),("PROP","Maha Al Hinai","ENGINEERING",0),("INST","Nasser Al Rawahi","ENGINEERING",0),("GND","Khalid Al Riyami","FIELD_OPERATIONS",0),("DATA","Fatma Al Shanfari","DATA_CONTROL",0))
+    for role,person,group,authority in roles:
+        db.execute("INSERT INTO operation_role_assignments(staffing_plan_id,role_code,person_name,call_sign,organization,contact_method,qualification_status,availability_status,decision_authority,conflict_group,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (staffing_id,role,person,role,"Stellar Kinetics","Operations radio","CURRENT","CONFIRMED",authority,group,"Training identity",stamp))
+    db.execute("INSERT INTO operation_procedures(operation_id,document_code,revision,title,state,entry_conditions,exit_conditions,abort_policy,canonical_sha256,approved_at,approved_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-PROC","REV-C","RNX-71V Static Fire Procedure","APPROVED","Stand cleared; article installed; permits current","Motor safe; pressure zero; evidence secured","RSO or TD may call ABORT; LCO removes firing power",fingerprint("demo-procedure"),stamp,"Training Test Director",stamp,stamp))
+    procedure_id=db.execute("SELECT id FROM operation_procedures WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    steps=((10,"SITE-10","SITE","VERIFY","Verify exclusion zone established","RSO"),(20,"PREP-20","PREPARATION","VERIFY","Confirm article serial and baseline revision","PROP"),(30,"COUNT-30","COUNTDOWN","HOLD_POINT","Conduct final station GO / NO-GO poll","TD"),(40,"FIRE-40","EXECUTION","COMMAND","Issue controlled ignition command","LCO"),(50,"SAFE-50","SAFING","VERIFY","Verify chamber pressure zero and ignition safe","RSO"),(60,"ABORT-60","CONTINGENCY","CONTINGENCY","Execute abort and safe firing circuit","LCO"))
+    for seq,code,phase,kind,instruction,role in steps:
+        db.execute("INSERT INTO operation_procedure_steps(procedure_id,sequence,step_code,phase,step_type,instruction,responsible_role,verification_mode,verifier_role,expected_evidence,safety_critical,hold_condition,abort_action,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (procedure_id,seq,code,phase,kind,instruction,role,"TWO_PERSON","TD",f"EVENT/{code}",1,"Hold on failed verification","Call ABORT; remove firing power",stamp))
+    db.execute("INSERT INTO instrumentation_plans(operation_id,plan_code,revision,state,time_source,acquisition_mode,notes,canonical_sha256,approved_at,approved_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-INST","REV-C","APPROVED","TIME-01 / UTC","LIVE_ETHERNET","Representative 1000 Hz measurement chain",fingerprint("demo-instrumentation"),stamp,"Training Instrumentation Lead",stamp,stamp))
+    plan_id=db.execute("SELECT id FROM instrumentation_plans WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    measurements=(("CHAMBER_PRESSURE","Chamber Pressure","PRESSURE","PT-01","motor.chamber_pressure","bar",0,80,1000,55,65,70),("THRUST","Motor Thrust","FORCE","LC-01","motor.thrust","N",0,5000,1000,3500,4200,4600),("CASE_TEMPERATURE","Motor Case Temperature","TEMPERATURE","TC-01","motor.case_temperature","degC",-20,250,100,120,160,200),("IGNITION_CONTINUITY","Ignition Continuity","ELECTRICAL","FC-01","ignition.continuity","state",0,1,10,None,None,None))
+    for code,name,category,device,channel,unit,minimum,maximum,rate,warning,critical,abort in measurements:
+        db.execute("INSERT INTO measurement_requirements(plan_id,measurement_code,name,category,criticality,device_id,channel_id,unit,engineering_min,engineering_max,sample_rate_hz,required_accuracy,calibration_reference,calibration_due,warning_limit,critical_limit,abort_limit,redundancy,e2e_status,required,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (plan_id,code,name,category,"CRITICAL",device,channel,unit,minimum,maximum,rate,"±1% FS",f"CAL-DEMO-{device}","2027-09-01",warning,critical,abort,"RECORDED","PASS",1,"Representative mapped channel",stamp))
+    db.execute("INSERT INTO video_recording_plans(operation_id,manifest_code,revision,state,master_time_source,recording_window_seconds,evidence_owner,notes,canonical_sha256,approved_at,approved_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-VIDEO","REV-C","APPROVED","TIME-01 / UTC",600,"Training Data Lead","Dual-view evidence plan",fingerprint("demo-video"),stamp,"Training Data Lead",stamp,stamp))
+    video_id=db.execute("SELECT id FROM video_recording_plans WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    for code,name,purpose,camera in (("MOTOR_WIDE","Motor Wide","Full stand and article context","CAM-01"),("NOZZLE_CLOSE","Nozzle Close","Ignition and plume evidence","CAM-02")):
+        db.execute("INSERT INTO camera_view_requirements(plan_id,view_code,name,purpose,camera_device_id,mandatory,record_mode,resolution,fps,codec,bitrate_mbps,pre_roll_seconds,post_roll_seconds,time_sync_method,time_sync_status,signal_test_status,recording_test_status,primary_storage,backup_storage,retention_days,estimated_storage_gb,loss_action,public_safe,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (video_id,code,name,purpose,camera,1,"ISO","1920x1080",30,"H264",8,30,120,"NTP / UTC","VERIFIED","PASS","PASS","RECORDER-A","NAS-EVIDENCE",365,4.5,"Call HOLD and assess evidence impact",0,"Training camera configuration",stamp))
+    db.execute("INSERT INTO readiness_reviews(operation_id,review_code,review_type,state,review_chair,planned_date,final_decision,decision_rationale,canonical_sha256,approved_at,approved_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-TRR","TRR","APPROVED","Training Test Director","2026-09-14","GO","All mandatory gates verified with representative evidence",fingerprint("demo-readiness"),stamp,"Training Test Director",stamp,stamp))
+    readiness_id=db.execute("SELECT id FROM readiness_reviews WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    for meta in readiness_gate_catalog("STATIC_FIRE"):
+        db.execute("INSERT INTO readiness_gates(review_id,gate_code,name,owner_role,required,status,evidence_reference,reviewer,reviewed_at,waiver_reason,waiver_authority,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (readiness_id,meta["code"],meta["name"],meta["owner_role"],1,"GO",f"DEMO/EVIDENCE/{meta['code']}","Training Reviewer",stamp,"","","Representative GO record",stamp))
+    db.execute("INSERT INTO readiness_findings(review_id,finding_code,title,severity,owner,status,due_date,disposition,acceptance_authority,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+               (readiness_id,"RF-DEMO-01","Improve camera slate visibility","LOW","Data Lead","CLOSED","2026-09-14","Slate replaced and recording test repeated","Test Director","Example closed finding",stamp))
+    db.execute("INSERT INTO rehearsal_campaigns(operation_id,rehearsal_code,rehearsal_type,source_mode,state,conductor,scheduled_at,baseline_sha256,procedure_sha256,result,summary,canonical_sha256,completed_at,completed_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-DRYRUN","DRY_RUN","SIMULATION","COMPLETED","Training Test Director","2026-09-14T15:00",fingerprint("demo-baseline"),fingerprint("demo-procedure"),"PASS","Sequence, hold, abort, telemetry and recording paths passed",fingerprint("demo-rehearsal"),stamp,"Training Test Director",stamp,stamp))
+    rehearsal_id=db.execute("SELECT id FROM rehearsal_campaigns WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    for code in sorted(rehearsal_requirements("STATIC_FIRE")):
+        db.execute("INSERT INTO rehearsal_checkpoints(campaign_id,checkpoint_code,name,phase,responsible_role,objective,expected_result,critical,result,observed_result,response_time_seconds,evidence_reference,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (rehearsal_id,code,code.replace("_"," ").title(),"SEQUENCE","TD",f"Exercise {code.lower()}","Controlled response within procedure",1,"PASS","Expected response observed",2.4,f"DEMO/REHEARSAL/{code}","Training checkpoint",stamp))
+    db.execute("INSERT INTO execution_releases(operation_id,release_code,source_mode,state,planned_start,valid_until,baseline_sha256,procedure_sha256,readiness_sha256,rehearsal_sha256,release_sha256,released_at,closed_at,outcome,outcome_summary,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (operation_id,"DEMO-SF-LIVE","LIVE","CLOSED","2026-09-15T08:00","2026-09-15T10:00",fingerprint("demo-baseline"),fingerprint("demo-procedure"),fingerprint("demo-readiness"),fingerprint("demo-rehearsal"),fingerprint("demo-release"),stamp,stamp,"SUCCESS","Stable burn completed; article safed; evidence transferred to review",stamp,stamp))
+    release_id=db.execute("SELECT id FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+    for meta in execution_gate_catalog("STATIC_FIRE"):
+        db.execute("INSERT INTO execution_release_gates(release_id,gate_code,name,owner_role,status,evidence_reference,verified_by,verified_at,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (release_id,meta["code"],meta["name"],meta["owner_role"],"GO",f"DEMO/LIVE/{meta['code']}","Training Verifier",stamp,"Representative release gate",stamp))
+    for role,person in (("TD","Aisha Al Harthy"),("RSO","Omar Al Balushi"),("LCO","Salim Al Maawali")):
+        db.execute("INSERT INTO execution_authorizations(release_id,role_code,person_name,decision,attestation,authorised_at) VALUES(?,?,?,?,?,?)",
+                   (release_id,role,person,"GO",f"Training {role} authorisation attestation",stamp))
+    db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+               (operation_id,stamp,"TRAINING_RECORD_CREATED","SYSTEM","End-to-end sample operation created for interface and workflow review"))
+
+
 def init_operations_db() -> None:
     init_control_db()
     stamp = utc_now()
@@ -273,6 +352,7 @@ def init_operations_db() -> None:
             mission_id = cursor.lastrowid
         else:
             mission_id = mission["id"]
+        seed_training_operation(db, mission_id, stamp)
         operation = db.execute("SELECT id FROM operation_registry WHERE code='QST-001'").fetchone()
         if not operation:
             cursor = db.execute("""INSERT INTO operation_registry(
@@ -304,9 +384,13 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if not row:
         return None
     item = dict(row)
+    item["is_training"] = item["code"].startswith("DEMO-")
     item["success_criteria"] = json.loads(item.pop("success_criteria_json") or "[]")
     item["sections"] = [dict(x) for x in db.execute(
         "SELECT * FROM operation_workflow_sections WHERE operation_id=? ORDER BY sequence", (operation_id,))]
+    route_names={"ARTICLE":"article","BASELINE":"baseline","TEAM":"team","PROCEDURE":"procedure","INSTRUMENTATION":"instrumentation","VIDEO":"video","READINESS":"readiness","REHEARSAL":"rehearsal","EXECUTION":"execution","REVIEW":"review"}
+    for section in item["sections"]:
+        section["url"] = f"/ops/{operation_id}/{route_names[section['section_key']]}" if section["section_key"] in route_names else f"/ops/{operation_id}"
     complete = sum(1 for x in item["sections"] if x["status"] == "COMPLETE")
     item["progress"] = round(complete / max(1, len(item["sections"])) * 100)
     item["next_section"] = next((x for x in item["sections"] if x["status"] in {"ACTIVE", "AVAILABLE"}), None)

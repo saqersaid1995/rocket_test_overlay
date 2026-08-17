@@ -31,6 +31,19 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertIn(b"OPERATION WORKFLOW", detail.data)
         self.assertIn(b"Test Article / Vehicle", detail.data)
 
+    def test_training_operation_is_prefilled_and_every_workflow_page_is_navigable(self):
+        register = self.client.get("/ops")
+        self.assertEqual(register.status_code, 200)
+        self.assertIn(b"DEMO-SF-001", register.data)
+        with control_module.connect() as db:
+            demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
+        detail = self.client.get(f"/ops/{demo['id']}")
+        self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
+        for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
+                     "readiness", "rehearsal", "execution", "review"):
+            response = self.client.get(f"/ops/{demo['id']}/{page}")
+            self.assertEqual(response.status_code, 200, page)
+
     def test_builder_creates_controlled_operation_and_unlocks_article(self):
         response = self.client.post("/api/ops", json={
             "mission_id": 1, "code": "QSF-002", "title": "Secondary qualification static fire",
