@@ -1,0 +1,14 @@
+{% extends "ops_base.html" %}{% block title %}SMTCS · Configuration Baseline{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{url_for('static',filename='baseline.css')}}">{% endblock %}
+{% block content %}<main class="baseline-shell" data-operation-id="{{operation.id}}">
+<header class="baseline-title"><div><small>WORKFLOW 03 / CONFIGURATION CONTROL</small><h1>Configuration Baseline</h1><p>{{operation.code}} · {{operation.title}}</p></div><div class="baseline-state">{{operation.baseline.state if operation.baseline else 'DRAFT NOT SAVED'}}</div></header>
+<section class="baseline-grid"><div class="baseline-main">
+<article class="identity"><header><b>BASELINE IDENTITY</b><small>CONTROLLED RECORD</small></header><div class="fields"><label>BASELINE CODE<input id="baseline-code" value="{{operation.baseline.baseline_code if operation.baseline else operation.code ~ '-CB'}}"></label><label>REVISION<input id="baseline-revision" value="{{operation.baseline.revision if operation.baseline else 'REV-A'}}"></label><label>RELEASE AUTHORITY<input id="release-authority" value="CONFIGURATION MANAGER"></label><label class="wide">CHANGE / SCOPE NOTE<textarea id="baseline-notes">{{operation.baseline.notes if operation.baseline else ''}}</textarea></label></div></article>
+<article><header><b>CONTROLLED CONFIGURATION ITEMS</b><small>VERIFICATION REQUIRED BEFORE RELEASE</small></header><table><thead><tr><th>ITEM</th><th>CONTROLLED REFERENCE</th><th>REVISION</th><th>SOURCE</th><th>VERIFICATION</th></tr></thead><tbody id="baseline-items"></tbody></table></article>
+</div><aside>
+<article><small>IDENTIFIED ARTICLE</small><h3>{{operation.article.serial_number}}</h3><p>{{operation.article.name}} · {{operation.article.configuration_revision}}</p><span class="verified">IDENTIFIED</span></article>
+<article><small>RELEASE RULE</small><p>Every mandatory item must have an explicit reference, revision, source, and VERIFIED or APPROVED disposition.</p></article>
+<article><small>IMMUTABLE EVIDENCE</small><p>Release creates a canonical SHA-256 fingerprint. The released baseline cannot be edited in place.</p>{% if operation.baseline and operation.baseline.canonical_sha256 %}<code>{{operation.baseline.canonical_sha256}}</code>{% endif %}</article>
+</aside></section>
+<footer class="baseline-actions"><span id="baseline-message"></span><a href="/ops/{{operation.id}}">CANCEL</a><button id="save-baseline">SAVE DRAFT</button><button class="release" id="release-baseline">RELEASE BASELINE</button></footer>
+<script>window.BASELINE_CONTEXT={{ {'article': operation.article, 'baseline': operation.baseline, 'required': required_types|list}|tojson }};</script><script src="{{url_for('static',filename='baseline.js')}}"></script></main>{% endblock %}

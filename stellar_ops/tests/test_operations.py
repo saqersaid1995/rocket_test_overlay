@@ -104,6 +104,48 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("AVIONICS", blocked.get_json()["error"])
 
+    def prepare_identified_article(self, code="QBASE-010"):
+        operation_id = self.create_operation(code)
+        payload = {"article_class": "MOTOR_ASSEMBLY", "serial_number": "RNX71V-BASE-010",
+                   "name": "Baseline Motor", "family": "RNX-71V", "configuration_revision": "REV-B",
+                   "build_status": "INTEGRATED", "components": [
+                       {"component_type": kind, "serial_or_lot": f"{kind}-010", "status": "VERIFIED"}
+                       for kind in ("CASE", "NOZZLE", "PROPELLANT_BATCH", "IGNITER")]}
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/article", json=payload).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/article/complete").status_code, 200)
+        return operation_id
+
+    def test_baseline_release_requires_every_mandatory_verified_item(self):
+        operation_id = self.prepare_identified_article()
+        page = self.client.get(f"/ops/{operation_id}/baseline")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Configuration Baseline", page.data)
+        draft = {"baseline_code": "QBASE-010-CB", "revision": "REV-A", "items": [
+            {"item_type": "PROCEDURE", "reference": "ETP-010", "revision": "REV-A", "source": "DOC", "verification_status": "VERIFIED"}]}
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=draft).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/baseline/release", json={"released_by": "CM"})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("CAMERA_MANIFEST", blocked.get_json()["error"])
+
+    def test_released_baseline_is_hashed_immutable_and_unlocks_team(self):
+        operation_id = self.prepare_identified_article("QBASE-020")
+        required = ["PROCEDURE", "CHANNEL_MAP", "LIMIT_PROFILE", "DEVICE_MANIFEST", "CAMERA_MANIFEST", "SOFTWARE"]
+        payload = {"baseline_code": "QBASE-020-CB", "revision": "REV-A", "items": [
+            {"item_type": kind, "reference": f"REF-{kind}", "revision": "REV-A", "source": "CONTROLLED_RECORD", "verification_status": "VERIFIED"}
+            for kind in required]}
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=payload).status_code, 200)
+        released = self.client.post(f"/api/ops/{operation_id}/baseline/release", json={"released_by": "Configuration Manager"})
+        self.assertEqual(released.status_code, 200)
+        self.assertEqual(len(released.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            op = db.execute("SELECT current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            baseline = db.execute("SELECT state,canonical_sha256 FROM configuration_baselines WHERE operation_id=?", (operation_id,)).fetchone()
+            team = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='TEAM'", (operation_id,)).fetchone()
+        self.assertEqual(op["current_stage"], "TEAM")
+        self.assertEqual(baseline["state"], "RELEASED")
+        self.assertEqual(team["status"], "ACTIVE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

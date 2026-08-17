@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -74,6 +75,20 @@ CREATE TABLE IF NOT EXISTS article_components(
  status TEXT NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(operation_id,component_type,position),
  FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS configuration_baselines(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ baseline_code TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL,
+ article_id INTEGER NOT NULL, notes TEXT, canonical_sha256 TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, released_at TEXT, released_by TEXT,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id),
+ FOREIGN KEY(article_id) REFERENCES test_articles(id));
+CREATE TABLE IF NOT EXISTS baseline_items(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, baseline_id INTEGER NOT NULL,
+ item_type TEXT NOT NULL, reference TEXT NOT NULL, revision TEXT NOT NULL,
+ required INTEGER NOT NULL, verification_status TEXT NOT NULL,
+ source TEXT NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(baseline_id,item_type),
+ FOREIGN KEY(baseline_id) REFERENCES configuration_baselines(id));
 """
 
 
@@ -137,6 +152,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     item["article"] = dict(article) if article else None
     item["components"] = [dict(x) for x in db.execute(
         "SELECT * FROM article_components WHERE operation_id=? ORDER BY component_type,position", (operation_id,))]
+    baseline = db.execute("SELECT * FROM configuration_baselines WHERE operation_id=?", (operation_id,)).fetchone()
+    item["baseline"] = dict(baseline) if baseline else None
+    if item["baseline"]:
+        item["baseline"]["items"] = [dict(x) for x in db.execute(
+            "SELECT * FROM baseline_items WHERE baseline_id=? ORDER BY item_type", (baseline["id"],))]
     return item
 
 
@@ -172,6 +192,16 @@ def article_builder(operation_id: int):
     if not item:
         return "Operation not found", 404
     return render_template("ops_article.html", operation=item)
+
+
+@operations.get("/ops/<int:operation_id>/baseline")
+def baseline_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    return render_template("ops_baseline.html", operation=item,
+                           required_types=baseline_requirements(item["operation_type"]))
 
 
 def valid_code(value: str) -> bool:
@@ -230,7 +260,8 @@ def continue_operation(operation_id: int):
     with connect() as db:
         item = operation_view(db, operation_id)
     if not item: return jsonify(error="operation not found"), 404
-    routes = {"ARTICLE": f"/ops/{operation_id}/article", "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
+    routes = {"ARTICLE": f"/ops/{operation_id}/article", "BASELINE": f"/ops/{operation_id}/baseline",
+              "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
 
@@ -241,6 +272,104 @@ def article_requirements(operation_type: str) -> set[str]:
     if operation_type == "RECOVERY_TEST": return {"RECOVERY"}
     if operation_type == "AVIONICS_TEST": return {"AVIONICS", "POWER"}
     return {"PRIMARY_ASSEMBLY"}
+
+
+def baseline_requirements(operation_type: str) -> set[str]:
+    required = {"ARTICLE", "PROCEDURE", "CHANNEL_MAP", "LIMIT_PROFILE",
+                "DEVICE_MANIFEST", "CAMERA_MANIFEST", "SOFTWARE"}
+    if operation_type == "ROCKET_LAUNCH":
+        required |= {"VEHICLE_CONFIGURATION", "RECOVERY_CONFIGURATION"}
+    return required
+
+
+@operations.post("/api/ops/<int:operation_id>/baseline")
+def save_baseline(operation_id: int):
+    p = request.get_json(silent=True) or {}
+    code = str(p.get("baseline_code", "")).strip().upper()
+    revision = str(p.get("revision", "")).strip().upper()
+    items = p.get("items", [])
+    if not valid_code(code) or not revision:
+        return jsonify(error="baseline code and revision are required"), 400
+    if not isinstance(items, list):
+        return jsonify(error="baseline items must be a list"), 400
+    normalized = []
+    allowed_states = {"DRAFT", "VERIFIED", "APPROVED", "NOT_APPLICABLE"}
+    for entry in items:
+        item_type = str(entry.get("item_type", "")).strip().upper()
+        reference = str(entry.get("reference", "")).strip()
+        item_revision = str(entry.get("revision", "")).strip().upper()
+        status = str(entry.get("verification_status", "DRAFT")).strip().upper()
+        source = str(entry.get("source", "CONTROLLED_RECORD")).strip().upper()
+        if not item_type or not reference or not item_revision:
+            return jsonify(error="each baseline item requires type, reference and revision"), 400
+        if status not in allowed_states:
+            return jsonify(error=f"invalid verification status for {item_type}"), 400
+        normalized.append((item_type, reference, item_revision, status, source,
+                           str(entry.get("notes", "")).strip()))
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "BASELINE":
+            return jsonify(error="configuration baseline can only be edited during the BASELINE stage"), 409
+        article = db.execute("SELECT * FROM test_articles WHERE operation_id=?", (operation_id,)).fetchone()
+        if not article or article["state"] != "IDENTIFIED":
+            return jsonify(error="an identified test article or vehicle is required"), 409
+        existing = db.execute("SELECT * FROM configuration_baselines WHERE operation_id=?", (operation_id,)).fetchone()
+        if existing and existing["state"] == "RELEASED":
+            return jsonify(error="released baselines are immutable; create a controlled revision instead"), 409
+        db.execute("""INSERT INTO configuration_baselines(operation_id,baseline_code,revision,state,article_id,notes,created_at,updated_at)
+            VALUES(?,?,?,'DRAFT',?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET baseline_code=excluded.baseline_code,
+            revision=excluded.revision,article_id=excluded.article_id,notes=excluded.notes,updated_at=excluded.updated_at""",
+            (operation_id, code, revision, article["id"], str(p.get("notes", "")).strip(), stamp, stamp))
+        baseline_id = db.execute("SELECT id FROM configuration_baselines WHERE operation_id=?", (operation_id,)).fetchone()["id"]
+        normalized = [x for x in normalized if x[0] != "ARTICLE"]
+        normalized.append(("ARTICLE", article["serial_number"], article["configuration_revision"],
+                           "VERIFIED", "ARTICLE_REGISTRY", article["name"]))
+        required_types = baseline_requirements(operation["operation_type"])
+        for item_type, reference, item_revision, status, source, notes in normalized:
+            db.execute("""INSERT INTO baseline_items(baseline_id,item_type,reference,revision,required,verification_status,source,notes,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(baseline_id,item_type) DO UPDATE SET reference=excluded.reference,
+                revision=excluded.revision,required=excluded.required,verification_status=excluded.verification_status,
+                source=excluded.source,notes=excluded.notes,updated_at=excluded.updated_at""",
+                (baseline_id, item_type, reference, item_revision, int(item_type in required_types), status, source, notes, stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "BASELINE_UPDATED", "CONFIGURATION MANAGER", f"Baseline {code}/{revision} draft saved"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/baseline/release")
+def release_baseline(operation_id: int):
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "BASELINE": return jsonify(error="BASELINE is not the active workflow stage"), 409
+        baseline = db.execute("SELECT * FROM configuration_baselines WHERE operation_id=?", (operation_id,)).fetchone()
+        if not baseline: return jsonify(error="save the configuration baseline draft first"), 409
+        if baseline["state"] != "DRAFT": return jsonify(error="baseline is already released"), 409
+        article = db.execute("SELECT * FROM test_articles WHERE id=?", (baseline["article_id"],)).fetchone()
+        items = [dict(x) for x in db.execute("SELECT * FROM baseline_items WHERE baseline_id=? ORDER BY item_type", (baseline["id"],))]
+        approved = {x["item_type"] for x in items if x["verification_status"] in {"VERIFIED", "APPROVED"}}
+        missing = sorted(baseline_requirements(operation["operation_type"]) - approved)
+        if missing: return jsonify(error="required baseline items are missing or unverified: " + ", ".join(missing)), 409
+        canonical = {"schema": "SMTCS-BASELINE/1", "operation": {"code": operation["code"], "type": operation["operation_type"]},
+                     "article": {"serial": article["serial_number"], "revision": article["configuration_revision"]},
+                     "baseline": {"code": baseline["baseline_code"], "revision": baseline["revision"]},
+                     "items": [{k: x[k] for k in ("item_type", "reference", "revision", "source")} for x in items]}
+        digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        actor = str((request.get_json(silent=True) or {}).get("released_by", "CONFIGURATION MANAGER")).strip() or "CONFIGURATION MANAGER"
+        db.execute("UPDATE configuration_baselines SET state='RELEASED',canonical_sha256=?,released_at=?,released_by=?,updated_at=? WHERE id=?",
+                   (digest, stamp, actor, stamp, baseline["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='BASELINE'", (actor, stamp, operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='TEAM'", (stamp, operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='TEAM',updated_at=? WHERE id=?", (stamp, operation_id))
+        if operation["runtime_operation_id"]:
+            active_run = db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1", (operation["runtime_operation_id"],)).fetchone()
+            if active_run: db.execute("UPDATE test_runs SET configuration_revision=? WHERE id=?", (f"{baseline['baseline_code']}/{baseline['revision']}", active_run["id"]))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "BASELINE_RELEASED", actor, f"Baseline released with SHA-256 {digest}"))
+    return jsonify(ok=True, sha256=digest, url=url_for("operations.operation_detail", operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/article")
