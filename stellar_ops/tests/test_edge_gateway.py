@@ -29,14 +29,20 @@ class EdgeProtocolTests(unittest.TestCase):
                     stream = sock.makefile("rwb")
                     stream.write(encode_frame(hello("ESP-DAQ-01", boot, "test-1.0", ["pressure_raw"]))); stream.flush()
                     self.assertEqual(decode_frame(stream.readline())["type"], "ACK")
-                    stream.write(encode_frame(batch("ESP-DAQ-01", boot, 0, 0, 1000, {"pressure_raw": [1.0, 2.0, 3.0]}))); stream.flush()
+                    frame = encode_frame(batch("ESP-DAQ-01", boot, 0, 0, 1000, {"pressure_raw": [1.0, 2.0, 3.0]}))
+                    stream.write(frame); stream.flush()
                     ack = decode_frame(stream.readline())
                     self.assertEqual(ack["ack_sequence"], 0)
+                    stream.write(frame); stream.flush()
+                    duplicate_ack = decode_frame(stream.readline())
+                    self.assertEqual(duplicate_ack["ack_sequence"], 0)
                 with database(path) as db:
                     session = db.execute("SELECT * FROM edge_sessions WHERE device_id='ESP-DAQ-01'").fetchone()
                     stored = db.execute("SELECT * FROM edge_batches").fetchone()
+                    batch_count = db.execute("SELECT count(*) FROM edge_batches").fetchone()[0]
                 self.assertEqual(session["total_samples"], 3)
                 self.assertEqual(stored["sample_count"], 3)
+                self.assertEqual(batch_count, 1)
             finally:
                 server.shutdown(); server.server_close(); thread.join(timeout=2)
 
