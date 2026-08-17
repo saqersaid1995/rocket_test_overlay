@@ -34,7 +34,7 @@ def test_adapter(adapter_type: str, endpoint: str) -> ConnectionResult:
     endpoint = endpoint.strip()
     if adapter == "SIMULATOR":
         return ConnectionResult(True, "SIMULATED", "Simulator adapter is available; no physical device was contacted", 0.0)
-    if adapter in {"MODBUS_TCP", "TCP", "OPC_UA"}:
+    if adapter in {"MODBUS_TCP", "TCP", "OPC_UA", "SMTCS_EDGE_TCP"}:
         if ":" not in endpoint:
             return ConnectionResult(False, "INVALID_CONFIG", "Endpoint must be HOST:PORT")
         host, port = endpoint.rsplit(":", 1)
