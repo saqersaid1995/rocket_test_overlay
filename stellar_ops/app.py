@@ -9,16 +9,18 @@ from flask import Flask, redirect, url_for
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
 from .telemetry_runtime import recording_status
 from .media import media
+from .operations import operations
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = os.environ.get("STELLAR_OPS_SECRET", "development-only-change-me")
 app.register_blueprint(control)
 app.register_blueprint(media)
+app.register_blueprint(operations)
 
 
 @app.get("/")
 def home():
-    return redirect(url_for("control.workspace_console"))
+    return redirect(url_for("operations.dashboard"))
 
 
 @app.get("/health")
