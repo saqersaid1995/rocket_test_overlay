@@ -181,6 +181,29 @@ CREATE TABLE IF NOT EXISTS readiness_findings(
  disposition TEXT, acceptance_authority TEXT, notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(review_id,finding_code),
  FOREIGN KEY(review_id) REFERENCES readiness_reviews(id));
+CREATE TABLE IF NOT EXISTS rehearsal_campaigns(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ rehearsal_code TEXT NOT NULL, rehearsal_type TEXT NOT NULL, source_mode TEXT NOT NULL,
+ state TEXT NOT NULL, conductor TEXT NOT NULL, scheduled_at TEXT NOT NULL,
+ baseline_sha256 TEXT NOT NULL, procedure_sha256 TEXT NOT NULL,
+ result TEXT NOT NULL, summary TEXT, canonical_sha256 TEXT,
+ completed_at TEXT, completed_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS rehearsal_checkpoints(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER NOT NULL,
+ checkpoint_code TEXT NOT NULL, name TEXT NOT NULL, phase TEXT NOT NULL,
+ responsible_role TEXT NOT NULL, objective TEXT NOT NULL, expected_result TEXT NOT NULL,
+ critical INTEGER NOT NULL, result TEXT NOT NULL, observed_result TEXT,
+ response_time_seconds REAL, evidence_reference TEXT, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(campaign_id,checkpoint_code),
+ FOREIGN KEY(campaign_id) REFERENCES rehearsal_campaigns(id));
+CREATE TABLE IF NOT EXISTS rehearsal_anomalies(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER NOT NULL,
+ anomaly_code TEXT NOT NULL, title TEXT NOT NULL, severity TEXT NOT NULL,
+ owner TEXT NOT NULL, status TEXT NOT NULL, requires_retest INTEGER NOT NULL,
+ disposition TEXT, evidence_reference TEXT, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(campaign_id,anomaly_code),
+ FOREIGN KEY(campaign_id) REFERENCES rehearsal_campaigns(id));
 """
 
 
@@ -274,6 +297,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["readiness"]:
         item["readiness"]["gates"] = [dict(x) for x in db.execute("SELECT * FROM readiness_gates WHERE review_id=? ORDER BY gate_code", (review["id"],))]
         item["readiness"]["findings"] = [dict(x) for x in db.execute("SELECT * FROM readiness_findings WHERE review_id=? ORDER BY severity,finding_code", (review["id"],))]
+    rehearsal = db.execute("SELECT * FROM rehearsal_campaigns WHERE operation_id=?", (operation_id,)).fetchone()
+    item["rehearsal"] = dict(rehearsal) if rehearsal else None
+    if item["rehearsal"]:
+        item["rehearsal"]["checkpoints"] = [dict(x) for x in db.execute("SELECT * FROM rehearsal_checkpoints WHERE campaign_id=? ORDER BY checkpoint_code", (rehearsal["id"],))]
+        item["rehearsal"]["anomalies"] = [dict(x) for x in db.execute("SELECT * FROM rehearsal_anomalies WHERE campaign_id=? ORDER BY severity,anomaly_code", (rehearsal["id"],))]
     return item
 
 
@@ -368,6 +396,13 @@ def readiness_builder(operation_id:int):
     return render_template("ops_readiness.html",operation=item,gates=readiness_gate_catalog(item["operation_type"]))
 
 
+@operations.get("/ops/<int:operation_id>/rehearsal")
+def rehearsal_builder(operation_id:int):
+    with connect() as db:item=operation_view(db,operation_id)
+    if not item:return "Operation not found",404
+    return render_template("ops_rehearsal.html",operation=item,required_checkpoints=sorted(rehearsal_requirements(item["operation_type"])))
+
+
 def valid_code(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{2,31}", value))
 
@@ -430,6 +465,7 @@ def continue_operation(operation_id: int):
               "INSTRUMENTATION": f"/ops/{operation_id}/instrumentation",
               "VIDEO": f"/ops/{operation_id}/video",
               "READINESS": f"/ops/{operation_id}/readiness",
+              "REHEARSAL": f"/ops/{operation_id}/rehearsal",
               "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
@@ -503,6 +539,103 @@ def readiness_gate_catalog(operation_type:str)->list[dict]:
            ("SITE","Site, Stand & Exclusion Zone","GROUND OPERATIONS",True)]
     if operation_type=="ROCKET_LAUNCH":gates += [("RANGE","Range Readiness","RSO",True),("AIRSPACE","Airspace Coordination","LAUNCH DIRECTOR",True),("RECOVERY","Recovery Readiness","RECOVERY LEAD",True)]
     return [{"code":c,"name":n,"owner_role":o,"required":r} for c,n,o,r in gates]
+
+
+def rehearsal_requirements(operation_type:str)->set[str]:
+    required={"FULL_SEQUENCE","COMM_CHECK","HOLD_RESPONSE","ABORT_RESPONSE","DATA_RECORDING","VIDEO_RECORDING"}
+    if operation_type=="ROCKET_LAUNCH":required|={"RANGE_HOLD","RECOVERY_COMMS"}
+    return required
+
+
+@operations.post("/api/ops/<int:operation_id>/rehearsal")
+def save_rehearsal(operation_id:int):
+    p=request.get_json(silent=True) or {};checkpoints=p.get("checkpoints",[]);anomalies=p.get("anomalies",[])
+    code=str(p.get("rehearsal_code","")).strip().upper();kind=str(p.get("rehearsal_type","DRY_RUN")).strip().upper()
+    source=str(p.get("source_mode","SIMULATION")).strip().upper();conductor=str(p.get("conductor","")).strip();scheduled=str(p.get("scheduled_at","")).strip()
+    if not valid_code(code) or kind not in {"TABLETOP","DRY_RUN","WET_DRESS"} or source!="SIMULATION" or not conductor or not scheduled:
+        return jsonify(error="rehearsal code, type, conductor, schedule and SIMULATION source mode are required"),400
+    if not isinstance(checkpoints,list) or not isinstance(anomalies,list):return jsonify(error="checkpoints and anomalies must be lists"),400
+    checkpoint_rows=[];errors=[]
+    for index,x in enumerate(checkpoints,1):
+        ccode=str(x.get("checkpoint_code","")).strip().upper();name=str(x.get("name","")).strip();phase=str(x.get("phase","")).strip().upper()
+        role=str(x.get("responsible_role","")).strip().upper();objective=str(x.get("objective","")).strip();expected=str(x.get("expected_result","")).strip()
+        result=str(x.get("result","PENDING")).strip().upper();observed=str(x.get("observed_result","")).strip();evidence=str(x.get("evidence_reference","")).strip()
+        try:response=float(x["response_time_seconds"]) if x.get("response_time_seconds") not in {None,""} else None
+        except (TypeError,ValueError):errors.append(f"checkpoint {ccode or index} has invalid response time");response=None
+        critical=bool(x.get("critical",True))
+        if not valid_code(ccode) or not name or not phase or not role or not objective or not expected or result not in {"PENDING","PASS","FAIL","BLOCKED"}:errors.append(f"checkpoint {index} has incomplete controlled fields")
+        if result in {"PASS","FAIL","BLOCKED"} and (not observed or not evidence):errors.append(f"{ccode or index} requires observed result and evidence")
+        if response is not None and response<0:errors.append(f"{ccode or index} response time cannot be negative")
+        checkpoint_rows.append((ccode,name,phase,role,objective,expected,int(critical),result,observed or None,response,evidence or None,str(x.get("notes","")).strip()))
+    anomaly_rows=[]
+    for index,x in enumerate(anomalies,1):
+        acode=str(x.get("anomaly_code","")).strip().upper();title=str(x.get("title","")).strip();severity=str(x.get("severity","")).strip().upper()
+        owner=str(x.get("owner","")).strip();status=str(x.get("status","OPEN")).strip().upper();retest=bool(x.get("requires_retest",False))
+        disposition=str(x.get("disposition","")).strip();evidence=str(x.get("evidence_reference","")).strip()
+        if not valid_code(acode) or not title or severity not in {"LOW","MEDIUM","HIGH","CRITICAL"} or not owner or status not in {"OPEN","CLOSED","ACCEPTED"}:errors.append(f"anomaly {index} has incomplete controlled fields")
+        if status in {"CLOSED","ACCEPTED"} and (not disposition or not evidence):errors.append(f"{acode or index} requires disposition and evidence")
+        anomaly_rows.append((acode,title,severity,owner,status,int(retest),disposition or None,evidence or None,str(x.get("notes","")).strip()))
+    if errors:return jsonify(error="; ".join(errors)),400
+    stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="REHEARSAL":return jsonify(error="rehearsal can only be edited during the REHEARSAL stage"),409
+        readiness=db.execute("SELECT state,canonical_sha256 FROM readiness_reviews WHERE operation_id=?",(operation_id,)).fetchone()
+        baseline=db.execute("SELECT canonical_sha256 FROM configuration_baselines WHERE operation_id=?",(operation_id,)).fetchone()
+        procedure=db.execute("SELECT canonical_sha256 FROM operation_procedures WHERE operation_id=?",(operation_id,)).fetchone()
+        if not readiness or readiness["state"]!="APPROVED":return jsonify(error="an approved readiness review is required"),409
+        staffing=db.execute("SELECT id FROM staffing_plans WHERE operation_id=? AND state='APPROVED'",(operation_id,)).fetchone()
+        assigned={x["role_code"] for x in db.execute("SELECT role_code FROM operation_role_assignments WHERE staffing_plan_id=?",(staffing["id"],))} if staffing else set()
+        unknown_roles=sorted({x[3] for x in checkpoint_rows}-assigned)
+        if unknown_roles:return jsonify(error="rehearsal checkpoints reference unassigned roles: "+", ".join(unknown_roles)),409
+        existing=db.execute("SELECT * FROM rehearsal_campaigns WHERE operation_id=?",(operation_id,)).fetchone()
+        if existing and existing["state"]=="COMPLETED":return jsonify(error="completed rehearsal records are immutable"),409
+        db.execute("""INSERT INTO rehearsal_campaigns(operation_id,rehearsal_code,rehearsal_type,source_mode,state,conductor,scheduled_at,baseline_sha256,procedure_sha256,result,created_at,updated_at)
+            VALUES(?,?,?,?,'DRAFT',?,?,?,?, 'PENDING',?,?) ON CONFLICT(operation_id) DO UPDATE SET rehearsal_code=excluded.rehearsal_code,rehearsal_type=excluded.rehearsal_type,
+            source_mode=excluded.source_mode,conductor=excluded.conductor,scheduled_at=excluded.scheduled_at,baseline_sha256=excluded.baseline_sha256,procedure_sha256=excluded.procedure_sha256,updated_at=excluded.updated_at""",
+            (operation_id,code,kind,source,conductor,scheduled,baseline["canonical_sha256"],procedure["canonical_sha256"],stamp,stamp))
+        campaign_id=db.execute("SELECT id FROM rehearsal_campaigns WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM rehearsal_checkpoints WHERE campaign_id=?",(campaign_id,));db.execute("DELETE FROM rehearsal_anomalies WHERE campaign_id=?",(campaign_id,))
+        for row in checkpoint_rows:db.execute("""INSERT INTO rehearsal_checkpoints(campaign_id,checkpoint_code,name,phase,responsible_role,objective,expected_result,critical,result,observed_result,response_time_seconds,evidence_reference,notes,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(campaign_id,*row,stamp))
+        for row in anomaly_rows:db.execute("""INSERT INTO rehearsal_anomalies(campaign_id,anomaly_code,title,severity,owner,status,requires_retest,disposition,evidence_reference,notes,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(campaign_id,*row,stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"REHEARSAL_UPDATED",conductor,f"Simulation rehearsal {code} updated with {len(checkpoint_rows)} checkpoints and {len(anomaly_rows)} anomalies"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/rehearsal/complete")
+def complete_rehearsal(operation_id:int):
+    p=request.get_json(silent=True) or {};actor=str(p.get("completed_by","TEST DIRECTOR")).strip() or "TEST DIRECTOR";summary=str(p.get("summary","")).strip();stamp=utc_now()
+    if not summary:return jsonify(error="rehearsal completion requires an outcome summary"),400
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="REHEARSAL":return jsonify(error="REHEARSAL is not the active workflow stage"),409
+        campaign=db.execute("SELECT * FROM rehearsal_campaigns WHERE operation_id=?",(operation_id,)).fetchone()
+        if not campaign:return jsonify(error="save the rehearsal record first"),409
+        if campaign["source_mode"]!="SIMULATION":return jsonify(error="rehearsal must run in explicit SIMULATION mode"),409
+        checkpoints=[dict(x) for x in db.execute("SELECT * FROM rehearsal_checkpoints WHERE campaign_id=? ORDER BY checkpoint_code",(campaign["id"],))]
+        present={x["checkpoint_code"] for x in checkpoints};missing=sorted(rehearsal_requirements(operation["operation_type"])-present)
+        if missing:return jsonify(error="mandatory rehearsal checkpoints are missing: "+", ".join(missing)),409
+        failed=sorted(x["checkpoint_code"] for x in checkpoints if x["critical"] and x["result"]!="PASS")
+        if failed:return jsonify(error="critical rehearsal checkpoints did not pass: "+", ".join(failed)),409
+        anomalies=[dict(x) for x in db.execute("SELECT * FROM rehearsal_anomalies WHERE campaign_id=? ORDER BY anomaly_code",(campaign["id"],))]
+        open_items=sorted(x["anomaly_code"] for x in anomalies if x["status"]=="OPEN" or (x["requires_retest"] and x["status"]!="CLOSED"))
+        if open_items:return jsonify(error="rehearsal anomalies require closure or retest: "+", ".join(open_items)),409
+        unsafe=sorted(x["anomaly_code"] for x in anomalies if x["severity"]=="CRITICAL" and x["status"]=="ACCEPTED")
+        if unsafe:return jsonify(error="critical rehearsal anomalies cannot be accepted: "+", ".join(unsafe)),409
+        canonical={"schema":"SMTCS-REHEARSAL/1","operation":operation["code"],"campaign":{"code":campaign["rehearsal_code"],"type":campaign["rehearsal_type"],"source_mode":campaign["source_mode"],"baseline":campaign["baseline_sha256"],"procedure":campaign["procedure_sha256"]},
+                   "checkpoints":[{k:x[k] for k in ("checkpoint_code","responsible_role","critical","result","observed_result","response_time_seconds","evidence_reference")} for x in checkpoints],
+                   "anomalies":[{k:x[k] for k in ("anomaly_code","severity","owner","status","requires_retest","disposition","evidence_reference")} for x in anomalies],"summary":summary}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        db.execute("UPDATE rehearsal_campaigns SET state='COMPLETED',result='PASS',summary=?,canonical_sha256=?,completed_at=?,completed_by=?,updated_at=? WHERE id=?",(summary,digest,stamp,actor,stamp,campaign["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='REHEARSAL'",(actor,stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='EXECUTION'",(stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='EXECUTION',status='READY',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"REHEARSAL_COMPLETED",actor,f"Simulation rehearsal passed with SHA-256 {digest}; Live Execution unlocked"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.operation_detail",operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/readiness")

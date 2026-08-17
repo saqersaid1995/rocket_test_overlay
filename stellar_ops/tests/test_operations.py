@@ -409,6 +409,70 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(rehearsal["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness", json=payload).status_code, 409)
 
+    def prepare_rehearsal_stage(self, code="QREH-010"):
+        operation_id = self.prepare_readiness_stage(code)
+        readiness = self.readiness_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness", json=readiness).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness/approve", json={
+            "decision_rationale": "All gates are GO and no open findings remain."}).status_code, 200)
+        return operation_id
+
+    def rehearsal_payload(self, result="PASS"):
+        rows = [
+            ("FULL_SEQUENCE", "Full sequence", "SEQUENCE", "TD"),
+            ("COMM_CHECK", "Communications", "COMMS", "TD"),
+            ("HOLD_RESPONSE", "Hold response", "CONTINGENCY", "RSO"),
+            ("ABORT_RESPONSE", "Abort response", "CONTINGENCY", "RSO"),
+            ("DATA_RECORDING", "Data recording", "DATA", "INST"),
+            ("VIDEO_RECORDING", "Video recording", "VIDEO", "DATA"),
+        ]
+        return {"rehearsal_code": "QREH-DRYRUN", "rehearsal_type": "DRY_RUN", "source_mode": "SIMULATION",
+                "conductor": "Test Director", "scheduled_at": "2026-09-02T08:00", "checkpoints": [
+                    {"checkpoint_code": code, "name": name, "phase": phase, "responsible_role": role,
+                     "objective": f"Exercise {name.lower()}", "expected_result": "Controlled response within procedure",
+                     "critical": True, "result": result, "observed_result": f"{name} observed",
+                     "response_time_seconds": 2.5, "evidence_reference": f"REH-EVIDENCE-{code}"}
+                    for code,name,phase,role in rows], "anomalies": []}
+
+    def test_rehearsal_blocks_failed_checkpoint_and_open_retest_anomaly(self):
+        operation_id = self.prepare_rehearsal_stage()
+        page = self.client.get(f"/ops/{operation_id}/rehearsal")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Rehearsal Control", page.data)
+        failed = self.rehearsal_payload(); failed["checkpoints"][2]["result"] = "FAIL"
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=failed).status_code, 200)
+        completion = self.client.post(f"/api/ops/{operation_id}/rehearsal/complete", json={"summary": "Hold response failed."})
+        self.assertEqual(completion.status_code, 409)
+        self.assertIn("did not pass", completion.get_json()["error"])
+        payload = self.rehearsal_payload()
+        payload["anomalies"] = [{"anomaly_code": "RA-01", "title": "Delayed abort acknowledgement", "severity": "HIGH",
+                                 "owner": "LCO", "status": "OPEN", "requires_retest": True}]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=payload).status_code, 200)
+        completion = self.client.post(f"/api/ops/{operation_id}/rehearsal/complete", json={"summary": "Sequence passed with anomaly."})
+        self.assertEqual(completion.status_code, 409)
+        self.assertIn("closure or retest", completion.get_json()["error"])
+
+    def test_completed_rehearsal_is_hashed_locked_and_unlocks_execution(self):
+        operation_id = self.prepare_rehearsal_stage("QREH-020")
+        payload = self.rehearsal_payload()
+        payload["anomalies"] = [{"anomaly_code": "RA-02", "title": "Call sign correction", "severity": "LOW",
+                                 "owner": "TD", "status": "CLOSED", "requires_retest": False,
+                                 "disposition": "Call sign corrected and checkpoint repeated", "evidence_reference": "REH-RETEST-02"}]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=payload).status_code, 200)
+        completed = self.client.post(f"/api/ops/{operation_id}/rehearsal/complete", json={
+            "completed_by": "Test Director", "summary": "Full sequence, HOLD, ABORT, data and video paths passed in simulation."})
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(len(completed.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage,status FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            campaign = db.execute("SELECT state,result FROM rehearsal_campaigns WHERE operation_id=?", (operation_id,)).fetchone()
+            execution = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='EXECUTION'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "EXECUTION")
+        self.assertEqual(operation["status"], "READY")
+        self.assertEqual(campaign["result"], "PASS")
+        self.assertEqual(execution["status"], "ACTIVE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()
