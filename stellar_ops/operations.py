@@ -60,6 +60,20 @@ CREATE TABLE IF NOT EXISTS operation_activity(
  occurred_at TEXT NOT NULL, activity_type TEXT NOT NULL,
  actor TEXT NOT NULL, message TEXT NOT NULL,
  FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS test_articles(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ article_class TEXT NOT NULL, serial_number TEXT NOT NULL, name TEXT NOT NULL,
+ family TEXT NOT NULL, configuration_revision TEXT NOT NULL,
+ build_status TEXT NOT NULL, state TEXT NOT NULL, notes TEXT,
+ identified_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS article_components(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ component_type TEXT NOT NULL, position TEXT NOT NULL DEFAULT 'PRIMARY',
+ serial_or_lot TEXT NOT NULL, part_number TEXT, revision TEXT,
+ status TEXT NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(operation_id,component_type,position),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
 """
 
 
@@ -119,6 +133,10 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     item["next_section"] = next((x for x in item["sections"] if x["status"] in {"ACTIVE", "AVAILABLE"}), None)
     item["activity"] = [dict(x) for x in db.execute(
         "SELECT * FROM operation_activity WHERE operation_id=? ORDER BY id DESC LIMIT 12", (operation_id,))]
+    article = db.execute("SELECT * FROM test_articles WHERE operation_id=?", (operation_id,)).fetchone()
+    item["article"] = dict(article) if article else None
+    item["components"] = [dict(x) for x in db.execute(
+        "SELECT * FROM article_components WHERE operation_id=? ORDER BY component_type,position", (operation_id,))]
     return item
 
 
@@ -145,6 +163,15 @@ def operation_detail(operation_id: int):
     if not item:
         return "Operation not found", 404
     return render_template("ops_detail.html", operation=item)
+
+
+@operations.get("/ops/<int:operation_id>/article")
+def article_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    return render_template("ops_article.html", operation=item)
 
 
 def valid_code(value: str) -> bool:
@@ -203,5 +230,78 @@ def continue_operation(operation_id: int):
     with connect() as db:
         item = operation_view(db, operation_id)
     if not item: return jsonify(error="operation not found"), 404
-    routes = {"EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
+    routes = {"ARTICLE": f"/ops/{operation_id}/article", "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
+
+
+def article_requirements(operation_type: str) -> set[str]:
+    if operation_type == "ROCKET_LAUNCH": return {"PROPULSION", "AVIONICS", "RECOVERY", "LAUNCHER"}
+    if operation_type == "STATIC_FIRE": return {"CASE", "NOZZLE", "PROPELLANT_BATCH", "IGNITER"}
+    if operation_type == "PRESSURE_TEST": return {"CASE", "PRESSURE_CLOSURE"}
+    if operation_type == "RECOVERY_TEST": return {"RECOVERY"}
+    if operation_type == "AVIONICS_TEST": return {"AVIONICS", "POWER"}
+    return {"PRIMARY_ASSEMBLY"}
+
+
+@operations.post("/api/ops/<int:operation_id>/article")
+def save_article(operation_id: int):
+    p = request.get_json(silent=True) or {}; components = p.get("components", [])
+    serial = str(p.get("serial_number", "")).strip().upper(); name = str(p.get("name", "")).strip()
+    family = str(p.get("family", "")).strip(); revision = str(p.get("configuration_revision", "")).strip().upper()
+    article_class = str(p.get("article_class", "")).strip().upper(); build_status = str(p.get("build_status", "ASSEMBLY")).strip().upper()
+    if not serial or not name or not family or not revision or article_class not in {"MOTOR_ASSEMBLY", "FLIGHT_VEHICLE", "TEST_ASSEMBLY"}:
+        return jsonify(error="article class, serial, name, family and configuration revision are required"), 400
+    if not isinstance(components, list): return jsonify(error="components must be a list"), 400
+    normalized_components = []
+    for component in components:
+        kind = str(component.get("component_type", "")).strip().upper(); identity = str(component.get("serial_or_lot", "")).strip().upper()
+        position = str(component.get("position", "PRIMARY")).strip().upper() or "PRIMARY"
+        status = str(component.get("status", "ASSIGNED")).strip().upper()
+        if not kind or not identity: return jsonify(error="each component requires type and serial/lot identity"), 400
+        if status not in {"ASSIGNED", "VERIFIED", "INSTALLED", "AVAILABLE"}: return jsonify(error=f"invalid component status for {kind}"), 400
+        normalized_components.append((kind, position, identity, str(component.get("part_number", "")).strip(),
+                                      str(component.get("revision", "")).strip().upper(), status, str(component.get("notes", "")).strip()))
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT operation_type,current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "ARTICLE": return jsonify(error="test article can only be edited during the ARTICLE stage"), 409
+        db.execute("""INSERT INTO test_articles(operation_id,article_class,serial_number,name,family,configuration_revision,build_status,state,notes,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,'DRAFT',?,?,?) ON CONFLICT(operation_id) DO UPDATE SET article_class=excluded.article_class,
+            serial_number=excluded.serial_number,name=excluded.name,family=excluded.family,configuration_revision=excluded.configuration_revision,
+            build_status=excluded.build_status,notes=excluded.notes,updated_at=excluded.updated_at""", (operation_id, article_class, serial, name,
+            family, revision, build_status, str(p.get("notes", "")).strip(), stamp, stamp))
+        for kind, position, identity, part_number, component_revision, status, notes in normalized_components:
+            db.execute("""INSERT INTO article_components(operation_id,component_type,position,serial_or_lot,part_number,revision,status,notes,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id,component_type,position) DO UPDATE SET serial_or_lot=excluded.serial_or_lot,
+                part_number=excluded.part_number,revision=excluded.revision,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at""",
+                (operation_id, kind, position, identity, part_number, component_revision, status, notes, stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "ARTICLE_UPDATED", "CONFIGURATION ENGINEER", f"Article {serial} and {len(normalized_components)} component records saved"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/article/complete")
+def complete_article(operation_id: int):
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "ARTICLE": return jsonify(error="ARTICLE is not the active workflow stage"), 409
+        article = db.execute("SELECT * FROM test_articles WHERE operation_id=?", (operation_id,)).fetchone()
+        if not article: return jsonify(error="save the test article or vehicle identity first"), 409
+        components = [dict(x) for x in db.execute("SELECT * FROM article_components WHERE operation_id=?", (operation_id,))]
+        available = {x["component_type"] for x in components if x["status"] in {"ASSIGNED", "VERIFIED", "INSTALLED", "AVAILABLE"}}
+        missing = sorted(article_requirements(operation["operation_type"]) - available)
+        if missing: return jsonify(error="required article components are missing: " + ", ".join(missing)), 409
+        db.execute("UPDATE test_articles SET state='IDENTIFIED',identified_at=?,updated_at=? WHERE operation_id=?", (stamp, stamp, operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner='CONFIGURATION ENGINEER',updated_at=? WHERE operation_id=? AND section_key='ARTICLE'", (stamp, operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='BASELINE'", (stamp, operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='BASELINE',status='PREPARATION',updated_at=? WHERE id=?", (stamp, operation_id))
+        if operation["runtime_operation_id"]:
+            active_run = db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1", (operation["runtime_operation_id"],)).fetchone()
+            if active_run:
+                db.execute("UPDATE test_runs SET test_article=?,configuration_revision=? WHERE id=?", (f"{article['name']} / {article['serial_number']}", article["configuration_revision"], active_run["id"]))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "ARTICLE_IDENTIFIED", "CONFIGURATION ENGINEER", f"Article {article['serial_number']} identified; Configuration Baseline unlocked"))
+    return jsonify(ok=True, url=url_for("operations.operation_detail", operation_id=operation_id))
