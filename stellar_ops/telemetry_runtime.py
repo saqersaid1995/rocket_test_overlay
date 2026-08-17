@@ -38,7 +38,9 @@ def ensure_schema(db) -> None:
 def _channel_maps(db, operation_id: str) -> list[dict]:
     return [dict(row) for row in db.execute("""SELECT c.*,i.raw_field,i.calibration_slope,i.calibration_intercept,
       i.stale_timeout_ms,i.required_for_commit FROM channels c JOIN channel_integrations i
-      ON i.operation_id=c.operation_id AND i.channel_id=c.id WHERE c.operation_id=?""", (operation_id,))]
+      ON i.operation_id=c.operation_id AND i.channel_id=c.id LEFT JOIN channel_lifecycle l
+      ON l.operation_id=c.operation_id AND l.channel_id=c.id
+      WHERE c.operation_id=? AND COALESCE(l.enabled,1)=1""", (operation_id,))]
 
 
 def _named(values: dict, fragment: str, default=0.0):
@@ -56,11 +58,16 @@ def _result(mode: str, values: dict, elapsed=0.0, meta=None) -> dict:
 
 
 def live_snapshot(db, operation_id: str) -> dict:
-    session = db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 1").fetchone()
+    session = db.execute("""SELECT s.* FROM edge_sessions s JOIN device_integrations i ON i.device_id=s.device_id
+      WHERE i.operation_id=? AND i.enabled=1 AND i.adapter_type='SMTCS_EDGE_TCP'
+      ORDER BY s.last_seen DESC LIMIT 1""", (operation_id,)).fetchone()
     maps = _channel_maps(db, operation_id)
     if not session:
         values={m["id"]:{"value":0,"unit":m["unit"],"quality":"DISCONNECTED","age_ms":None} for m in maps}
-        return _result("LIVE",values,meta={"status":"NO_DEVICE","total_samples":0,"sequence_gaps":0})
+        unknown = db.execute("SELECT device_id,last_seen FROM edge_sessions ORDER BY last_seen DESC LIMIT 1").fetchone()
+        meta={"status":"UNREGISTERED_DEVICE" if unknown else "NO_DEVICE","total_samples":0,"sequence_gaps":0}
+        if unknown: meta.update({"device_id":unknown["device_id"],"last_seen":unknown["last_seen"]})
+        return _result("LIVE",values,meta=meta)
     received_age_ms=max(0,(time.time()-parse_time(session["last_seen"]))*1000)
     batch = db.execute("SELECT * FROM edge_batches WHERE device_id=? AND boot_id=? ORDER BY sequence DESC LIMIT 1",
                        (session["device_id"],session["boot_id"])).fetchone()
@@ -105,10 +112,10 @@ def runtime_snapshot(db, operation: dict, simulation: dict) -> dict:
     ensure_schema(db); mode=operation["mode"]
     if mode=="LIVE": return live_snapshot(db,operation["id"])
     if mode=="REPLAY": return replay_snapshot(db,operation["id"])
-    values={
-      "motor.chamber_pressure":{"value":simulation["pressure"],"unit":"bar","quality":"SIMULATED","age_ms":0},
-      "motor.thrust":{"value":simulation["thrust"],"unit":"N","quality":"SIMULATED","age_ms":0},
-      "motor.case_temperature":{"value":simulation["temperature"],"unit":"°C","quality":"SIMULATED","age_ms":0}}
+    values={}
+    for channel in _channel_maps(db,operation["id"]):
+        value = simulation["pressure"] if "pressure" in channel["id"] else simulation["thrust"] if "thrust" in channel["id"] else simulation["temperature"] if "temperature" in channel["id"] else 0
+        values[channel["id"]]={"value":value,"unit":channel["unit"],"quality":"SIMULATED","age_ms":0}
     result=_result("SIMULATION",values,simulation["elapsed"],{"status":"SIMULATED"}); result["continuity"]=simulation["continuity"]; return result
 
 
