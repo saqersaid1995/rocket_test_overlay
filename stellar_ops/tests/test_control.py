@@ -100,6 +100,11 @@ class StaticTestControlTests(unittest.TestCase):
         disconnected = self.client.get("/api/control/snapshot").get_json()
         self.assertEqual(disconnected["telemetry"]["meta"]["status"], "NO_DEVICE")
         self.assertEqual(disconnected["telemetry"]["channels"]["motor.thrust"]["quality"], "DISCONNECTED")
+        live_devices = {item["id"]: item for item in disconnected["devices"]}
+        self.assertEqual(live_devices["DAQ-01"]["health"], "NO_DEVICE")
+        self.assertEqual(live_devices["PT-01"]["health"], "DISCONNECTED")
+        self.assertEqual(live_devices["CAM-01"]["health"], "NOT_CONNECTED")
+        self.assertNotIn("SIMULATED", {item["health"] for item in disconnected["devices"]})
 
         stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         channels = {"chamber_pressure": [61.2], "thrust": [430.0], "case_temperature": [42.0], "continuity": [0]}
