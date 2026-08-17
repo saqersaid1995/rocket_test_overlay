@@ -17,6 +17,11 @@ function render(){
  [['pressure','motor.chamber_pressure'],['thrust','motor.thrust'],['temperature','motor.case_temperature']].forEach(([meter,id])=>{const q=t.channels?.[id]?.quality||'UNKNOWN';$(`#meter-${meter}`).dataset.quality=q});
  $('#stations').innerHTML=data.stations.map(s=>`<div class="station"><code>${s.code}</code><span><b>${esc(s.name)}</b><small>${esc(s.operator_name)}</small></span>${badge(s.decision)}<div><button data-station="${s.code}" data-decision="GO">GO</button><button data-station="${s.code}" data-decision="NO_GO">NO-GO</button></div></div>`).join('');
  $('#device-compact').innerHTML=data.devices.map(d=>`<div><code>${d.id}</code><span>${esc(d.name)}</span>${badge(d.health)}</div>`).join('');
+ const deviceById=Object.fromEntries(data.devices.map(d=>[d.id,d]));
+ $('#footer-field').textContent=`FIELD CONTROLLER: ${deviceById['FC-01']?.health||'UNKNOWN'}`;
+ $('#footer-daq').textContent=`DAQ: ${deviceById['DAQ-01']?.health||'UNKNOWN'}`;
+ const cameras=data.devices.filter(d=>d.device_type==='IP-CAMERA'),camerasOnline=cameras.filter(d=>['GOOD','CONNECTED','STREAMING'].includes(d.health)).length;
+ $('#footer-video').textContent=`VIDEO: ${camerasOnline}/${cameras.length} CONNECTED`;
  $('#devices-table').innerHTML=data.devices.map(d=>`<tr><td><code>${d.id}</code></td><td><b>${esc(d.name)}</b></td><td>${d.device_type}</td><td>${d.protocol}</td><td>${d.endpoint}</td><td>${badge(d.health)}</td><td>${badge(d.recording)}</td><td>${d.required?'YES':'NO'}</td></tr>`).join('');
  $('#channels-table').innerHTML=data.channels.map(c=>`<tr><td><code>${c.id}</code></td><td>${esc(c.name)} [${c.unit}]</td><td>${c.source_id}</td><td>${c.sample_rate} Hz</td><td>${c.warning??'—'}</td><td>${c.critical??'—'}</td><td>${badge(c.quality)}</td></tr>`).join('');
  $('#integrations-table').innerHTML=data.integrations.map(i=>`<tr><td><code>${i.device_id}</code></td><td><b>${esc(i.name)}</b></td><td>${i.device_type}</td><td>${i.adapter_type}</td><td class="endpoint">${esc(i.endpoint)}</td><td>${i.last_test_at?i.last_test_at.slice(11,23):'NEVER'}</td><td>${badge(i.last_test_status)}</td><td><button data-test-device="${i.device_id}">TEST CONNECTION</button></td></tr>`).join('');
