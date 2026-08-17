@@ -13,7 +13,7 @@ app.register_blueprint(control)
 
 @app.get("/")
 def home():
-    return redirect(url_for("control.console"))
+    return redirect(url_for("control.workspace_console"))
 
 
 @app.get("/health")
