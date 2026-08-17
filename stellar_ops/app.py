@@ -8,10 +8,12 @@ from flask import Flask, redirect, url_for
 
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
 from .telemetry_runtime import recording_status
+from .media import media
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = os.environ.get("STELLAR_OPS_SECRET", "development-only-change-me")
 app.register_blueprint(control)
+app.register_blueprint(media)
 
 
 @app.get("/")
@@ -28,6 +30,7 @@ def health():
         edge=db.execute("SELECT status,last_seen,total_samples,sequence_gaps FROM edge_sessions ORDER BY last_seen DESC LIMIT 1").fetchone()
         run=db.execute("SELECT id,code,status FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(OPERATION_ID,)).fetchone()
         recording=recording_status(db,OPERATION_ID)
+    CONTROL_DB.parent.mkdir(parents=True,exist_ok=True)
     disk=shutil.disk_usage(CONTROL_DB.parent); free_percent=round(disk.free/disk.total*100,1)
     ready=latency<1000 and free_percent>=5 and run is not None
     return {"status":"ready" if ready else "degraded","service":"smtcs-static-test-control",

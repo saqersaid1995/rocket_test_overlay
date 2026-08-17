@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SMTCS · Display & Broadcast Control</title><link rel="stylesheet" href="{{url_for('static',filename='media.css')}}"></head>
+<body class="{% if display_slug %}output-only{% endif %}">
+<header class="mast"><div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>DISPLAY, VIDEO & BROADCAST SYSTEM</small></span></div><div><small>OPERATION</small><strong id="operation">—</strong></div><div><small>PHASE</small><strong id="phase">—</strong></div><div><small>BROADCAST</small><strong id="broadcast-state">—</strong></div><div><small>UTC</small><strong id="utc">—</strong></div></header>
+<nav><button data-view="overview" class="active">SYSTEM OVERVIEW</button><button data-view="graphs">GRAPH STUDIO</button><button data-view="displays">DISPLAY MANAGER</button><button data-view="video">CAMERA & VIDEO WALLS</button><button data-view="broadcast">BROADCAST CONTROL</button><a href="/workspace">MISSION WORKSPACE</a><a href="/control">ENGINEERING SETUP</a></nav>
+<main id="app"></main><div id="toast"></div>
+<script>window.__MEDIA__={{initial|tojson}};window.__DISPLAY_SLUG__={{display_slug|tojson}};</script><script src="{{url_for('static',filename='media.js')}}"></script>
+</body></html>
