@@ -119,6 +119,25 @@ CREATE TABLE IF NOT EXISTS operation_procedure_steps(
  updated_at TEXT NOT NULL,
  UNIQUE(procedure_id,sequence), UNIQUE(procedure_id,step_code),
  FOREIGN KEY(procedure_id) REFERENCES operation_procedures(id));
+CREATE TABLE IF NOT EXISTS instrumentation_plans(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ plan_code TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL,
+ time_source TEXT NOT NULL, acquisition_mode TEXT NOT NULL, notes TEXT,
+ canonical_sha256 TEXT, approved_at TEXT, approved_by TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS measurement_requirements(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL,
+ measurement_code TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL,
+ criticality TEXT NOT NULL, device_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+ unit TEXT NOT NULL, engineering_min REAL NOT NULL, engineering_max REAL NOT NULL,
+ sample_rate_hz INTEGER NOT NULL, required_accuracy TEXT NOT NULL,
+ calibration_reference TEXT NOT NULL, calibration_due TEXT NOT NULL,
+ warning_limit REAL, critical_limit REAL, abort_limit REAL,
+ redundancy TEXT NOT NULL, e2e_status TEXT NOT NULL, required INTEGER NOT NULL,
+ notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(plan_id,measurement_code), UNIQUE(plan_id,channel_id),
+ FOREIGN KEY(plan_id) REFERENCES instrumentation_plans(id));
 """
 
 
@@ -197,6 +216,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["procedure"]:
         item["procedure"]["steps"] = [dict(x) for x in db.execute(
             "SELECT * FROM operation_procedure_steps WHERE procedure_id=? ORDER BY sequence", (procedure["id"],))]
+    instrumentation = db.execute("SELECT * FROM instrumentation_plans WHERE operation_id=?", (operation_id,)).fetchone()
+    item["instrumentation"] = dict(instrumentation) if instrumentation else None
+    if item["instrumentation"]:
+        item["instrumentation"]["measurements"] = [dict(x) for x in db.execute(
+            "SELECT * FROM measurement_requirements WHERE plan_id=? ORDER BY criticality DESC,measurement_code", (instrumentation["id"],))]
     return item
 
 
@@ -263,6 +287,17 @@ def procedure_builder(operation_id: int):
     return render_template("ops_procedure.html", operation=item, assigned_roles=roles)
 
 
+@operations.get("/ops/<int:operation_id>/instrumentation")
+def instrumentation_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+        devices = [dict(x) for x in db.execute("SELECT * FROM devices WHERE operation_id=? ORDER BY id", (item["runtime_operation_id"] or OPERATION_ID,))] if item else []
+        channels = [dict(x) for x in db.execute("SELECT c.*,COALESCE(l.enabled,1) enabled FROM channels c LEFT JOIN channel_lifecycle l ON l.operation_id=c.operation_id AND l.channel_id=c.id WHERE c.operation_id=? ORDER BY c.id", (item["runtime_operation_id"] or OPERATION_ID,))] if item else []
+    if not item: return "Operation not found", 404
+    return render_template("ops_instrumentation.html", operation=item, devices=devices, channels=channels,
+                           required_measurements=sorted(instrumentation_requirements(item["operation_type"])))
+
+
 def valid_code(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{2,31}", value))
 
@@ -322,6 +357,7 @@ def continue_operation(operation_id: int):
     routes = {"ARTICLE": f"/ops/{operation_id}/article", "BASELINE": f"/ops/{operation_id}/baseline",
               "TEAM": f"/ops/{operation_id}/team",
               "PROCEDURE": f"/ops/{operation_id}/procedure",
+              "INSTRUMENTATION": f"/ops/{operation_id}/instrumentation",
               "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
@@ -368,6 +404,114 @@ def required_roles(operation_type: str) -> set[str]:
 
 PROCEDURE_PHASES = {"SITE", "PREPARATION", "COUNTDOWN", "EXECUTION", "SAFING", "CONTINGENCY"}
 PROCEDURE_STEP_TYPES = {"ACTION", "VERIFY", "HOLD_POINT", "POLL", "COMMAND", "CONTINGENCY"}
+
+
+def instrumentation_requirements(operation_type: str) -> set[str]:
+    if operation_type == "STATIC_FIRE": return {"CHAMBER_PRESSURE", "THRUST", "CASE_TEMPERATURE", "IGNITION_CONTINUITY"}
+    if operation_type == "PRESSURE_TEST": return {"VESSEL_PRESSURE", "CASE_TEMPERATURE"}
+    if operation_type == "ROCKET_LAUNCH": return {"ALTITUDE", "ACCELERATION", "BATTERY_VOLTAGE", "IGNITION_CONTINUITY"}
+    if operation_type == "AVIONICS_TEST": return {"BATTERY_VOLTAGE", "BUS_CURRENT", "TIME_SYNC"}
+    return {"PRIMARY_MEASUREMENT", "TIME_SYNC"}
+
+
+@operations.post("/api/ops/<int:operation_id>/instrumentation")
+def save_instrumentation(operation_id: int):
+    p = request.get_json(silent=True) or {}; measurements = p.get("measurements", [])
+    code = str(p.get("plan_code", "")).strip().upper(); revision = str(p.get("revision", "")).strip().upper()
+    time_source = str(p.get("time_source", "")).strip(); mode = str(p.get("acquisition_mode", "")).strip().upper()
+    if not valid_code(code) or not revision or not time_source or mode not in {"LIVE_ETHERNET", "LOCAL_LOGGER", "HYBRID"}:
+        return jsonify(error="plan code, revision, time source and valid acquisition mode are required"), 400
+    if not isinstance(measurements, list): return jsonify(error="measurements must be a list"), 400
+    normalized, errors = [], []
+    for index, x in enumerate(measurements, 1):
+        measurement_code = str(x.get("measurement_code", "")).strip().upper(); name = str(x.get("name", "")).strip()
+        category = str(x.get("category", "")).strip().upper(); criticality = str(x.get("criticality", "REQUIRED")).strip().upper()
+        device_id = str(x.get("device_id", "")).strip().upper(); channel_id = str(x.get("channel_id", "")).strip()
+        unit = str(x.get("unit", "")).strip(); accuracy = str(x.get("required_accuracy", "")).strip()
+        calibration = str(x.get("calibration_reference", "")).strip(); calibration_due = str(x.get("calibration_due", "")).strip()
+        redundancy = str(x.get("redundancy", "NONE")).strip().upper(); e2e = str(x.get("e2e_status", "NOT_TESTED")).strip().upper()
+        try:
+            minimum=float(x.get("engineering_min")); maximum=float(x.get("engineering_max")); rate=int(x.get("sample_rate_hz"))
+            warning=float(x["warning_limit"]) if x.get("warning_limit") not in {None,""} else None
+            critical=float(x["critical_limit"]) if x.get("critical_limit") not in {None,""} else None
+            abort=float(x["abort_limit"]) if x.get("abort_limit") not in {None,""} else None
+        except (TypeError,ValueError): errors.append(f"measurement {index} has invalid numeric values"); continue
+        if not valid_code(measurement_code) or not name or not category or not device_id or not channel_id or not unit or not accuracy or not calibration or not calibration_due:
+            errors.append(f"measurement {index} is missing controlled engineering fields")
+        if criticality not in {"REQUIRED", "SAFETY_CRITICAL", "OPTIONAL"} or redundancy not in {"NONE", "MONITORED", "DUAL", "TRIPLE"} or e2e not in {"NOT_TESTED", "PASS", "FAIL"}:
+            errors.append(f"{measurement_code or index} has an invalid assurance status")
+        if minimum >= maximum or rate < 1 or rate > 100000: errors.append(f"{measurement_code or index} has an invalid engineering range or sample rate")
+        ordered = [v for v in (warning,critical,abort) if v is not None]
+        if ordered != sorted(ordered) or any(v < minimum or v > maximum for v in ordered): errors.append(f"{measurement_code or index} limits must be ordered and within engineering range")
+        normalized.append((measurement_code,name,category,criticality,device_id,channel_id,unit,minimum,maximum,rate,accuracy,
+                           calibration,calibration_due,warning,critical,abort,redundancy,e2e,int(criticality!="OPTIONAL"),str(x.get("notes","")).strip()))
+    if errors: return jsonify(error="; ".join(errors)), 400
+    stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="INSTRUMENTATION":return jsonify(error="instrumentation can only be edited during the INSTRUMENTATION stage"),409
+        procedure=db.execute("SELECT state FROM operation_procedures WHERE operation_id=?",(operation_id,)).fetchone()
+        if not procedure or procedure["state"]!="APPROVED":return jsonify(error="an approved procedure is required"),409
+        existing=db.execute("SELECT * FROM instrumentation_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        if existing and existing["state"]=="APPROVED":return jsonify(error="approved instrumentation plans are immutable"),409
+        runtime_id=operation["runtime_operation_id"] or OPERATION_ID
+        for row in normalized:
+            device=db.execute("SELECT * FROM devices WHERE operation_id=? AND id=?",(runtime_id,row[4])).fetchone()
+            channel=db.execute("""SELECT c.*,COALESCE(l.enabled,1) enabled FROM channels c LEFT JOIN channel_lifecycle l ON l.operation_id=c.operation_id AND l.channel_id=c.id
+                WHERE c.operation_id=? AND c.id=?""",(runtime_id,row[5])).fetchone()
+            if not device or not channel:return jsonify(error=f"{row[0]} references an unknown device or channel"),409
+            if channel["source_id"]!=row[4]:return jsonify(error=f"{row[0]} channel is not sourced by selected device"),409
+            if not channel["enabled"]:return jsonify(error=f"{row[0]} channel is archived or disabled"),409
+            if channel["unit"]!=row[6]:return jsonify(error=f"{row[0]} unit does not match channel registry ({channel['unit']})"),409
+            if row[9]>channel["sample_rate"]:return jsonify(error=f"{row[0]} requested rate exceeds configured channel rate"),409
+        db.execute("""INSERT INTO instrumentation_plans(operation_id,plan_code,revision,state,time_source,acquisition_mode,notes,created_at,updated_at)
+            VALUES(?,?,?,'DRAFT',?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET plan_code=excluded.plan_code,revision=excluded.revision,
+            time_source=excluded.time_source,acquisition_mode=excluded.acquisition_mode,notes=excluded.notes,updated_at=excluded.updated_at""",
+            (operation_id,code,revision,time_source,mode,str(p.get("notes","")).strip(),stamp,stamp))
+        plan_id=db.execute("SELECT id FROM instrumentation_plans WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM measurement_requirements WHERE plan_id=?",(plan_id,))
+        for row in normalized:db.execute("""INSERT INTO measurement_requirements(plan_id,measurement_code,name,category,criticality,device_id,channel_id,unit,
+            engineering_min,engineering_max,sample_rate_hz,required_accuracy,calibration_reference,calibration_due,warning_limit,critical_limit,
+            abort_limit,redundancy,e2e_status,required,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(plan_id,*row,stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,stamp,"INSTRUMENTATION_UPDATED","INSTRUMENTATION LEAD",f"Instrumentation plan {code}/{revision} saved with {len(normalized)} measurements"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/instrumentation/approve")
+def approve_instrumentation(operation_id:int):
+    actor=str((request.get_json(silent=True) or {}).get("approved_by","INSTRUMENTATION LEAD")).strip() or "INSTRUMENTATION LEAD";stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="INSTRUMENTATION":return jsonify(error="INSTRUMENTATION is not the active workflow stage"),409
+        plan=db.execute("SELECT * FROM instrumentation_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        if not plan:return jsonify(error="save the instrumentation plan first"),409
+        baseline=db.execute("SELECT id FROM configuration_baselines WHERE operation_id=? AND state='RELEASED'",(operation_id,)).fetchone()
+        baseline_ref=db.execute("SELECT reference,revision FROM baseline_items WHERE baseline_id=? AND item_type='CHANNEL_MAP'",(baseline["id"],)).fetchone() if baseline else None
+        if not baseline_ref or baseline_ref["reference"].upper()!=plan["plan_code"] or baseline_ref["revision"].upper()!=plan["revision"]:
+            return jsonify(error="instrumentation plan identity does not match the released CHANNEL_MAP baseline item"),409
+        rows=[dict(x) for x in db.execute("SELECT * FROM measurement_requirements WHERE plan_id=? ORDER BY measurement_code",(plan["id"],))]
+        present={x["measurement_code"] for x in rows if x["required"]}
+        missing=sorted(instrumentation_requirements(operation["operation_type"])-present)
+        if missing:return jsonify(error="mandatory measurements are missing: "+", ".join(missing)),409
+        untested=sorted(x["measurement_code"] for x in rows if x["required"] and x["e2e_status"]!="PASS")
+        if untested:return jsonify(error="required measurements have not passed end-to-end test: "+", ".join(untested)),409
+        overdue=sorted(x["measurement_code"] for x in rows if x["required"] and x["calibration_due"]<stamp[:10])
+        if overdue:return jsonify(error="calibration is expired: "+", ".join(overdue)),409
+        unsafe=sorted(x["measurement_code"] for x in rows if x["criticality"]=="SAFETY_CRITICAL" and x["abort_limit"] is None)
+        if unsafe:return jsonify(error="safety-critical measurements require abort limits: "+", ".join(unsafe)),409
+        canonical={"schema":"SMTCS-INSTRUMENTATION/1","operation":operation["code"],"plan":{"code":plan["plan_code"],"revision":plan["revision"],"time_source":plan["time_source"],"mode":plan["acquisition_mode"]},
+                   "measurements":[{k:x[k] for k in ("measurement_code","device_id","channel_id","unit","engineering_min","engineering_max","sample_rate_hz","required_accuracy","calibration_reference","calibration_due","warning_limit","critical_limit","abort_limit","redundancy")} for x in rows]}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        db.execute("UPDATE instrumentation_plans SET state='APPROVED',canonical_sha256=?,approved_at=?,approved_by=?,updated_at=? WHERE id=?",(digest,stamp,actor,stamp,plan["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='INSTRUMENTATION'",(actor,stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='VIDEO'",(stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='VIDEO',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,stamp,"INSTRUMENTATION_APPROVED",actor,f"Instrumentation plan approved with SHA-256 {digest}; Video & Recording unlocked"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.operation_detail",operation_id=operation_id))
 
 
 def validate_procedure_steps(steps: list, assigned_roles: set[str]) -> tuple[list, list[str]]:

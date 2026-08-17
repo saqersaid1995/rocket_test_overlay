@@ -249,6 +249,59 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(instrumentation["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=payload).status_code, 409)
 
+    def prepare_instrumentation_stage(self, code="QINST-010"):
+        operation_id = self.prepare_procedure_stage(code)
+        procedure = self.procedure_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=procedure).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure/approve").status_code, 200)
+        return operation_id
+
+    def instrumentation_payload(self, e2e="PASS", plan_code="REF-CHANNEL_MAP"):
+        rows = [
+            ("CHAMBER_PRESSURE", "Chamber pressure", "PRESSURE", "SAFETY_CRITICAL", "PT-01", "motor.chamber_pressure", "bar", 0, 80, 1000, 55, 70, 75),
+            ("THRUST", "Motor thrust", "FORCE", "REQUIRED", "LC-01", "motor.thrust", "N", 0, 650, 1000, 450, 550, 600),
+            ("CASE_TEMPERATURE", "Case temperature", "TEMPERATURE", "REQUIRED", "TC-01", "motor.case_temperature", "°C", 0, 120, 10, 75, 95, 105),
+            ("IGNITION_CONTINUITY", "Ignition continuity", "DISCRETE", "REQUIRED", "FC-01", "ignition.continuity", "state", 0, 1, 2, None, None, None),
+        ]
+        return {"plan_code": plan_code, "revision": "REV-A", "time_source": "TIME-01 / UTC", "acquisition_mode": "LIVE_ETHERNET",
+                "measurements": [{"measurement_code": code, "name": name, "category": category, "criticality": criticality,
+                    "device_id": device, "channel_id": channel, "unit": unit, "engineering_min": minimum,
+                    "engineering_max": maximum, "sample_rate_hz": rate, "required_accuracy": "±1% FS",
+                    "calibration_reference": f"CAL-{code}-001", "calibration_due": "2027-12-31",
+                    "warning_limit": warning, "critical_limit": critical, "abort_limit": abort,
+                    "redundancy": "MONITORED", "e2e_status": e2e} for code,name,category,criticality,device,channel,unit,minimum,maximum,rate,warning,critical,abort in rows]}
+
+    def test_instrumentation_blocks_registry_mismatch_and_unverified_signal_chain(self):
+        operation_id = self.prepare_instrumentation_stage()
+        page = self.client.get(f"/ops/{operation_id}/instrumentation")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Instrumentation Plan", page.data)
+        wrong = self.instrumentation_payload(); wrong["measurements"][0]["device_id"] = "LC-01"
+        response = self.client.post(f"/api/ops/{operation_id}/instrumentation", json=wrong)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not sourced", response.get_json()["error"])
+        untested = self.instrumentation_payload("NOT_TESTED")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/instrumentation", json=untested).status_code, 200)
+        approval = self.client.post(f"/api/ops/{operation_id}/instrumentation/approve")
+        self.assertEqual(approval.status_code, 409)
+        self.assertIn("end-to-end", approval.get_json()["error"])
+
+    def test_approved_instrumentation_is_hashed_locked_and_unlocks_video(self):
+        operation_id = self.prepare_instrumentation_stage("QINST-020")
+        payload = self.instrumentation_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/instrumentation", json=payload).status_code, 200)
+        approved = self.client.post(f"/api/ops/{operation_id}/instrumentation/approve", json={"approved_by": "Instrumentation Lead"})
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(len(approved.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            plan = db.execute("SELECT state,canonical_sha256 FROM instrumentation_plans WHERE operation_id=?", (operation_id,)).fetchone()
+            video = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='VIDEO'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "VIDEO")
+        self.assertEqual(plan["state"], "APPROVED")
+        self.assertEqual(video["status"], "ACTIVE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/instrumentation", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()
