@@ -100,7 +100,7 @@ def init_media_db() -> None:
         if not db.execute("SELECT 1 FROM broadcast_scenes WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             scenes = [
                 ("Standby", "SLATE", [{"kind": "title", "value": "QUALIFICATION TEST — STANDBY"}], "CUT"),
-                ("Test Stand", "LIVE", [{"kind": "camera", "source": "CAM-01", "slot": "camera_main"}, {"kind": "graph", "source": "Propulsion Live", "slot": "telemetry_primary"}], "DISSOLVE"),
+                ("Test Stand", "LIVE", [{"kind": "camera", "source": "CAM-01", "slot": "camera_main"}, {"kind": "telemetry_overlay", "source": "motor.chamber_pressure", "slot": "telemetry_primary"}], "DISSOLVE"),
                 ("Countdown", "LIVE", [{"kind": "camera", "source": "CAM-01", "slot": "camera_main"}, {"kind": "clock", "source": "MISSION_CLOCK", "slot": "mission_clock"}], "CUT"),
                 ("Technical Hold", "SLATE", [{"kind": "title", "value": "TECHNICAL HOLD"}], "CUT"),
                 ("Emergency", "EMERGENCY", [{"kind": "title", "value": "TRANSMISSION PAUSED"}], "CUT"),
@@ -108,6 +108,17 @@ def init_media_db() -> None:
             for name, kind, sources, transition in scenes:
                 db.execute("""INSERT INTO broadcast_scenes(operation_id,name,scene_type,template_id,sources_json,transition,public_safe,updated_at)
                     VALUES(?,?,?,?,?,?,1,?)""", (OPERATION_ID, name, kind, template["id"], json.dumps(sources), transition, stamp))
+        # Operational graph definitions belong to control-room displays. Broadcast Program
+        # consumes only slots explicitly exposed by an immutable Studio template.
+        for stored in db.execute("SELECT id,sources_json FROM broadcast_scenes WHERE operation_id=?", (OPERATION_ID,)).fetchall():
+            sources = json.loads(stored["sources_json"] or "[]")
+            changed = False
+            for source in sources:
+                if source.get("kind") == "graph":
+                    source.update(kind="telemetry_overlay", source="motor.chamber_pressure", slot="telemetry_primary")
+                    changed = True
+            if changed:
+                db.execute("UPDATE broadcast_scenes SET sources_json=?,updated_at=? WHERE id=?", (json.dumps(sources), stamp, stored["id"]))
         first = db.execute("SELECT id FROM broadcast_scenes WHERE operation_id=? ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
         db.execute("""INSERT OR IGNORE INTO broadcast_sessions(operation_id,preview_scene_id,program_scene_id,state,recording,emergency,updated_at)
             VALUES(?,?,?,'OFF_AIR',0,0,?)""", (OPERATION_ID, first["id"], first["id"], stamp))

@@ -26,6 +26,7 @@ class MediaControlTests(unittest.TestCase):
         self.assertGreaterEqual(len(state["graph_definitions"]), 3)
         self.assertGreaterEqual(len(state["display_pages"]), 3)
         self.assertGreaterEqual(len(state["broadcast_scenes"]), 5)
+        self.assertFalse(any(source.get("kind") == "graph" for scene in state["broadcast_scenes"] for source in scene["sources"]))
         self.assertEqual(self.client.get("/display/propulsion").status_code, 200)
         self.assertEqual(self.client.get("/display/not-real").status_code, 404)
 
