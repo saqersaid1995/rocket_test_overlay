@@ -194,6 +194,61 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(procedure["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team", json=payload).status_code, 409)
 
+    def prepare_procedure_stage(self, code="QPROC-010"):
+        operation_id = self.prepare_team_stage(code)
+        payload = self.staffing_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team", json=payload).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team/approve").status_code, 200)
+        return operation_id
+
+    def procedure_payload(self, code="REF-PROCEDURE"):
+        phases = ["SITE", "PREPARATION", "COUNTDOWN", "EXECUTION", "SAFING", "CONTINGENCY"]
+        types = ["VERIFY", "ACTION", "HOLD_POINT", "COMMAND", "VERIFY", "CONTINGENCY"]
+        steps = []
+        for i, (phase, kind) in enumerate(zip(phases, types), 1):
+            critical = phase in {"COUNTDOWN", "EXECUTION", "CONTINGENCY"}
+            steps.append({"sequence": i, "step_code": f"PROC-{i:02d}", "phase": phase, "step_type": kind,
+                          "instruction": f"Execute controlled {phase.lower()} action", "responsible_role": "LCO" if critical else "GND",
+                          "verification_mode": "TWO_PERSON" if critical else "SELF", "verifier_role": "RSO" if critical else "",
+                          "expected_evidence": f"{phase} evidence recorded", "safety_critical": critical,
+                          "hold_condition": "TD and RSO release" if kind == "HOLD_POINT" else "",
+                          "abort_action": "Declare HOLD and safe ignition circuit" if critical else ""})
+        return {"document_code": code, "revision": "REV-A", "title": "Static Fire Execution Procedure",
+                "entry_conditions": "Approved baseline, staffed stations, and clear exclusion zone",
+                "exit_conditions": "Motor safe, data secured, and site released",
+                "abort_policy": "Any safety authority may call HOLD; RSO may terminate the operation", "steps": steps}
+
+    def test_procedure_validation_blocks_unsafe_steps_and_baseline_mismatch(self):
+        operation_id = self.prepare_procedure_stage()
+        page = self.client.get(f"/ops/{operation_id}/procedure")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Procedure Control", page.data)
+        unsafe = self.procedure_payload(); unsafe["steps"][2]["verification_mode"] = "SELF"
+        response = self.client.post(f"/api/ops/{operation_id}/procedure", json=unsafe)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("safety-critical", response.get_json()["error"])
+        mismatch = self.procedure_payload("WRONG-PROCEDURE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=mismatch).status_code, 200)
+        approval = self.client.post(f"/api/ops/{operation_id}/procedure/approve")
+        self.assertEqual(approval.status_code, 409)
+        self.assertIn("released configuration baseline", approval.get_json()["error"])
+
+    def test_approved_procedure_is_hashed_locked_and_unlocks_instrumentation(self):
+        operation_id = self.prepare_procedure_stage("QPROC-020")
+        payload = self.procedure_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=payload).status_code, 200)
+        approved = self.client.post(f"/api/ops/{operation_id}/procedure/approve", json={"approved_by": "Test Director"})
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(len(approved.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            procedure = db.execute("SELECT state,canonical_sha256 FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()
+            instrumentation = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='INSTRUMENTATION'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "INSTRUMENTATION")
+        self.assertEqual(procedure["state"], "APPROVED")
+        self.assertEqual(instrumentation["status"], "ACTIVE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -103,6 +103,22 @@ CREATE TABLE IF NOT EXISTS operation_role_assignments(
  notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(staffing_plan_id,role_code),
  FOREIGN KEY(staffing_plan_id) REFERENCES staffing_plans(id));
+CREATE TABLE IF NOT EXISTS operation_procedures(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ document_code TEXT NOT NULL, revision TEXT NOT NULL, title TEXT NOT NULL,
+ state TEXT NOT NULL, entry_conditions TEXT NOT NULL, exit_conditions TEXT NOT NULL,
+ abort_policy TEXT NOT NULL, canonical_sha256 TEXT, approved_at TEXT, approved_by TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS operation_procedure_steps(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, procedure_id INTEGER NOT NULL,
+ sequence INTEGER NOT NULL, step_code TEXT NOT NULL, phase TEXT NOT NULL,
+ step_type TEXT NOT NULL, instruction TEXT NOT NULL, responsible_role TEXT NOT NULL,
+ verification_mode TEXT NOT NULL, verifier_role TEXT, expected_evidence TEXT NOT NULL,
+ safety_critical INTEGER NOT NULL, hold_condition TEXT, abort_action TEXT,
+ updated_at TEXT NOT NULL,
+ UNIQUE(procedure_id,sequence), UNIQUE(procedure_id,step_code),
+ FOREIGN KEY(procedure_id) REFERENCES operation_procedures(id));
 """
 
 
@@ -176,6 +192,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["staffing"]:
         item["staffing"]["assignments"] = [dict(x) for x in db.execute(
             "SELECT * FROM operation_role_assignments WHERE staffing_plan_id=? ORDER BY role_code", (staffing["id"],))]
+    procedure = db.execute("SELECT * FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()
+    item["procedure"] = dict(procedure) if procedure else None
+    if item["procedure"]:
+        item["procedure"]["steps"] = [dict(x) for x in db.execute(
+            "SELECT * FROM operation_procedure_steps WHERE procedure_id=? ORDER BY sequence", (procedure["id"],))]
     return item
 
 
@@ -231,6 +252,15 @@ def team_builder(operation_id: int):
     return render_template("ops_team.html", operation=item,
                            roles=role_catalog(item["operation_type"]),
                            required_roles=sorted(required_roles(item["operation_type"])))
+
+
+@operations.get("/ops/<int:operation_id>/procedure")
+def procedure_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+    if not item: return "Operation not found", 404
+    roles = item.get("staffing", {}).get("assignments", []) if item.get("staffing") else []
+    return render_template("ops_procedure.html", operation=item, assigned_roles=roles)
 
 
 def valid_code(value: str) -> bool:
@@ -291,6 +321,7 @@ def continue_operation(operation_id: int):
     if not item: return jsonify(error="operation not found"), 404
     routes = {"ARTICLE": f"/ops/{operation_id}/article", "BASELINE": f"/ops/{operation_id}/baseline",
               "TEAM": f"/ops/{operation_id}/team",
+              "PROCEDURE": f"/ops/{operation_id}/procedure",
               "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
@@ -333,6 +364,113 @@ def required_roles(operation_type: str) -> set[str]:
     roles = {"TD", "RSO", "LCO", "PROP", "INST", "GND", "DATA"}
     if operation_type == "ROCKET_LAUNCH": roles |= {"LD", "REC", "AVN"}
     return roles
+
+
+PROCEDURE_PHASES = {"SITE", "PREPARATION", "COUNTDOWN", "EXECUTION", "SAFING", "CONTINGENCY"}
+PROCEDURE_STEP_TYPES = {"ACTION", "VERIFY", "HOLD_POINT", "POLL", "COMMAND", "CONTINGENCY"}
+
+
+def validate_procedure_steps(steps: list, assigned_roles: set[str]) -> tuple[list, list[str]]:
+    normalized, errors, sequences, codes = [], [], set(), set()
+    for index, entry in enumerate(steps, 1):
+        try: sequence = int(entry.get("sequence", index))
+        except (TypeError, ValueError): sequence = 0
+        code = str(entry.get("step_code", "")).strip().upper()
+        phase = str(entry.get("phase", "")).strip().upper()
+        step_type = str(entry.get("step_type", "ACTION")).strip().upper()
+        instruction = str(entry.get("instruction", "")).strip()
+        responsible = str(entry.get("responsible_role", "")).strip().upper()
+        mode = str(entry.get("verification_mode", "SELF")).strip().upper()
+        verifier = str(entry.get("verifier_role", "")).strip().upper() or None
+        evidence = str(entry.get("expected_evidence", "")).strip()
+        critical = bool(entry.get("safety_critical", False))
+        hold = str(entry.get("hold_condition", "")).strip()
+        abort = str(entry.get("abort_action", "")).strip()
+        if sequence < 1 or sequence in sequences: errors.append(f"step {index} has an invalid or duplicate sequence")
+        if not valid_code(code) or code in codes: errors.append(f"step {index} requires a unique controlled step code")
+        if phase not in PROCEDURE_PHASES: errors.append(f"{code or index} has an invalid phase")
+        if step_type not in PROCEDURE_STEP_TYPES: errors.append(f"{code or index} has an invalid step type")
+        if not instruction or not evidence: errors.append(f"{code or index} requires instruction and expected evidence")
+        if responsible not in assigned_roles: errors.append(f"{code or index} responsible role is not assigned")
+        if mode not in {"SELF", "TWO_PERSON", "AUTOMATED"}: errors.append(f"{code or index} has an invalid verification mode")
+        if mode == "TWO_PERSON" and (not verifier or verifier not in assigned_roles or verifier == responsible):
+            errors.append(f"{code or index} requires a different assigned verifier")
+        if critical and (not abort or mode == "SELF"): errors.append(f"{code or index} safety-critical step requires abort action and independent/automated verification")
+        if step_type == "HOLD_POINT" and not hold: errors.append(f"{code or index} hold point requires a release condition")
+        sequences.add(sequence); codes.add(code)
+        normalized.append((sequence, code, phase, step_type, instruction, responsible, mode, verifier,
+                           evidence, int(critical), hold or None, abort or None))
+    return normalized, errors
+
+
+@operations.post("/api/ops/<int:operation_id>/procedure")
+def save_procedure(operation_id: int):
+    p = request.get_json(silent=True) or {}; steps = p.get("steps", [])
+    code = str(p.get("document_code", "")).strip().upper(); revision = str(p.get("revision", "")).strip().upper()
+    title = str(p.get("title", "")).strip(); entry = str(p.get("entry_conditions", "")).strip()
+    exit_conditions = str(p.get("exit_conditions", "")).strip(); abort_policy = str(p.get("abort_policy", "")).strip()
+    if not valid_code(code) or not revision or not title or not entry or not exit_conditions or not abort_policy:
+        return jsonify(error="procedure code, revision, title, entry conditions, exit conditions and abort policy are required"), 400
+    if not isinstance(steps, list): return jsonify(error="procedure steps must be a list"), 400
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "PROCEDURE": return jsonify(error="procedure can only be edited during the PROCEDURE stage"), 409
+        staffing = db.execute("SELECT * FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+        if not staffing or staffing["state"] != "APPROVED": return jsonify(error="an approved staffing plan is required"), 409
+        assigned = {x["role_code"] for x in db.execute("SELECT role_code FROM operation_role_assignments WHERE staffing_plan_id=?", (staffing["id"],))}
+        normalized, errors = validate_procedure_steps(steps, assigned)
+        if errors: return jsonify(error="; ".join(errors)), 400
+        existing = db.execute("SELECT * FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()
+        if existing and existing["state"] == "APPROVED": return jsonify(error="approved procedures are immutable; create a controlled revision"), 409
+        db.execute("""INSERT INTO operation_procedures(operation_id,document_code,revision,title,state,entry_conditions,exit_conditions,
+            abort_policy,created_at,updated_at) VALUES(?,?,?,?, 'DRAFT',?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
+            document_code=excluded.document_code,revision=excluded.revision,title=excluded.title,entry_conditions=excluded.entry_conditions,
+            exit_conditions=excluded.exit_conditions,abort_policy=excluded.abort_policy,updated_at=excluded.updated_at""",
+            (operation_id, code, revision, title, entry, exit_conditions, abort_policy, stamp, stamp))
+        procedure_id = db.execute("SELECT id FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM operation_procedure_steps WHERE procedure_id=?", (procedure_id,))
+        for row in normalized:
+            db.execute("""INSERT INTO operation_procedure_steps(procedure_id,sequence,step_code,phase,step_type,instruction,responsible_role,
+                verification_mode,verifier_role,expected_evidence,safety_critical,hold_condition,abort_action,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (procedure_id, *row, stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "PROCEDURE_UPDATED", "TEST DIRECTOR", f"Procedure {code}/{revision} saved with {len(normalized)} controlled steps"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/procedure/approve")
+def approve_procedure(operation_id: int):
+    actor = str((request.get_json(silent=True) or {}).get("approved_by", "TEST DIRECTOR")).strip() or "TEST DIRECTOR"
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "PROCEDURE": return jsonify(error="PROCEDURE is not the active workflow stage"), 409
+        procedure = db.execute("SELECT * FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()
+        if not procedure: return jsonify(error="save the procedure draft first"), 409
+        baseline = db.execute("SELECT id FROM configuration_baselines WHERE operation_id=? AND state='RELEASED'", (operation_id,)).fetchone()
+        baseline_ref = db.execute("SELECT reference,revision FROM baseline_items WHERE baseline_id=? AND item_type='PROCEDURE'", (baseline["id"],)).fetchone() if baseline else None
+        if not baseline_ref or baseline_ref["reference"].upper() != procedure["document_code"] or baseline_ref["revision"].upper() != procedure["revision"]:
+            return jsonify(error="procedure identity does not match the released configuration baseline"), 409
+        steps = [dict(x) for x in db.execute("SELECT * FROM operation_procedure_steps WHERE procedure_id=? ORDER BY sequence", (procedure["id"],))]
+        phases = {x["phase"] for x in steps}
+        missing_phases = sorted({"SITE", "PREPARATION", "COUNTDOWN", "EXECUTION", "SAFING"} - phases)
+        if len(steps) < 5 or missing_phases: return jsonify(error="procedure is incomplete; missing operational phases: " + ", ".join(missing_phases)), 409
+        if not any(x["step_type"] == "HOLD_POINT" for x in steps): return jsonify(error="procedure requires at least one controlled hold point"), 409
+        if not any(x["step_type"] == "CONTINGENCY" or x["phase"] == "CONTINGENCY" for x in steps): return jsonify(error="procedure requires an explicit contingency or abort step"), 409
+        canonical = {"schema":"SMTCS-PROCEDURE/1","operation":operation["code"],"document":{"code":procedure["document_code"],"revision":procedure["revision"]},
+                     "entry":procedure["entry_conditions"],"exit":procedure["exit_conditions"],"abort":procedure["abort_policy"],
+                     "steps":[{k:x[k] for k in ("sequence","step_code","phase","step_type","instruction","responsible_role","verification_mode","verifier_role","expected_evidence","safety_critical","hold_condition","abort_action")} for x in steps]}
+        digest = hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        db.execute("UPDATE operation_procedures SET state='APPROVED',canonical_sha256=?,approved_at=?,approved_by=?,updated_at=? WHERE id=?", (digest, stamp, actor, stamp, procedure["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='PROCEDURE'", (actor, stamp, operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='INSTRUMENTATION'", (stamp, operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='INSTRUMENTATION',updated_at=? WHERE id=?", (stamp, operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "PROCEDURE_APPROVED", actor, f"Procedure approved with SHA-256 {digest}; Instrumentation unlocked"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.operation_detail",operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/team")
