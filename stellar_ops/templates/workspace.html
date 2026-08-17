@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SMTCS · Mission Control Workspace</title>
+  <link rel="stylesheet" href="{{url_for('static',filename='workspace.css')}}">
+  <style>body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>MISSION CONTROL WORKSPACE</small></span></div>
+  <div class="run-identity"><small>ACTIVE RUN</small><strong id="active-run">—</strong></div>
+  <div class="phase"><small>OPERATION PHASE</small><strong id="phase">—</strong></div>
+  <div class="source"><small>TELEMETRY SOURCE</small><strong id="source">—</strong></div>
+  <div class="utc"><small>UTC</small><strong id="utc">—</strong></div>
+</header>
+
+<div class="alarm-banner" id="alarm-banner"><span>NO CRITICAL ALARMS</span><button id="open-alarms">OPEN ALARM CENTER</button></div>
+
+<nav class="toolbar">
+  <select id="console-profile" title="Console profile"></select>
+  <select id="saved-workspace" title="Saved workspace"></select>
+  <button id="edit-layout">EDIT LAYOUT</button>
+  <button id="save-layout">SAVE</button>
+  <button id="lock-layout">LOCKED</button>
+  <button id="phase-aware" class="active">PHASE AUTO</button>
+  <button id="add-panel">+ PANEL</button>
+  <button id="run-builder">+ RUN</button>
+  <a href="/control">ENGINEERING SETUP</a>
+  <div class="time-conductor">
+    <button data-time="LIVE" class="active">LIVE</button>
+    <button data-time="PAUSE">PAUSE VIEW</button>
+    <button data-time="REPLAY">REPLAY</button>
+    <select id="time-window"><option value="30">30 SEC</option><option value="120">2 MIN</option><option value="600">10 MIN</option><option value="0">FULL RUN</option></select>
+    <button id="jump-ignition">IGNITION</button>
+    <span id="mission-time">T−00:00:10.000</span>
+  </div>
+  <button id="kiosk">KIOSK</button>
+</nav>
+
+<main id="workspace" class="workspace locked"></main>
+
+<footer>
+  <span><i class="ok"></i>CORE</span><span id="footer-daq">DAQ —</span><span id="footer-video">VIDEO —</span><span id="footer-storage">HISTORIAN READY</span><span id="footer-clock">CLOCK UTC</span><span id="layout-state">LAYOUT LOCKED</span>
+</footer>
+
+<dialog id="panel-dialog">
+  <form method="dialog"><header>ADD WORKSPACE PANEL<button value="cancel">×</button></header><div id="panel-catalog"></div></form>
+</dialog>
+
+<dialog id="run-dialog">
+  <form id="run-form"><header>CREATE TEST RUN<button type="button" data-close="run-dialog">×</button></header>
+    <label>RUN CODE<input name="code" placeholder="RUN-SRM-2026-002" required></label>
+    <label>TITLE<input name="title" placeholder="RNX-71V Qualification Static Fire" required></label>
+    <label>TEST ARTICLE<input name="test_article" placeholder="RNX-71V / SN-002" required></label>
+    <label>CONFIGURATION REVISION<input name="configuration_revision" placeholder="CFG-RNX71V-REV-B"></label>
+    <label>PROPELLANT BATCH<input name="propellant_batch" placeholder="RNX71V-BATCH-006"></label>
+    <label>NOTES<textarea name="notes"></textarea></label><button>CREATE RUN</button>
+  </form>
+</dialog>
+
+<dialog id="alarm-dialog"><div class="dialog-shell"><header>ALARM & LIMITS CENTER<button data-close="alarm-dialog">×</button></header><div id="alarm-center"></div></div></dialog>
+<div id="toast"></div>
+<script>window.__INITIAL__={{initial|tojson}};</script>
+<script src="{{url_for('static',filename='workspace.js')}}"></script>
+</body>
+</html>
