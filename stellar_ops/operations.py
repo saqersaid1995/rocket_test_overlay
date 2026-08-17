@@ -159,6 +159,28 @@ CREATE TABLE IF NOT EXISTS camera_view_requirements(
  public_safe INTEGER NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(plan_id,view_code),
  FOREIGN KEY(plan_id) REFERENCES video_recording_plans(id));
+CREATE TABLE IF NOT EXISTS readiness_reviews(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ review_code TEXT NOT NULL, review_type TEXT NOT NULL, state TEXT NOT NULL,
+ review_chair TEXT NOT NULL, planned_date TEXT NOT NULL, final_decision TEXT NOT NULL,
+ decision_rationale TEXT, canonical_sha256 TEXT, approved_at TEXT, approved_by TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS readiness_gates(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, review_id INTEGER NOT NULL,
+ gate_code TEXT NOT NULL, name TEXT NOT NULL, owner_role TEXT NOT NULL,
+ required INTEGER NOT NULL, status TEXT NOT NULL, evidence_reference TEXT NOT NULL,
+ reviewer TEXT NOT NULL, reviewed_at TEXT, waiver_reason TEXT,
+ waiver_authority TEXT, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(review_id,gate_code),
+ FOREIGN KEY(review_id) REFERENCES readiness_reviews(id));
+CREATE TABLE IF NOT EXISTS readiness_findings(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, review_id INTEGER NOT NULL,
+ finding_code TEXT NOT NULL, title TEXT NOT NULL, severity TEXT NOT NULL,
+ owner TEXT NOT NULL, status TEXT NOT NULL, due_date TEXT NOT NULL,
+ disposition TEXT, acceptance_authority TEXT, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(review_id,finding_code),
+ FOREIGN KEY(review_id) REFERENCES readiness_reviews(id));
 """
 
 
@@ -247,6 +269,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["video_plan"]:
         item["video_plan"]["views"] = [dict(x) for x in db.execute(
             "SELECT * FROM camera_view_requirements WHERE plan_id=? ORDER BY mandatory DESC,view_code", (video["id"],))]
+    review = db.execute("SELECT * FROM readiness_reviews WHERE operation_id=?", (operation_id,)).fetchone()
+    item["readiness"] = dict(review) if review else None
+    if item["readiness"]:
+        item["readiness"]["gates"] = [dict(x) for x in db.execute("SELECT * FROM readiness_gates WHERE review_id=? ORDER BY gate_code", (review["id"],))]
+        item["readiness"]["findings"] = [dict(x) for x in db.execute("SELECT * FROM readiness_findings WHERE review_id=? ORDER BY severity,finding_code", (review["id"],))]
     return item
 
 
@@ -334,6 +361,13 @@ def video_plan_builder(operation_id: int):
                            required_views=sorted(video_view_requirements(item["operation_type"])))
 
 
+@operations.get("/ops/<int:operation_id>/readiness")
+def readiness_builder(operation_id:int):
+    with connect() as db:item=operation_view(db,operation_id)
+    if not item:return "Operation not found",404
+    return render_template("ops_readiness.html",operation=item,gates=readiness_gate_catalog(item["operation_type"]))
+
+
 def valid_code(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{2,31}", value))
 
@@ -395,6 +429,7 @@ def continue_operation(operation_id: int):
               "PROCEDURE": f"/ops/{operation_id}/procedure",
               "INSTRUMENTATION": f"/ops/{operation_id}/instrumentation",
               "VIDEO": f"/ops/{operation_id}/video",
+              "READINESS": f"/ops/{operation_id}/readiness",
               "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
@@ -456,6 +491,106 @@ def video_view_requirements(operation_type: str) -> set[str]:
     if operation_type == "ROCKET_LAUNCH": return {"LAUNCHER_WIDE", "VEHICLE_CLOSE", "TRAJECTORY"}
     if operation_type == "RECOVERY_TEST": return {"DEPLOYMENT_WIDE", "CANOPY_CLOSE"}
     return {"TEST_ARTICLE_WIDE"}
+
+
+def readiness_gate_catalog(operation_type:str)->list[dict]:
+    gates=[("CONFIGURATION","Configuration Baseline","CONFIGURATION MANAGER",True),
+           ("STAFFING","Team & Authority","TEST DIRECTOR",True),
+           ("PROCEDURE","Approved Procedure","TEST DIRECTOR",True),
+           ("INSTRUMENTATION","Measurement Assurance","INSTRUMENTATION LEAD",True),
+           ("VIDEO","Video Evidence","DATA & VIDEO LEAD",True),
+           ("SAFETY","Hazard Controls & Emergency Response","RSO",True),
+           ("SITE","Site, Stand & Exclusion Zone","GROUND OPERATIONS",True)]
+    if operation_type=="ROCKET_LAUNCH":gates += [("RANGE","Range Readiness","RSO",True),("AIRSPACE","Airspace Coordination","LAUNCH DIRECTOR",True),("RECOVERY","Recovery Readiness","RECOVERY LEAD",True)]
+    return [{"code":c,"name":n,"owner_role":o,"required":r} for c,n,o,r in gates]
+
+
+@operations.post("/api/ops/<int:operation_id>/readiness")
+def save_readiness(operation_id:int):
+    p=request.get_json(silent=True) or {};gates=p.get("gates",[]);findings=p.get("findings",[])
+    code=str(p.get("review_code","")).strip().upper();review_type=str(p.get("review_type","TRR")).strip().upper()
+    chair=str(p.get("review_chair","")).strip();planned=str(p.get("planned_date","")).strip()
+    if not valid_code(code) or review_type not in {"TRR","FRR","LRR"} or not chair or not planned:return jsonify(error="review code, type, chair and planned date are required"),400
+    if not isinstance(gates,list) or not isinstance(findings,list):return jsonify(error="gates and findings must be lists"),400
+    gate_rows=[];errors=[]
+    catalog={x["code"]:x for x in readiness_gate_catalog("")}
+    for index,x in enumerate(gates,1):
+        gate=str(x.get("gate_code","")).strip().upper();status=str(x.get("status","PENDING")).strip().upper()
+        evidence=str(x.get("evidence_reference","")).strip();reviewer=str(x.get("reviewer","")).strip()
+        waiver_reason=str(x.get("waiver_reason","")).strip();waiver_authority=str(x.get("waiver_authority","")).strip()
+        if status not in {"PENDING","GO","NO_GO","WAIVER"}:errors.append(f"gate {gate or index} has invalid status")
+        if status in {"GO","NO_GO","WAIVER"} and (not evidence or not reviewer):errors.append(f"gate {gate or index} requires evidence and reviewer")
+        if status=="WAIVER" and (not waiver_reason or not waiver_authority):errors.append(f"gate {gate or index} waiver requires reason and authority")
+        gate_rows.append((gate,status,evidence,reviewer,utc_now() if status!="PENDING" else None,waiver_reason or None,waiver_authority or None,str(x.get("notes","")).strip()))
+    finding_rows=[]
+    for index,x in enumerate(findings,1):
+        fcode=str(x.get("finding_code","")).strip().upper();title=str(x.get("title","")).strip();severity=str(x.get("severity","")).strip().upper()
+        owner=str(x.get("owner","")).strip();status=str(x.get("status","OPEN")).strip().upper();due=str(x.get("due_date","")).strip()
+        disposition=str(x.get("disposition","")).strip();authority=str(x.get("acceptance_authority","")).strip()
+        if not valid_code(fcode) or not title or severity not in {"LOW","MEDIUM","HIGH","CRITICAL"} or not owner or status not in {"OPEN","CLOSED","ACCEPTED"} or not due:errors.append(f"finding {index} has incomplete controlled fields")
+        if status in {"CLOSED","ACCEPTED"} and not disposition:errors.append(f"{fcode or index} requires a disposition")
+        if status=="ACCEPTED" and not authority:errors.append(f"{fcode or index} accepted risk requires acceptance authority")
+        finding_rows.append((fcode,title,severity,owner,status,due,disposition or None,authority or None,str(x.get("notes","")).strip()))
+    if errors:return jsonify(error="; ".join(errors)),400
+    stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="READINESS":return jsonify(error="readiness review can only be edited during the READINESS stage"),409
+        video=db.execute("SELECT state FROM video_recording_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        if not video or video["state"]!="APPROVED":return jsonify(error="an approved video evidence plan is required"),409
+        expected={x["code"]:x for x in readiness_gate_catalog(operation["operation_type"])}
+        unknown=sorted({x[0] for x in gate_rows}-set(expected))
+        if unknown:return jsonify(error="unsupported readiness gates: "+", ".join(unknown)),400
+        existing=db.execute("SELECT * FROM readiness_reviews WHERE operation_id=?",(operation_id,)).fetchone()
+        if existing and existing["state"]=="APPROVED":return jsonify(error="approved readiness reviews are immutable"),409
+        db.execute("""INSERT INTO readiness_reviews(operation_id,review_code,review_type,state,review_chair,planned_date,final_decision,created_at,updated_at)
+            VALUES(?,?,?,'DRAFT',?,?,'PENDING',?,?) ON CONFLICT(operation_id) DO UPDATE SET review_code=excluded.review_code,review_type=excluded.review_type,
+            review_chair=excluded.review_chair,planned_date=excluded.planned_date,updated_at=excluded.updated_at""",(operation_id,code,review_type,chair,planned,stamp,stamp))
+        review_id=db.execute("SELECT id FROM readiness_reviews WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM readiness_gates WHERE review_id=?",(review_id,));db.execute("DELETE FROM readiness_findings WHERE review_id=?",(review_id,))
+        for gate,status,evidence,reviewer,reviewed_at,reason,authority,notes in gate_rows:
+            meta=expected[gate];db.execute("""INSERT INTO readiness_gates(review_id,gate_code,name,owner_role,required,status,evidence_reference,reviewer,reviewed_at,waiver_reason,waiver_authority,notes,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",(review_id,gate,meta["name"],meta["owner_role"],int(meta["required"]),status,evidence,reviewer,reviewed_at,reason,authority,notes,stamp))
+        for row in finding_rows:db.execute("""INSERT INTO readiness_findings(review_id,finding_code,title,severity,owner,status,due_date,disposition,acceptance_authority,notes,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(review_id,*row,stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"READINESS_UPDATED",chair,f"{review_type} readiness package updated with {len(gate_rows)} gates and {len(finding_rows)} findings"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/readiness/approve")
+def approve_readiness(operation_id:int):
+    p=request.get_json(silent=True) or {};actor=str(p.get("approved_by","TEST DIRECTOR")).strip() or "TEST DIRECTOR";rationale=str(p.get("decision_rationale","")).strip();stamp=utc_now()
+    if not rationale:return jsonify(error="final Go decision requires documented rationale"),400
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="READINESS":return jsonify(error="READINESS is not the active workflow stage"),409
+        review=db.execute("SELECT * FROM readiness_reviews WHERE operation_id=?",(operation_id,)).fetchone()
+        if not review:return jsonify(error="save the readiness review first"),409
+        gates=[dict(x) for x in db.execute("SELECT * FROM readiness_gates WHERE review_id=? ORDER BY gate_code",(review["id"],))]
+        expected={x["code"] for x in readiness_gate_catalog(operation["operation_type"])};present={x["gate_code"] for x in gates}
+        missing=sorted(expected-present)
+        if missing:return jsonify(error="mandatory readiness gates are missing: "+", ".join(missing)),409
+        blocked=sorted(x["gate_code"] for x in gates if x["required"] and x["status"] not in {"GO","WAIVER"})
+        if blocked:return jsonify(error="readiness gates are not GO: "+", ".join(blocked)),409
+        prohibited=sorted(x["gate_code"] for x in gates if x["status"]=="WAIVER" and x["gate_code"] in {"SAFETY","RANGE","AIRSPACE"})
+        if prohibited:return jsonify(error="safety/range/airspace gates cannot be waived: "+", ".join(prohibited)),409
+        findings=[dict(x) for x in db.execute("SELECT * FROM readiness_findings WHERE review_id=? ORDER BY finding_code",(review["id"],))]
+        open_findings=sorted(x["finding_code"] for x in findings if x["status"]=="OPEN")
+        if open_findings:return jsonify(error="open readiness findings block approval: "+", ".join(open_findings)),409
+        critical_acceptance=sorted(x["finding_code"] for x in findings if x["severity"]=="CRITICAL" and x["status"]=="ACCEPTED")
+        if critical_acceptance:return jsonify(error="critical findings cannot be accepted as residual risk: "+", ".join(critical_acceptance)),409
+        canonical={"schema":"SMTCS-READINESS/1","operation":operation["code"],"review":{"code":review["review_code"],"type":review["review_type"],"chair":review["review_chair"]},
+                   "gates":[{k:x[k] for k in ("gate_code","status","evidence_reference","reviewer","waiver_reason","waiver_authority")} for x in gates],
+                   "findings":[{k:x[k] for k in ("finding_code","severity","owner","status","disposition","acceptance_authority")} for x in findings],"decision_rationale":rationale}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        db.execute("UPDATE readiness_reviews SET state='APPROVED',final_decision='GO',decision_rationale=?,canonical_sha256=?,approved_at=?,approved_by=?,updated_at=? WHERE id=?",(rationale,digest,stamp,actor,stamp,review["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='READINESS'",(actor,stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='REHEARSAL'",(stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='REHEARSAL',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"READINESS_APPROVED",actor,f"{review['review_type']} GO decision recorded with SHA-256 {digest}; Rehearsal unlocked"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.operation_detail",operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/video")

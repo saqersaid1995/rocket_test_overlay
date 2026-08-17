@@ -356,6 +356,59 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertTrue(all(row["estimated_storage_gb"] > 0 for row in storage))
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/video", json=payload).status_code, 409)
 
+    def prepare_readiness_stage(self, code="QREADY-010"):
+        operation_id = self.prepare_video_stage(code)
+        video = self.video_plan_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/video", json=video).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/video/approve").status_code, 200)
+        return operation_id
+
+    def readiness_payload(self):
+        gates = ["CONFIGURATION", "STAFFING", "PROCEDURE", "INSTRUMENTATION", "VIDEO", "SAFETY", "SITE"]
+        return {"review_code": "QREADY-TRR", "review_type": "TRR", "review_chair": "Test Director",
+                "planned_date": "2026-09-01", "gates": [{"gate_code": gate, "status": "GO",
+                    "evidence_reference": f"EVIDENCE-{gate}", "reviewer": f"Reviewer {gate}"} for gate in gates], "findings": []}
+
+    def test_readiness_blocks_open_findings_and_nonwaivable_safety_gate(self):
+        operation_id = self.prepare_readiness_stage()
+        page = self.client.get(f"/ops/{operation_id}/readiness")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Readiness Review", page.data)
+        payload = self.readiness_payload()
+        payload["findings"] = [{"finding_code": "RF-01", "title": "Open safety action", "severity": "HIGH",
+                                "owner": "RSO", "status": "OPEN", "due_date": "2026-08-30"}]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness", json=payload).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/readiness/approve", json={"decision_rationale": "All gates reviewed"})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("open readiness findings", blocked.get_json()["error"])
+        payload["findings"] = []
+        safety = next(g for g in payload["gates"] if g["gate_code"] == "SAFETY")
+        safety.update(status="WAIVER", waiver_reason="Pending confirmation", waiver_authority="Test Director")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness", json=payload).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/readiness/approve", json={"decision_rationale": "Proceed with waiver"})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("cannot be waived", blocked.get_json()["error"])
+
+    def test_approved_readiness_is_hashed_locked_and_unlocks_rehearsal(self):
+        operation_id = self.prepare_readiness_stage("QREADY-020")
+        payload = self.readiness_payload()
+        payload["findings"] = [{"finding_code": "RF-02", "title": "Label correction", "severity": "LOW",
+                                "owner": "Ground Operations", "status": "CLOSED", "due_date": "2026-08-30",
+                                "disposition": "Label replaced and independently inspected"}]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness", json=payload).status_code, 200)
+        approved = self.client.post(f"/api/ops/{operation_id}/readiness/approve", json={
+            "approved_by": "Test Director", "decision_rationale": "All mandatory gates are GO and the only finding is verified closed."})
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(len(approved.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            review = db.execute("SELECT state,final_decision FROM readiness_reviews WHERE operation_id=?", (operation_id,)).fetchone()
+            rehearsal = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='REHEARSAL'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "REHEARSAL")
+        self.assertEqual(review["final_decision"], "GO")
+        self.assertEqual(rehearsal["status"], "ACTIVE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/readiness", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()
