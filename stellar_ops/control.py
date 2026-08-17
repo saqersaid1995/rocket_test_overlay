@@ -10,6 +10,8 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, render_template, request
 from .adapters import inspect_csv, test_adapter
+from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
+                                recording_status, runtime_snapshot)
 
 ROOT = Path(__file__).resolve().parent
 CONTROL_DB = Path(os.environ.get("STELLAR_OPS_DATA", ROOT / "data")) / "control.db"
@@ -191,7 +193,11 @@ def snapshot() -> dict:
     init_control_db()
     with connect() as db:
         op = db.execute("SELECT * FROM operations WHERE id=?", (OPERATION_ID,)).fetchone()
-        data = {"operation": dict(op), "stations": [dict(x) for x in db.execute("SELECT * FROM stations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
+        ensure_runtime_schema(db)
+        op_dict = dict(op)
+        runtime = runtime_snapshot(db, op_dict, telemetry(op))
+        evaluate_alarms(db, OPERATION_ID, runtime)
+        data = {"operation": op_dict, "stations": [dict(x) for x in db.execute("SELECT * FROM stations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
                 "devices": [dict(x) for x in db.execute("SELECT * FROM devices WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
                 "channels": [dict(x) for x in db.execute("SELECT * FROM channels WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
                 "steps": [dict(x) for x in db.execute("SELECT * FROM procedure_steps WHERE operation_id=? ORDER BY sequence", (OPERATION_ID,))],
@@ -203,7 +209,8 @@ def snapshot() -> dict:
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
-        data["telemetry"] = telemetry(op)
+        data["telemetry"] = runtime
+        data["recording"] = recording_status(db, OPERATION_ID)
         return data
 
 
@@ -288,11 +295,70 @@ def upload_replay():
     try: report=inspect_csv(file.read())
     except (UnicodeDecodeError,ValueError) as exc: return jsonify(error=str(exc)),400
     with connect() as db:
+        ensure_runtime_schema(db)
         db.execute("UPDATE replay_datasets SET active=0 WHERE operation_id=?",(OPERATION_ID,))
         cursor=db.execute("INSERT INTO replay_datasets(operation_id,filename,uploaded_at,row_count,columns_json,preview_json,active) VALUES(?,?,?,?,?,?,1)",
                           (OPERATION_ID,file.filename,utc_now(),report["row_count"],json.dumps(report["columns"]),json.dumps(report["preview"])))
+        db.execute("INSERT OR REPLACE INTO replay_payloads(dataset_id,rows_json) VALUES(?,?)",(cursor.lastrowid,json.dumps(report["rows"],separators=(",",":"))))
+        db.execute("INSERT INTO replay_runtime(operation_id,dataset_id,state,speed,cursor,started_cursor) VALUES(?,?,'PAUSED',1,0,0) ON CONFLICT(operation_id) DO UPDATE SET dataset_id=excluded.dataset_id,state='PAUSED',speed=1,cursor=0,started_wall_time=NULL,started_cursor=0",(OPERATION_ID,cursor.lastrowid))
         event(db,"REPLAY_DATASET","INSTRUMENTATION","INFO",f"CSV replay dataset loaded: {file.filename} ({report['row_count']} rows)")
-    return jsonify(ok=True,id=cursor.lastrowid,**report)
+    return jsonify(ok=True,id=cursor.lastrowid,columns=report["columns"],row_count=report["row_count"],preview=report["preview"])
+
+
+@control.post("/api/control/mode")
+def set_mode():
+    mode=(request.get_json(silent=True) or {}).get("mode","").upper()
+    if mode not in {"SIMULATION","LIVE","REPLAY"}: return jsonify(error="invalid source mode"),400
+    with connect() as db:
+        op=db.execute("SELECT * FROM operations WHERE id=?",(OPERATION_ID,)).fetchone()
+        if op["state"] not in {"CHECKOUT","HOLD"}: return jsonify(error="source mode may only change during CHECKOUT or HOLD"),409
+        ensure_runtime_schema(db)
+        if recording_status(db,OPERATION_ID).get("state")=="RECORDING": return jsonify(error="stop the active recording before changing source mode"),409
+        if mode=="REPLAY" and not db.execute("SELECT 1 FROM replay_runtime WHERE operation_id=? AND dataset_id IS NOT NULL",(OPERATION_ID,)).fetchone(): return jsonify(error="load a replay dataset first"),409
+        db.execute("UPDATE operations SET mode=?,updated_at=? WHERE id=?",(mode,utc_now(),OPERATION_ID)); event(db,"SOURCE_MODE","INSTRUMENTATION","WARNING" if mode!="LIVE" else "INFO",f"Telemetry source changed to {mode}")
+    return jsonify(ok=True,mode=mode)
+
+
+@control.post("/api/control/recording")
+def set_recording():
+    action=(request.get_json(silent=True) or {}).get("action","").upper()
+    with connect() as db:
+        ensure_runtime_schema(db); op=db.execute("SELECT * FROM operations WHERE id=?",(OPERATION_ID,)).fetchone(); current=recording_status(db,OPERATION_ID)
+        if action=="START":
+            if current.get("state")=="RECORDING": return jsonify(error="recording is already active"),409
+            total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
+            cursor=db.execute("INSERT INTO recording_sessions(operation_id,source_mode,started_at,state,started_by,sample_count_start) VALUES(?,?,?,'RECORDING','INSTRUMENTATION',?)",(OPERATION_ID,op["mode"],utc_now(),total)); event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode")
+        elif action=="STOP" and current.get("state")=="RECORDING":
+            total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
+            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped")
+        else: return jsonify(error="recording command is invalid"),409
+    return jsonify(ok=True)
+
+
+@control.post("/api/control/replay/control")
+def replay_control():
+    payload=request.get_json(silent=True) or {}; action=str(payload.get("action","")).upper()
+    with connect() as db:
+        ensure_runtime_schema(db); row=db.execute("SELECT * FROM replay_runtime WHERE operation_id=?",(OPERATION_ID,)).fetchone()
+        if not row or not row["dataset_id"]: return jsonify(error="no replay dataset loaded"),409
+        if action=="PLAY": db.execute("UPDATE replay_runtime SET state='PLAYING',started_wall_time=?,started_cursor=cursor WHERE operation_id=?",(time.time(),OPERATION_ID))
+        elif action=="PAUSE":
+            current=replay_control_cursor(db,row); db.execute("UPDATE replay_runtime SET state='PAUSED',cursor=?,started_wall_time=NULL,started_cursor=? WHERE operation_id=?",(current,current,OPERATION_ID))
+        elif action=="SEEK":
+            cursor=max(0,int(payload.get("cursor",0))); db.execute("UPDATE replay_runtime SET state='PAUSED',cursor=?,started_wall_time=NULL,started_cursor=? WHERE operation_id=?",(cursor,cursor,OPERATION_ID))
+        elif action=="SPEED":
+            speed=float(payload.get("speed",1));
+            if speed not in {0.5,1,2,10}: return jsonify(error="unsupported replay speed"),400
+            current=replay_control_cursor(db,row); db.execute("UPDATE replay_runtime SET speed=?,cursor=?,started_cursor=?,started_wall_time=? WHERE operation_id=?",(speed,current,current,time.time() if row["state"]=="PLAYING" else None,OPERATION_ID))
+        else: return jsonify(error="invalid replay command"),400
+        event(db,"REPLAY_CONTROL","INSTRUMENTATION","INFO",f"Replay command {action}")
+    return jsonify(ok=True)
+
+
+def replay_control_cursor(db,row):
+    payload=db.execute("SELECT rows_json FROM replay_payloads WHERE dataset_id=?",(row["dataset_id"],)).fetchone(); count=len(json.loads(payload["rows_json"])) if payload else 0
+    if row["state"]!="PLAYING" or row["started_wall_time"] is None:return min(max(0,row["cursor"]),max(0,count-1))
+    return min(max(0,count-1),row["started_cursor"]+int((time.time()-row["started_wall_time"])*row["speed"]*20))
 
 
 @control.post("/api/control/station/<code>")
@@ -338,10 +404,25 @@ def command():
             if no_go: return jsonify(error="all required stations must be GO"), 409
             incomplete = db.execute("SELECT count(*) FROM procedure_steps WHERE operation_id=? AND sequence<=90 AND status!='COMPLETE'", (OPERATION_ID,)).fetchone()[0]
             if incomplete: return jsonify(error="pre-countdown procedure is incomplete"), 409
+            if op["mode"] == "LIVE":
+                ensure_runtime_schema(db)
+                live = runtime_snapshot(db, dict(op), telemetry(op))
+                recording = recording_status(db, OPERATION_ID)
+                if recording.get("state") != "RECORDING" or recording.get("source_mode") != "LIVE":
+                    return jsonify(error="LIVE telemetry recording must be active before countdown"), 409
+                required = {row["channel_id"] for row in db.execute(
+                    "SELECT channel_id FROM channel_integrations WHERE operation_id=? AND required_for_commit=1",
+                    (OPERATION_ID,))}
+                bad = sorted(channel_id for channel_id in required
+                             if live.get("channels", {}).get(channel_id, {}).get("quality") != "GOOD")
+                if bad:
+                    return jsonify(error="required LIVE channels are not GOOD: " + ", ".join(bad)), 409
+                if live.get("meta", {}).get("sequence_gaps", 0):
+                    return jsonify(error="Ethernet stream contains sequence gaps; disposition the data loss before countdown"), 409
             db.execute("UPDATE operations SET state='COUNTDOWN',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Terminal countdown authorised")
         elif action == "FIRE" and op["state"] == "COUNTDOWN":
             db.execute("UPDATE operations SET state='FIRING',firing_started_monotonic=?,updated_at=? WHERE id=?", (time.monotonic(), utc_now(), OPERATION_ID)); event(db, "FIELD_ACK", "FIELD_CONTROLLER_SIM", "CRITICAL", "SIMULATED firing event acknowledged")
-        elif action == "POST_FIRE" and op["state"] == "FIRING" and telemetry(op)["elapsed"] >= 8:
+        elif action == "POST_FIRE" and op["state"] == "FIRING" and runtime_snapshot(db, dict(op), telemetry(op))["elapsed"] >= 8:
             db.execute("UPDATE operations SET state='POST_FIRE',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Post-fire phase entered")
         elif action == "RESET_SIM":
             db.execute("UPDATE operations SET state='CHECKOUT',prior_state=NULL,active_hold=NULL,firing_started_monotonic=NULL,updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); db.execute("UPDATE stations SET decision='PENDING',updated_at=? WHERE operation_id=?", (utc_now(), OPERATION_ID)); db.execute("UPDATE procedure_steps SET status='PENDING',completed_by=NULL,completed_at=NULL WHERE operation_id=?", (OPERATION_ID,)); event(db, "RESET", "SYSTEM", "INFO", "Simulation attempt reset")
