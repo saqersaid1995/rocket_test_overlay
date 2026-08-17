@@ -78,6 +78,17 @@ CREATE TABLE IF NOT EXISTS replay_datasets(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL,
  filename TEXT NOT NULL, uploaded_at TEXT NOT NULL, row_count INTEGER NOT NULL,
  columns_json TEXT NOT NULL, preview_json TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS edge_sessions(
+ device_id TEXT NOT NULL, boot_id TEXT NOT NULL, remote_addr TEXT NOT NULL,
+ firmware TEXT, connected_at TEXT NOT NULL, disconnected_at TEXT,
+ last_seen TEXT NOT NULL, last_sequence INTEGER, total_samples INTEGER NOT NULL DEFAULT 0,
+ sequence_gaps INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
+ PRIMARY KEY(device_id,boot_id));
+CREATE TABLE IF NOT EXISTS edge_batches(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, boot_id TEXT NOT NULL,
+ sequence INTEGER NOT NULL, received_at TEXT NOT NULL, first_sample_us INTEGER NOT NULL,
+ sample_period_us INTEGER NOT NULL, sample_count INTEGER NOT NULL,
+ channels_json TEXT NOT NULL, UNIQUE(device_id,boot_id,sequence));
 """
 
 STATIONS = [
@@ -191,6 +202,7 @@ def snapshot() -> dict:
             WHERE i.operation_id=? ORDER BY d.rowid""", (OPERATION_ID,))]
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
+        data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["telemetry"] = telemetry(op)
         return data
 
