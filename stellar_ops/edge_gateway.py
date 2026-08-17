@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .edge_protocol import ProtocolError, decode_frame, encode_frame
+from .database import add_column, connect_database
 
 DEFAULT_DB = Path(os.environ.get("STELLAR_OPS_DATA", Path(__file__).resolve().parent / "data")) / "control.db"
 
@@ -18,9 +19,7 @@ def now() -> str:
 
 
 def database(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path)
-    db.row_factory = sqlite3.Row
+    db = connect_database(path)
     db.executescript("""
     CREATE TABLE IF NOT EXISTS edge_sessions(
       device_id TEXT NOT NULL, boot_id TEXT NOT NULL, remote_addr TEXT NOT NULL,
@@ -34,6 +33,7 @@ def database(path: Path) -> sqlite3.Connection:
       sample_period_us INTEGER NOT NULL, sample_count INTEGER NOT NULL,
       channels_json TEXT NOT NULL, UNIQUE(device_id,boot_id,sequence));
     """)
+    add_column(db,"edge_batches","run_id INTEGER")
     return db
 
 
@@ -70,8 +70,10 @@ class EdgeHandler(socketserver.StreamRequestHandler):
                                            (self.device_id,self.boot_id)).fetchone()
                         if session is None: raise ProtocolError("HELLO required before BATCH")
                         last=session["last_sequence"]; gap=max(0,msg["sequence"]-(last+1)) if last is not None and msg["sequence"] > last else 0
-                        inserted = db.execute("""INSERT OR IGNORE INTO edge_batches(device_id,boot_id,sequence,received_at,first_sample_us,sample_period_us,sample_count,channels_json)
-                          VALUES(?,?,?,?,?,?,?,?)""",(self.device_id,self.boot_id,msg["sequence"],now(),msg["first_sample_us"],msg["sample_period_us"],msg["sample_count"],json.dumps(msg["channels"],separators=(",",":"))))
+                        try: active_run=db.execute("SELECT id FROM test_runs WHERE active=1 ORDER BY id DESC LIMIT 1").fetchone()
+                        except sqlite3.OperationalError: active_run=None
+                        inserted = db.execute("""INSERT OR IGNORE INTO edge_batches(device_id,boot_id,sequence,received_at,first_sample_us,sample_period_us,sample_count,channels_json,run_id)
+                          VALUES(?,?,?,?,?,?,?,?,?)""",(self.device_id,self.boot_id,msg["sequence"],now(),msg["first_sample_us"],msg["sample_period_us"],msg["sample_count"],json.dumps(msg["channels"],separators=(",",":")),active_run["id"] if active_run else None))
                         if inserted.rowcount:
                             db.execute("""UPDATE edge_sessions SET last_seen=?,last_sequence=CASE WHEN last_sequence IS NULL OR ? > last_sequence THEN ? ELSE last_sequence END,
                               total_samples=total_samples+?,sequence_gaps=sequence_gaps+?,status='STREAMING'
