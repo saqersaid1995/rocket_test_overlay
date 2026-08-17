@@ -138,6 +138,27 @@ CREATE TABLE IF NOT EXISTS measurement_requirements(
  notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(plan_id,measurement_code), UNIQUE(plan_id,channel_id),
  FOREIGN KEY(plan_id) REFERENCES instrumentation_plans(id));
+CREATE TABLE IF NOT EXISTS video_recording_plans(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ manifest_code TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL,
+ master_time_source TEXT NOT NULL, recording_window_seconds INTEGER NOT NULL,
+ evidence_owner TEXT NOT NULL, notes TEXT, canonical_sha256 TEXT,
+ approved_at TEXT, approved_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS camera_view_requirements(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER NOT NULL,
+ view_code TEXT NOT NULL, name TEXT NOT NULL, purpose TEXT NOT NULL,
+ camera_device_id TEXT NOT NULL, mandatory INTEGER NOT NULL,
+ record_mode TEXT NOT NULL, resolution TEXT NOT NULL, fps INTEGER NOT NULL,
+ codec TEXT NOT NULL, bitrate_mbps REAL NOT NULL, pre_roll_seconds INTEGER NOT NULL,
+ post_roll_seconds INTEGER NOT NULL, time_sync_method TEXT NOT NULL,
+ time_sync_status TEXT NOT NULL, signal_test_status TEXT NOT NULL,
+ recording_test_status TEXT NOT NULL, primary_storage TEXT NOT NULL,
+ backup_storage TEXT NOT NULL, retention_days INTEGER NOT NULL,
+ estimated_storage_gb REAL NOT NULL, loss_action TEXT NOT NULL,
+ public_safe INTEGER NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(plan_id,view_code),
+ FOREIGN KEY(plan_id) REFERENCES video_recording_plans(id));
 """
 
 
@@ -221,6 +242,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["instrumentation"]:
         item["instrumentation"]["measurements"] = [dict(x) for x in db.execute(
             "SELECT * FROM measurement_requirements WHERE plan_id=? ORDER BY criticality DESC,measurement_code", (instrumentation["id"],))]
+    video = db.execute("SELECT * FROM video_recording_plans WHERE operation_id=?", (operation_id,)).fetchone()
+    item["video_plan"] = dict(video) if video else None
+    if item["video_plan"]:
+        item["video_plan"]["views"] = [dict(x) for x in db.execute(
+            "SELECT * FROM camera_view_requirements WHERE plan_id=? ORDER BY mandatory DESC,view_code", (video["id"],))]
     return item
 
 
@@ -298,6 +324,16 @@ def instrumentation_builder(operation_id: int):
                            required_measurements=sorted(instrumentation_requirements(item["operation_type"])))
 
 
+@operations.get("/ops/<int:operation_id>/video")
+def video_plan_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+        cameras = [dict(x) for x in db.execute("SELECT * FROM devices WHERE operation_id=? AND device_type='IP-CAMERA' ORDER BY id", (item["runtime_operation_id"] or OPERATION_ID,))] if item else []
+    if not item: return "Operation not found", 404
+    return render_template("ops_video_plan.html", operation=item, cameras=cameras,
+                           required_views=sorted(video_view_requirements(item["operation_type"])))
+
+
 def valid_code(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{2,31}", value))
 
@@ -358,6 +394,7 @@ def continue_operation(operation_id: int):
               "TEAM": f"/ops/{operation_id}/team",
               "PROCEDURE": f"/ops/{operation_id}/procedure",
               "INSTRUMENTATION": f"/ops/{operation_id}/instrumentation",
+              "VIDEO": f"/ops/{operation_id}/video",
               "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
@@ -412,6 +449,102 @@ def instrumentation_requirements(operation_type: str) -> set[str]:
     if operation_type == "ROCKET_LAUNCH": return {"ALTITUDE", "ACCELERATION", "BATTERY_VOLTAGE", "IGNITION_CONTINUITY"}
     if operation_type == "AVIONICS_TEST": return {"BATTERY_VOLTAGE", "BUS_CURRENT", "TIME_SYNC"}
     return {"PRIMARY_MEASUREMENT", "TIME_SYNC"}
+
+
+def video_view_requirements(operation_type: str) -> set[str]:
+    if operation_type == "STATIC_FIRE": return {"MOTOR_WIDE", "NOZZLE_CLOSE"}
+    if operation_type == "ROCKET_LAUNCH": return {"LAUNCHER_WIDE", "VEHICLE_CLOSE", "TRAJECTORY"}
+    if operation_type == "RECOVERY_TEST": return {"DEPLOYMENT_WIDE", "CANOPY_CLOSE"}
+    return {"TEST_ARTICLE_WIDE"}
+
+
+@operations.post("/api/ops/<int:operation_id>/video")
+def save_video_plan(operation_id:int):
+    p=request.get_json(silent=True) or {};views=p.get("views",[])
+    code=str(p.get("manifest_code","")).strip().upper();revision=str(p.get("revision","")).strip().upper()
+    time_source=str(p.get("master_time_source","")).strip();owner=str(p.get("evidence_owner","")).strip()
+    try:window=int(p.get("recording_window_seconds"))
+    except (TypeError,ValueError):window=0
+    if not valid_code(code) or not revision or not time_source or not owner or window<10 or window>86400:
+        return jsonify(error="manifest code, revision, time source, evidence owner and valid recording window are required"),400
+    if not isinstance(views,list):return jsonify(error="views must be a list"),400
+    normalized=[];errors=[]
+    for index,x in enumerate(views,1):
+        view_code=str(x.get("view_code","")).strip().upper();name=str(x.get("name","")).strip();purpose=str(x.get("purpose","")).strip()
+        camera=str(x.get("camera_device_id","")).strip().upper();mode=str(x.get("record_mode","ISO")).strip().upper()
+        resolution=str(x.get("resolution","")).strip();codec=str(x.get("codec","")).strip().upper()
+        sync_method=str(x.get("time_sync_method","")).strip();sync=str(x.get("time_sync_status","NOT_VERIFIED")).strip().upper()
+        signal=str(x.get("signal_test_status","NOT_TESTED")).strip().upper();recording=str(x.get("recording_test_status","NOT_TESTED")).strip().upper()
+        primary=str(x.get("primary_storage","")).strip();backup=str(x.get("backup_storage","")).strip();loss=str(x.get("loss_action","")).strip()
+        try:
+            fps=int(x.get("fps"));bitrate=float(x.get("bitrate_mbps"));pre=int(x.get("pre_roll_seconds"));post=int(x.get("post_roll_seconds"));retention=int(x.get("retention_days"))
+        except (TypeError,ValueError):errors.append(f"view {index} has invalid numeric recording parameters");continue
+        mandatory=bool(x.get("mandatory",True));public_safe=bool(x.get("public_safe",False))
+        if not valid_code(view_code) or not name or not purpose or not camera or not resolution or not codec or not sync_method or not primary or not backup or not loss:
+            errors.append(f"view {index} is missing controlled evidence fields")
+        if mode not in {"ISO","PROGRAM","BOTH"} or sync not in {"NOT_VERIFIED","VERIFIED","FAILED"} or signal not in {"NOT_TESTED","PASS","FAIL"} or recording not in {"NOT_TESTED","PASS","FAIL"}:
+            errors.append(f"{view_code or index} has an invalid assurance status")
+        if fps<1 or fps>1000 or bitrate<=0 or pre<0 or post<0 or retention<1:errors.append(f"{view_code or index} has invalid recording capacity values")
+        if mandatory and primary.casefold()==backup.casefold():errors.append(f"{view_code or index} mandatory evidence requires independent primary and backup storage")
+        estimate=round(bitrate*(window+pre+post)/8/1024,3)
+        normalized.append((view_code,name,purpose,camera,int(mandatory),mode,resolution,fps,codec,bitrate,pre,post,sync_method,sync,signal,recording,primary,backup,retention,estimate,loss,int(public_safe),str(x.get("notes","")).strip()))
+    if errors:return jsonify(error="; ".join(errors)),400
+    stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="VIDEO":return jsonify(error="video plan can only be edited during the VIDEO stage"),409
+        instrument=db.execute("SELECT state FROM instrumentation_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        if not instrument or instrument["state"]!="APPROVED":return jsonify(error="an approved instrumentation plan is required"),409
+        existing=db.execute("SELECT * FROM video_recording_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        if existing and existing["state"]=="APPROVED":return jsonify(error="approved video and recording plans are immutable"),409
+        runtime_id=operation["runtime_operation_id"] or OPERATION_ID
+        for row in normalized:
+            camera=db.execute("SELECT * FROM devices WHERE operation_id=? AND id=? AND device_type='IP-CAMERA'",(runtime_id,row[3])).fetchone()
+            if not camera:return jsonify(error=f"{row[0]} references a camera not registered in Engineering Setup"),409
+        db.execute("""INSERT INTO video_recording_plans(operation_id,manifest_code,revision,state,master_time_source,recording_window_seconds,evidence_owner,notes,created_at,updated_at)
+            VALUES(?,?,?,'DRAFT',?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET manifest_code=excluded.manifest_code,revision=excluded.revision,
+            master_time_source=excluded.master_time_source,recording_window_seconds=excluded.recording_window_seconds,evidence_owner=excluded.evidence_owner,
+            notes=excluded.notes,updated_at=excluded.updated_at""",(operation_id,code,revision,time_source,window,owner,str(p.get("notes","")).strip(),stamp,stamp))
+        plan_id=db.execute("SELECT id FROM video_recording_plans WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM camera_view_requirements WHERE plan_id=?",(plan_id,))
+        for row in normalized:db.execute("""INSERT INTO camera_view_requirements(plan_id,view_code,name,purpose,camera_device_id,mandatory,record_mode,resolution,fps,codec,
+            bitrate_mbps,pre_roll_seconds,post_roll_seconds,time_sync_method,time_sync_status,signal_test_status,recording_test_status,primary_storage,backup_storage,
+            retention_days,estimated_storage_gb,loss_action,public_safe,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(plan_id,*row,stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,stamp,"VIDEO_PLAN_UPDATED",owner,f"Video evidence manifest {code}/{revision} saved with {len(normalized)} views"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/video/approve")
+def approve_video_plan(operation_id:int):
+    actor=str((request.get_json(silent=True) or {}).get("approved_by","DATA & VIDEO LEAD")).strip() or "DATA & VIDEO LEAD";stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="VIDEO":return jsonify(error="VIDEO is not the active workflow stage"),409
+        plan=db.execute("SELECT * FROM video_recording_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        if not plan:return jsonify(error="save the video and recording plan first"),409
+        baseline=db.execute("SELECT id FROM configuration_baselines WHERE operation_id=? AND state='RELEASED'",(operation_id,)).fetchone()
+        baseline_ref=db.execute("SELECT reference,revision FROM baseline_items WHERE baseline_id=? AND item_type='CAMERA_MANIFEST'",(baseline["id"],)).fetchone() if baseline else None
+        if not baseline_ref or baseline_ref["reference"].upper()!=plan["manifest_code"] or baseline_ref["revision"].upper()!=plan["revision"]:
+            return jsonify(error="video manifest identity does not match the released CAMERA_MANIFEST baseline item"),409
+        rows=[dict(x) for x in db.execute("SELECT * FROM camera_view_requirements WHERE plan_id=? ORDER BY view_code",(plan["id"],))]
+        present={x["view_code"] for x in rows if x["mandatory"]}
+        missing=sorted(video_view_requirements(operation["operation_type"])-present)
+        if missing:return jsonify(error="mandatory camera views are missing: "+", ".join(missing)),409
+        failed=sorted(x["view_code"] for x in rows if x["mandatory"] and (x["signal_test_status"]!="PASS" or x["recording_test_status"]!="PASS" or x["time_sync_status"]!="VERIFIED"))
+        if failed:return jsonify(error="mandatory views have not passed signal, recording and time-sync verification: "+", ".join(failed)),409
+        canonical={"schema":"SMTCS-VIDEO-EVIDENCE/1","operation":operation["code"],"manifest":{"code":plan["manifest_code"],"revision":plan["revision"],"time_source":plan["master_time_source"],"window":plan["recording_window_seconds"]},
+                   "views":[{k:x[k] for k in ("view_code","camera_device_id","record_mode","resolution","fps","codec","bitrate_mbps","pre_roll_seconds","post_roll_seconds","time_sync_method","primary_storage","backup_storage","retention_days","loss_action","public_safe")} for x in rows]}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        db.execute("UPDATE video_recording_plans SET state='APPROVED',canonical_sha256=?,approved_at=?,approved_by=?,updated_at=? WHERE id=?",(digest,stamp,actor,stamp,plan["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='VIDEO'",(actor,stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='READINESS'",(stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='READINESS',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,stamp,"VIDEO_PLAN_APPROVED",actor,f"Video evidence plan approved with SHA-256 {digest}; Readiness Review unlocked"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.operation_detail",operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/instrumentation")

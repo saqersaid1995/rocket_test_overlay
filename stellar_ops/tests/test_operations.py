@@ -302,6 +302,60 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(video["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/instrumentation", json=payload).status_code, 409)
 
+    def prepare_video_stage(self, code="QVIDEO-010"):
+        operation_id = self.prepare_instrumentation_stage(code)
+        instrumentation = self.instrumentation_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/instrumentation", json=instrumentation).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/instrumentation/approve").status_code, 200)
+        return operation_id
+
+    def video_plan_payload(self, assurance="PASS", manifest_code="REF-CAMERA_MANIFEST"):
+        views = [("MOTOR_WIDE", "Motor wide", "Full test article and stand", "CAM-01"),
+                 ("NOZZLE_CLOSE", "Nozzle close", "Nozzle and plume onset", "CAM-02")]
+        return {"manifest_code": manifest_code, "revision": "REV-A", "master_time_source": "TIME-01 / UTC",
+                "recording_window_seconds": 600, "evidence_owner": "Data & Video Lead", "views": [
+                    {"view_code": code, "name": name, "purpose": purpose, "camera_device_id": camera, "mandatory": True,
+                     "record_mode": "ISO", "resolution": "1920x1080", "fps": 30, "codec": "H264", "bitrate_mbps": 8,
+                     "pre_roll_seconds": 30, "post_roll_seconds": 120, "time_sync_method": "NTP / embedded UTC",
+                     "time_sync_status": "VERIFIED" if assurance == "PASS" else "NOT_VERIFIED",
+                     "signal_test_status": assurance, "recording_test_status": assurance,
+                     "primary_storage": "RECORDER-A", "backup_storage": "NAS-EVIDENCE", "retention_days": 365,
+                     "loss_action": "Call HOLD and assess evidence impact", "public_safe": False}
+                    for code,name,purpose,camera in views]}
+
+    def test_video_plan_blocks_unknown_camera_and_unverified_evidence_chain(self):
+        operation_id = self.prepare_video_stage()
+        page = self.client.get(f"/ops/{operation_id}/video")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Video & Recording Plan", page.data)
+        unknown = self.video_plan_payload(); unknown["views"][0]["camera_device_id"] = "CAM-99"
+        response = self.client.post(f"/api/ops/{operation_id}/video", json=unknown)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not registered", response.get_json()["error"])
+        untested = self.video_plan_payload("NOT_TESTED")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/video", json=untested).status_code, 200)
+        approval = self.client.post(f"/api/ops/{operation_id}/video/approve")
+        self.assertEqual(approval.status_code, 409)
+        self.assertIn("time-sync", approval.get_json()["error"])
+
+    def test_approved_video_plan_is_hashed_locked_and_unlocks_readiness(self):
+        operation_id = self.prepare_video_stage("QVIDEO-020")
+        payload = self.video_plan_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/video", json=payload).status_code, 200)
+        approved = self.client.post(f"/api/ops/{operation_id}/video/approve", json={"approved_by": "Data & Video Lead"})
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(len(approved.get_json()["sha256"]), 64)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            plan = db.execute("SELECT id,state,canonical_sha256 FROM video_recording_plans WHERE operation_id=?", (operation_id,)).fetchone()
+            readiness = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='READINESS'", (operation_id,)).fetchone()
+            storage = db.execute("SELECT estimated_storage_gb FROM camera_view_requirements WHERE plan_id=?", (plan["id"],)).fetchall()
+        self.assertEqual(operation["current_stage"], "READINESS")
+        self.assertEqual(plan["state"], "APPROVED")
+        self.assertEqual(readiness["status"], "ACTIVE")
+        self.assertTrue(all(row["estimated_storage_gb"] > 0 for row in storage))
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/video", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()
