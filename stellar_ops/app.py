@@ -4,6 +4,7 @@ import os, sqlite3, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, flash, redirect, render_template, request, url_for
+from .control import control
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get("STELLAR_OPS_DATA",ROOT/"data"))
@@ -16,6 +17,7 @@ MODULES=[
  ("safety","Safety","Risk & Mission Assurance"),("documents","Documents","Controlled Records")]
 app=Flask(__name__,template_folder="templates",static_folder="static")
 app.secret_key=os.environ.get("STELLAR_OPS_SECRET","development-only-change-me")
+app.register_blueprint(control)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
 def connect():
@@ -44,7 +46,7 @@ def audit(c,kind,entity,action,payload):
 @app.context_processor
 def context(): return {"modules":MODULES}
 
-@app.get("/")
+@app.get("/overview")
 def command_center():
  init_db()
  with connect() as c:
@@ -67,6 +69,10 @@ def command_center():
   "constraints":[("C-01","Launch site approval","OWNER REQUIRED","HIGH"),("C-02","Airspace coordination","NOT STARTED","HIGH"),("C-03","Recovery deployment evidence","OPEN","MEDIUM"),("C-04","Final vehicle mass properties","OPEN","MEDIUM")]
  }
  return render_template("ops.html",view="dashboard",counts=counts,programmes=programmes,missions=missions,events=events,workspace=workspace)
+
+@app.get("/")
+def home():
+ return redirect(url_for("control.console"))
 
 @app.route("/programmes",methods=["GET","POST"])
 def programmes():
