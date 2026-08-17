@@ -61,9 +61,12 @@ def inspect_csv(content: bytes) -> dict:
     if not reader.fieldnames:
         raise ValueError("CSV file has no header row")
     rows = []
+    preview = []
     for index, row in enumerate(reader):
+        rows.append(row)
         if index < 5:
-            rows.append(row)
+            preview.append(row)
         if index >= 100_000:
             raise ValueError("Replay file exceeds 100,000 rows")
-    return {"columns": reader.fieldnames, "row_count": index + 1 if 'index' in locals() else 0, "preview": rows}
+    return {"columns": reader.fieldnames, "row_count": index + 1 if 'index' in locals() else 0,
+            "preview": preview, "rows": rows}
