@@ -134,6 +134,15 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("recording", blocked.get_json()["error"])
         self.assertEqual(self.client.post("/api/control/recording", json={"action": "START"}).status_code, 200)
+        # The real edge gateway continuously refreshes last_seen while streaming. Refresh the
+        # synthetic session immediately before the commit check so this test represents a live
+        # source rather than a single batch that correctly becomes STALE during procedure setup.
+        fresh_stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with control_module.connect() as db:
+            db.execute("""UPDATE edge_sessions SET last_seen=?,status='STREAMING'
+                WHERE device_id='ESP-DAQ-01' AND boot_id='boot-test'""", (fresh_stamp,))
+            db.execute("""UPDATE edge_batches SET received_at=?
+                WHERE device_id='ESP-DAQ-01' AND boot_id='boot-test' AND sequence=0""", (fresh_stamp,))
         accepted = self.client.post("/api/control/command", json={"action": "COUNTDOWN"})
         self.assertEqual(accepted.status_code, 200)
 
