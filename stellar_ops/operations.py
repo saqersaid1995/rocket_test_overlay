@@ -204,6 +204,29 @@ CREATE TABLE IF NOT EXISTS rehearsal_anomalies(
  disposition TEXT, evidence_reference TEXT, notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(campaign_id,anomaly_code),
  FOREIGN KEY(campaign_id) REFERENCES rehearsal_campaigns(id));
+CREATE TABLE IF NOT EXISTS execution_releases(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ release_code TEXT NOT NULL, source_mode TEXT NOT NULL, state TEXT NOT NULL,
+ planned_start TEXT NOT NULL, valid_until TEXT NOT NULL,
+ baseline_sha256 TEXT NOT NULL, procedure_sha256 TEXT NOT NULL,
+ readiness_sha256 TEXT NOT NULL, rehearsal_sha256 TEXT NOT NULL,
+ release_sha256 TEXT, released_at TEXT, closed_at TEXT,
+ outcome TEXT NOT NULL, outcome_summary TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS execution_release_gates(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL,
+ gate_code TEXT NOT NULL, name TEXT NOT NULL, owner_role TEXT NOT NULL,
+ status TEXT NOT NULL, evidence_reference TEXT NOT NULL,
+ verified_by TEXT NOT NULL, verified_at TEXT, notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(release_id,gate_code),
+ FOREIGN KEY(release_id) REFERENCES execution_releases(id));
+CREATE TABLE IF NOT EXISTS execution_authorizations(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL,
+ role_code TEXT NOT NULL, person_name TEXT NOT NULL, decision TEXT NOT NULL,
+ attestation TEXT NOT NULL, authorised_at TEXT NOT NULL,
+ UNIQUE(release_id,role_code),
+ FOREIGN KEY(release_id) REFERENCES execution_releases(id));
 """
 
 
@@ -302,6 +325,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["rehearsal"]:
         item["rehearsal"]["checkpoints"] = [dict(x) for x in db.execute("SELECT * FROM rehearsal_checkpoints WHERE campaign_id=? ORDER BY checkpoint_code", (rehearsal["id"],))]
         item["rehearsal"]["anomalies"] = [dict(x) for x in db.execute("SELECT * FROM rehearsal_anomalies WHERE campaign_id=? ORDER BY severity,anomaly_code", (rehearsal["id"],))]
+    release = db.execute("SELECT * FROM execution_releases WHERE operation_id=?", (operation_id,)).fetchone()
+    item["execution_release"] = dict(release) if release else None
+    if item["execution_release"]:
+        item["execution_release"]["gates"] = [dict(x) for x in db.execute("SELECT * FROM execution_release_gates WHERE release_id=? ORDER BY gate_code", (release["id"],))]
+        item["execution_release"]["authorizations"] = [dict(x) for x in db.execute("SELECT * FROM execution_authorizations WHERE release_id=? ORDER BY role_code", (release["id"],))]
     return item
 
 
@@ -403,6 +431,15 @@ def rehearsal_builder(operation_id:int):
     return render_template("ops_rehearsal.html",operation=item,required_checkpoints=sorted(rehearsal_requirements(item["operation_type"])))
 
 
+@operations.get("/ops/<int:operation_id>/execution")
+def execution_builder(operation_id:int):
+    with connect() as db:
+        item=operation_view(db,operation_id)
+        runtime=dict(db.execute("SELECT * FROM operations WHERE id=?",(item["runtime_operation_id"] or OPERATION_ID,)).fetchone()) if item else None
+    if not item:return "Operation not found",404
+    return render_template("ops_execution.html",operation=item,runtime=runtime,gates=execution_gate_catalog(item["operation_type"]))
+
+
 def valid_code(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{2,31}", value))
 
@@ -466,7 +503,7 @@ def continue_operation(operation_id: int):
               "VIDEO": f"/ops/{operation_id}/video",
               "READINESS": f"/ops/{operation_id}/readiness",
               "REHEARSAL": f"/ops/{operation_id}/rehearsal",
-              "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
+              "EXECUTION": f"/ops/{operation_id}/execution", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
 
@@ -545,6 +582,128 @@ def rehearsal_requirements(operation_type:str)->set[str]:
     required={"FULL_SEQUENCE","COMM_CHECK","HOLD_RESPONSE","ABORT_RESPONSE","DATA_RECORDING","VIDEO_RECORDING"}
     if operation_type=="ROCKET_LAUNCH":required|={"RANGE_HOLD","RECOVERY_COMMS"}
     return required
+
+
+def execution_gate_catalog(operation_type:str)->list[dict]:
+    gates=[("CONFIG_UNCHANGED","Configuration fingerprints unchanged","CONFIGURATION MANAGER"),
+           ("READINESS_CURRENT","Readiness decision remains current","TEST DIRECTOR"),
+           ("REHEARSAL_VALID","Approved rehearsal remains applicable","TEST DIRECTOR"),
+           ("CREW_PRESENT","Authorised crew at assigned stations","TEST DIRECTOR"),
+           ("SITE_CLEAR","Site and exclusion zone clear","RSO"),
+           ("TELEMETRY_LIVE","Required live telemetry healthy","INSTRUMENTATION LEAD"),
+           ("RECORDING_ACTIVE","Telemetry evidence recording active","INSTRUMENTATION LEAD"),
+           ("VIDEO_ACTIVE","Mandatory camera recording active","DATA & VIDEO LEAD"),
+           ("IGNITION_SAFE","Ignition circuit verified SAFE","LCO")]
+    if operation_type=="ROCKET_LAUNCH":gates += [("RANGE_RELEASE","Range released for launch","RSO"),("AIRSPACE_RELEASE","Airspace release valid","LAUNCH DIRECTOR"),("RECOVERY_READY","Recovery stations ready","RECOVERY LEAD")]
+    return [{"code":c,"name":n,"owner_role":o} for c,n,o in gates]
+
+
+@operations.post("/api/ops/<int:operation_id>/execution")
+def save_execution_release(operation_id:int):
+    p=request.get_json(silent=True) or {};gates=p.get("gates",[])
+    code=str(p.get("release_code","")).strip().upper();source=str(p.get("source_mode","")).strip().upper()
+    planned=str(p.get("planned_start","")).strip();valid_until=str(p.get("valid_until","")).strip()
+    if not valid_code(code) or source!="LIVE" or not planned or not valid_until or valid_until<=planned:
+        return jsonify(error="release code, LIVE source mode, planned start and a later validity time are required"),400
+    if not isinstance(gates,list):return jsonify(error="release gates must be a list"),400
+    gate_rows=[];errors=[]
+    for index,x in enumerate(gates,1):
+        gate=str(x.get("gate_code","")).strip().upper();status=str(x.get("status","PENDING")).strip().upper()
+        evidence=str(x.get("evidence_reference","")).strip();verifier=str(x.get("verified_by","")).strip()
+        if status not in {"PENDING","GO","NO_GO"}:errors.append(f"gate {gate or index} has invalid status")
+        if status in {"GO","NO_GO"} and (not evidence or not verifier):errors.append(f"gate {gate or index} requires evidence and verifier")
+        gate_rows.append((gate,status,evidence,verifier,utc_now() if status!="PENDING" else None,str(x.get("notes","")).strip()))
+    if errors:return jsonify(error="; ".join(errors)),400
+    stamp=utc_now()
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="EXECUTION":return jsonify(error="execution release can only be edited during the EXECUTION stage"),409
+        rehearsal=db.execute("SELECT * FROM rehearsal_campaigns WHERE operation_id=?",(operation_id,)).fetchone()
+        baseline=db.execute("SELECT canonical_sha256 FROM configuration_baselines WHERE operation_id=?",(operation_id,)).fetchone()
+        procedure=db.execute("SELECT canonical_sha256 FROM operation_procedures WHERE operation_id=?",(operation_id,)).fetchone()
+        readiness=db.execute("SELECT canonical_sha256 FROM readiness_reviews WHERE operation_id=?",(operation_id,)).fetchone()
+        if not rehearsal or rehearsal["state"]!="COMPLETED":return jsonify(error="a completed rehearsal is required"),409
+        expected={x["code"]:x for x in execution_gate_catalog(operation["operation_type"])};unknown=sorted({x[0] for x in gate_rows}-set(expected))
+        if unknown:return jsonify(error="unsupported execution gates: "+", ".join(unknown)),400
+        existing=db.execute("SELECT * FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()
+        if existing and existing["state"] in {"RELEASED","CLOSED"}:return jsonify(error="released execution packages are immutable"),409
+        db.execute("""INSERT INTO execution_releases(operation_id,release_code,source_mode,state,planned_start,valid_until,baseline_sha256,procedure_sha256,readiness_sha256,rehearsal_sha256,outcome,created_at,updated_at)
+            VALUES(?,?,?,'DRAFT',?,?,?,?,?,?,'PENDING',?,?) ON CONFLICT(operation_id) DO UPDATE SET release_code=excluded.release_code,source_mode=excluded.source_mode,
+            planned_start=excluded.planned_start,valid_until=excluded.valid_until,baseline_sha256=excluded.baseline_sha256,procedure_sha256=excluded.procedure_sha256,
+            readiness_sha256=excluded.readiness_sha256,rehearsal_sha256=excluded.rehearsal_sha256,updated_at=excluded.updated_at""",
+            (operation_id,code,source,planned,valid_until,baseline["canonical_sha256"],procedure["canonical_sha256"],readiness["canonical_sha256"],rehearsal["canonical_sha256"],stamp,stamp))
+        release_id=db.execute("SELECT id FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM execution_release_gates WHERE release_id=?",(release_id,));db.execute("DELETE FROM execution_authorizations WHERE release_id=?",(release_id,))
+        for gate,status,evidence,verifier,verified_at,notes in gate_rows:
+            meta=expected[gate];db.execute("""INSERT INTO execution_release_gates(release_id,gate_code,name,owner_role,status,evidence_reference,verified_by,verified_at,notes,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",(release_id,gate,meta["name"],meta["owner_role"],status,evidence,verifier,verified_at,notes,stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_RELEASE_UPDATED","TEST DIRECTOR",f"LIVE execution release {code} updated with {len(gate_rows)} gates"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/execution/release")
+def issue_execution_release(operation_id:int):
+    p=request.get_json(silent=True) or {};authorizations=p.get("authorizations",[]);stamp=utc_now()
+    if not isinstance(authorizations,list):return jsonify(error="authorizations must be a list"),400
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="EXECUTION":return jsonify(error="EXECUTION is not the active workflow stage"),409
+        release=db.execute("SELECT * FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()
+        if not release:return jsonify(error="save the execution release package first"),409
+        if release["state"]!="DRAFT":return jsonify(error="execution release has already been issued"),409
+        if release["valid_until"]<stamp[:16]:return jsonify(error="execution release validity window has expired"),409
+        gates=[dict(x) for x in db.execute("SELECT * FROM execution_release_gates WHERE release_id=?",(release["id"],))]
+        expected={x["code"] for x in execution_gate_catalog(operation["operation_type"])};present={x["gate_code"] for x in gates}
+        missing=sorted(expected-present)
+        if missing:return jsonify(error="mandatory execution gates are missing: "+", ".join(missing)),409
+        blocked=sorted(x["gate_code"] for x in gates if x["status"]!="GO")
+        if blocked:return jsonify(error="execution gates are not GO: "+", ".join(blocked)),409
+        runtime_id=operation["runtime_operation_id"] or OPERATION_ID;runtime=db.execute("SELECT * FROM operations WHERE id=?",(runtime_id,)).fetchone()
+        if not runtime or runtime["mode"]!="LIVE":return jsonify(error="runtime telemetry source must be LIVE before release"),409
+        if runtime["state"] not in {"CHECKOUT","HOLD"}:return jsonify(error="runtime must be in CHECKOUT or HOLD before release"),409
+        staffing=db.execute("SELECT id FROM staffing_plans WHERE operation_id=?",(operation_id,)).fetchone()
+        assigned={x["role_code"]:x["person_name"] for x in db.execute("SELECT role_code,person_name FROM operation_role_assignments WHERE staffing_plan_id=?",(staffing["id"],))}
+        auth={}
+        for x in authorizations:
+            role=str(x.get("role_code","")).strip().upper();person=str(x.get("person_name","")).strip();decision=str(x.get("decision","")).strip().upper();attestation=str(x.get("attestation","")).strip()
+            if role in auth:return jsonify(error=f"duplicate authorization for {role}"),400
+            auth[role]=(person,decision,attestation)
+        required={"TD","RSO","LCO"};missing_auth=sorted(required-set(auth))
+        if missing_auth:return jsonify(error="independent authorizations are missing: "+", ".join(missing_auth)),409
+        for role in required:
+            person,decision,attestation=auth[role]
+            if assigned.get(role)!=person:return jsonify(error=f"{role} authorization does not match approved staffing assignment"),409
+            if decision!="GO" or not attestation:return jsonify(error=f"{role} must provide GO and an explicit attestation"),409
+        if len({auth[r][0].casefold() for r in required})!=3:return jsonify(error="TD, RSO and LCO authorizations must be from separate people"),409
+        canonical={"schema":"SMTCS-EXECUTION-RELEASE/1","operation":operation["code"],"release":{"code":release["release_code"],"source_mode":release["source_mode"],"valid_until":release["valid_until"],"baseline":release["baseline_sha256"],"procedure":release["procedure_sha256"],"readiness":release["readiness_sha256"],"rehearsal":release["rehearsal_sha256"]},
+                   "gates":[{k:x[k] for k in ("gate_code","status","evidence_reference","verified_by")} for x in sorted(gates,key=lambda y:y["gate_code"])],
+                   "authorizations":[{"role":r,"person":auth[r][0],"decision":auth[r][1],"attestation":auth[r][2]} for r in sorted(required)]}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        for role in required:db.execute("INSERT INTO execution_authorizations(release_id,role_code,person_name,decision,attestation,authorised_at) VALUES(?,?,?,?,?,?)",(release["id"],role,*auth[role],stamp))
+        db.execute("UPDATE execution_releases SET state='RELEASED',release_sha256=?,released_at=?,updated_at=? WHERE id=?",(digest,stamp,stamp,release["id"]))
+        db.execute("UPDATE operation_registry SET status='LIVE RELEASED',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_RELEASED","TEST DIRECTOR",f"LIVE execution released with SHA-256 {digest}; Mission Control handoff enabled"))
+    return jsonify(ok=True,sha256=digest,url="/workspace")
+
+
+@operations.post("/api/ops/<int:operation_id>/execution/close")
+def close_execution(operation_id:int):
+    p=request.get_json(silent=True) or {};outcome=str(p.get("outcome","")).strip().upper();summary=str(p.get("summary","")).strip();actor=str(p.get("closed_by","TEST DIRECTOR")).strip();stamp=utc_now()
+    if outcome not in {"SUCCESS","PARTIAL","ABORTED","NO_TEST"} or not summary:return jsonify(error="controlled outcome and summary are required"),400
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone();release=db.execute("SELECT * FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"]!="EXECUTION" or not release or release["state"]!="RELEASED":return jsonify(error="a released execution session is required"),409
+        runtime=db.execute("SELECT state FROM operations WHERE id=?",(operation["runtime_operation_id"] or OPERATION_ID,)).fetchone()
+        if not runtime or runtime["state"] not in {"POST_FIRE","ABORTED","CLOSED"}:return jsonify(error="runtime must reach POST_FIRE, ABORTED or CLOSED before execution closure"),409
+        db.execute("UPDATE execution_releases SET state='CLOSED',outcome=?,outcome_summary=?,closed_at=?,updated_at=? WHERE id=?",(outcome,summary,stamp,stamp,release["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='EXECUTION'",(actor,stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='REVIEW'",(stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='REVIEW',status='POST OPERATION',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_CLOSED",actor,f"Execution closed as {outcome}; Review & Closure unlocked"))
+    return jsonify(ok=True,url=url_for("operations.operation_detail",operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/rehearsal")

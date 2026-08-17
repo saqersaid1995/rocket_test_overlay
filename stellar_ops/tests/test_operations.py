@@ -473,6 +473,69 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(execution["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=payload).status_code, 409)
 
+    def prepare_execution_stage(self, code="QEXEC-010"):
+        operation_id = self.prepare_rehearsal_stage(code)
+        rehearsal = self.rehearsal_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=rehearsal).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal/complete", json={
+            "summary": "All mandatory rehearsal paths passed in simulation."}).status_code, 200)
+        return operation_id
+
+    def execution_release_payload(self):
+        gates = ["CONFIG_UNCHANGED", "READINESS_CURRENT", "REHEARSAL_VALID", "CREW_PRESENT", "SITE_CLEAR",
+                 "TELEMETRY_LIVE", "RECORDING_ACTIVE", "VIDEO_ACTIVE", "IGNITION_SAFE"]
+        return {"release_code": "QEXEC-LIVE", "source_mode": "LIVE", "planned_start": "2026-09-03T08:00",
+                "valid_until": "2027-09-03T10:00", "gates": [{"gate_code": gate, "status": "GO",
+                    "evidence_reference": f"LIVE-EVIDENCE-{gate}", "verified_by": f"Verifier {gate}"} for gate in gates]}
+
+    def execution_authorizations(self):
+        return {"authorizations": [{"role_code": role, "person_name": f"Person {role}", "decision": "GO",
+                                     "attestation": f"I confirm {role} conditions and authority for this LIVE operation."}
+                                    for role in ("TD", "RSO", "LCO")]}
+
+    def test_execution_release_requires_live_runtime_and_independent_authorities(self):
+        operation_id = self.prepare_execution_stage()
+        page = self.client.get(f"/ops/{operation_id}/execution")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Execution Release", page.data)
+        payload = self.execution_release_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=payload).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations())
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("must be LIVE", blocked.get_json()["error"])
+        with control_module.connect() as db:
+            db.execute("UPDATE operations SET mode='LIVE' WHERE id=?", (control_module.OPERATION_ID,))
+        wrong = self.execution_authorizations(); wrong["authorizations"][1]["person_name"] = "Person TD"
+        blocked = self.client.post(f"/api/ops/{operation_id}/execution/release", json=wrong)
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("does not match", blocked.get_json()["error"])
+
+    def test_released_execution_handoff_and_post_operation_closure(self):
+        operation_id = self.prepare_execution_stage("QEXEC-020")
+        payload = self.execution_release_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=payload).status_code, 200)
+        with control_module.connect() as db:
+            db.execute("UPDATE operations SET mode='LIVE',state='CHECKOUT' WHERE id=?", (control_module.OPERATION_ID,))
+        released = self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations())
+        self.assertEqual(released.status_code, 200)
+        self.assertEqual(len(released.get_json()["sha256"]), 64)
+        self.assertEqual(released.get_json()["url"], "/workspace")
+        premature = self.client.post(f"/api/ops/{operation_id}/execution/close", json={"outcome": "SUCCESS", "summary": "Test complete"})
+        self.assertEqual(premature.status_code, 409)
+        with control_module.connect() as db:
+            db.execute("UPDATE operations SET state='POST_FIRE' WHERE id=?", (control_module.OPERATION_ID,))
+        closed = self.client.post(f"/api/ops/{operation_id}/execution/close", json={
+            "outcome": "SUCCESS", "summary": "Static fire completed and the article was declared safe.", "closed_by": "Test Director"})
+        self.assertEqual(closed.status_code, 200)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage,status FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            release = db.execute("SELECT state,outcome FROM execution_releases WHERE operation_id=?", (operation_id,)).fetchone()
+            review = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='REVIEW'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "REVIEW")
+        self.assertEqual(release["state"], "CLOSED")
+        self.assertEqual(release["outcome"], "SUCCESS")
+        self.assertEqual(review["status"], "ACTIVE")
+
 
 if __name__ == "__main__":
     unittest.main()
