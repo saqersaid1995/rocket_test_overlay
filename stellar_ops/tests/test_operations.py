@@ -146,6 +146,54 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(team["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=payload).status_code, 409)
 
+    def prepare_team_stage(self, code="QTEAM-010"):
+        operation_id = self.prepare_identified_article(code)
+        required = ["PROCEDURE", "CHANNEL_MAP", "LIMIT_PROFILE", "DEVICE_MANIFEST", "CAMERA_MANIFEST", "SOFTWARE"]
+        payload = {"baseline_code": f"{code}-CB", "revision": "REV-A", "items": [
+            {"item_type": kind, "reference": f"REF-{kind}", "revision": "REV-A", "source": "CONTROLLED_RECORD", "verification_status": "VERIFIED"}
+            for kind in required]}
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=payload).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline/release").status_code, 200)
+        return operation_id
+
+    def staffing_payload(self, shared_rso=False):
+        roles = ["TD", "RSO", "LCO", "PROP", "INST", "GND", "DATA"]
+        return {"assignments": [{"role_code": role,
+            "person_name": "Person TD" if shared_rso and role == "RSO" else f"Person {role}",
+            "call_sign": role, "organization": "Stellar Kinetics", "contact_method": "Operations radio",
+            "qualification_status": "CURRENT", "availability_status": "CONFIRMED"} for role in roles]}
+
+    def test_team_approval_blocks_vacancies_and_authority_conflicts(self):
+        operation_id = self.prepare_team_stage()
+        page = self.client.get(f"/ops/{operation_id}/team")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Team & Authority", page.data)
+        partial = self.staffing_payload(); partial["assignments"] = partial["assignments"][:2]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team", json=partial).status_code, 200)
+        missing = self.client.post(f"/api/ops/{operation_id}/team/approve")
+        self.assertEqual(missing.status_code, 409)
+        self.assertIn("mandatory roles", missing.get_json()["error"])
+        conflict_payload = self.staffing_payload(shared_rso=True)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team", json=conflict_payload).status_code, 200)
+        conflict = self.client.post(f"/api/ops/{operation_id}/team/approve")
+        self.assertEqual(conflict.status_code, 409)
+        self.assertIn("RSO must be independent", conflict.get_json()["error"])
+
+    def test_approved_team_is_locked_and_unlocks_procedure(self):
+        operation_id = self.prepare_team_stage("QTEAM-020")
+        payload = self.staffing_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team", json=payload).status_code, 200)
+        approved = self.client.post(f"/api/ops/{operation_id}/team/approve", json={"approved_by": "Test Director"})
+        self.assertEqual(approved.status_code, 200)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            plan = db.execute("SELECT state,approved_by FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+            procedure = db.execute("SELECT status FROM operation_workflow_sections WHERE operation_id=? AND section_key='PROCEDURE'", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "PROCEDURE")
+        self.assertEqual(plan["state"], "APPROVED")
+        self.assertEqual(procedure["status"], "ACTIVE")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/team", json=payload).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

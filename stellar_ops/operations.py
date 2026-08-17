@@ -89,6 +89,20 @@ CREATE TABLE IF NOT EXISTS baseline_items(
  source TEXT NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(baseline_id,item_type),
  FOREIGN KEY(baseline_id) REFERENCES configuration_baselines(id));
+CREATE TABLE IF NOT EXISTS staffing_plans(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ state TEXT NOT NULL, approved_at TEXT, approved_by TEXT, notes TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS operation_role_assignments(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, staffing_plan_id INTEGER NOT NULL,
+ role_code TEXT NOT NULL, person_name TEXT NOT NULL, call_sign TEXT NOT NULL,
+ organization TEXT NOT NULL, contact_method TEXT NOT NULL,
+ qualification_status TEXT NOT NULL, availability_status TEXT NOT NULL,
+ decision_authority INTEGER NOT NULL, conflict_group TEXT,
+ notes TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(staffing_plan_id,role_code),
+ FOREIGN KEY(staffing_plan_id) REFERENCES staffing_plans(id));
 """
 
 
@@ -157,6 +171,11 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["baseline"]:
         item["baseline"]["items"] = [dict(x) for x in db.execute(
             "SELECT * FROM baseline_items WHERE baseline_id=? ORDER BY item_type", (baseline["id"],))]
+    staffing = db.execute("SELECT * FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+    item["staffing"] = dict(staffing) if staffing else None
+    if item["staffing"]:
+        item["staffing"]["assignments"] = [dict(x) for x in db.execute(
+            "SELECT * FROM operation_role_assignments WHERE staffing_plan_id=? ORDER BY role_code", (staffing["id"],))]
     return item
 
 
@@ -202,6 +221,16 @@ def baseline_builder(operation_id: int):
         return "Operation not found", 404
     return render_template("ops_baseline.html", operation=item,
                            required_types=baseline_requirements(item["operation_type"]))
+
+
+@operations.get("/ops/<int:operation_id>/team")
+def team_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+    if not item: return "Operation not found", 404
+    return render_template("ops_team.html", operation=item,
+                           roles=role_catalog(item["operation_type"]),
+                           required_roles=sorted(required_roles(item["operation_type"])))
 
 
 def valid_code(value: str) -> bool:
@@ -261,6 +290,7 @@ def continue_operation(operation_id: int):
         item = operation_view(db, operation_id)
     if not item: return jsonify(error="operation not found"), 404
     routes = {"ARTICLE": f"/ops/{operation_id}/article", "BASELINE": f"/ops/{operation_id}/baseline",
+              "TEAM": f"/ops/{operation_id}/team",
               "EXECUTION": "/workspace", "REVIEW": "/workspace?mode=review"}
     return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
 
@@ -280,6 +310,116 @@ def baseline_requirements(operation_type: str) -> set[str]:
     if operation_type == "ROCKET_LAUNCH":
         required |= {"VEHICLE_CONFIGURATION", "RECOVERY_CONFIGURATION"}
     return required
+
+
+def role_catalog(operation_type: str) -> list[dict]:
+    roles = [
+        {"code": "TD", "name": "Test Director", "authority": True, "group": "EXECUTION_COMMAND"},
+        {"code": "RSO", "name": "Range Safety Officer", "authority": True, "group": "INDEPENDENT_SAFETY"},
+        {"code": "LCO", "name": "Launch Control Officer", "authority": True, "group": "FIRE_CONTROL"},
+        {"code": "PROP", "name": "Propulsion Lead", "authority": False, "group": "ENGINEERING"},
+        {"code": "INST", "name": "Instrumentation Lead", "authority": False, "group": "ENGINEERING"},
+        {"code": "GND", "name": "Ground Operations Lead", "authority": False, "group": "FIELD_OPERATIONS"},
+        {"code": "DATA", "name": "Data & Video Lead", "authority": False, "group": "DATA_CONTROL"},
+    ]
+    if operation_type == "ROCKET_LAUNCH":
+        roles += [{"code": "LD", "name": "Launch Director", "authority": True, "group": "EXECUTION_COMMAND"},
+                  {"code": "REC", "name": "Recovery Lead", "authority": False, "group": "FIELD_OPERATIONS"},
+                  {"code": "AVN", "name": "Avionics Lead", "authority": False, "group": "ENGINEERING"}]
+    return roles
+
+
+def required_roles(operation_type: str) -> set[str]:
+    roles = {"TD", "RSO", "LCO", "PROP", "INST", "GND", "DATA"}
+    if operation_type == "ROCKET_LAUNCH": roles |= {"LD", "REC", "AVN"}
+    return roles
+
+
+@operations.post("/api/ops/<int:operation_id>/team")
+def save_team(operation_id: int):
+    p = request.get_json(silent=True) or {}; assignments = p.get("assignments", [])
+    if not isinstance(assignments, list): return jsonify(error="assignments must be a list"), 400
+    allowed_roles = {x["code"]: x for x in role_catalog("")}
+    normalized = []
+    for entry in assignments:
+        role = str(entry.get("role_code", "")).strip().upper()
+        person = str(entry.get("person_name", "")).strip()
+        call_sign = str(entry.get("call_sign", "")).strip().upper()
+        organization = str(entry.get("organization", "")).strip()
+        contact = str(entry.get("contact_method", "")).strip()
+        qualification = str(entry.get("qualification_status", "UNVERIFIED")).strip().upper()
+        availability = str(entry.get("availability_status", "TENTATIVE")).strip().upper()
+        if role and (not person or not call_sign or not organization or not contact):
+            return jsonify(error=f"{role} requires person, call sign, organization and contact method"), 400
+        if qualification not in {"UNVERIFIED", "CURRENT", "WAIVER_REQUIRED"} or availability not in {"TENTATIVE", "CONFIRMED", "UNAVAILABLE"}:
+            return jsonify(error=f"invalid qualification or availability status for {role}"), 400
+        if role: normalized.append((role, person, call_sign, organization, contact, qualification, availability,
+                                    str(entry.get("notes", "")).strip()))
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "TEAM": return jsonify(error="team can only be edited during the TEAM stage"), 409
+        allowed_roles = {x["code"]: x for x in role_catalog(operation["operation_type"])}
+        unknown = sorted({x[0] for x in normalized} - set(allowed_roles))
+        if unknown: return jsonify(error="unsupported roles: " + ", ".join(unknown)), 400
+        existing = db.execute("SELECT * FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+        if existing and existing["state"] == "APPROVED": return jsonify(error="approved staffing plans are locked"), 409
+        db.execute("""INSERT INTO staffing_plans(operation_id,state,notes,created_at,updated_at) VALUES(?,'DRAFT',?,?,?)
+            ON CONFLICT(operation_id) DO UPDATE SET notes=excluded.notes,updated_at=excluded.updated_at""",
+            (operation_id, str(p.get("notes", "")).strip(), stamp, stamp))
+        plan_id = db.execute("SELECT id FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM operation_role_assignments WHERE staffing_plan_id=?", (plan_id,))
+        for role, person, call_sign, organization, contact, qualification, availability, notes in normalized:
+            meta = allowed_roles[role]
+            db.execute("""INSERT INTO operation_role_assignments(staffing_plan_id,role_code,person_name,call_sign,organization,
+                contact_method,qualification_status,availability_status,decision_authority,conflict_group,notes,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(staffing_plan_id,role_code) DO UPDATE SET person_name=excluded.person_name,
+                call_sign=excluded.call_sign,organization=excluded.organization,contact_method=excluded.contact_method,
+                qualification_status=excluded.qualification_status,availability_status=excluded.availability_status,
+                decision_authority=excluded.decision_authority,conflict_group=excluded.conflict_group,notes=excluded.notes,updated_at=excluded.updated_at""",
+                (plan_id, role, person, call_sign, organization, contact, qualification, availability,
+                 int(meta["authority"]), meta["group"], notes, stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "TEAM_UPDATED", "TEST DIRECTOR", f"Staffing plan updated with {len(normalized)} assignments"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/team/approve")
+def approve_team(operation_id: int):
+    actor = str((request.get_json(silent=True) or {}).get("approved_by", "TEST DIRECTOR")).strip()
+    stamp = utc_now()
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "TEAM": return jsonify(error="TEAM is not the active workflow stage"), 409
+        plan = db.execute("SELECT * FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+        if not plan: return jsonify(error="save the staffing plan first"), 409
+        rows = [dict(x) for x in db.execute("SELECT * FROM operation_role_assignments WHERE staffing_plan_id=?", (plan["id"],))]
+        by_role = {x["role_code"]: x for x in rows}
+        missing = sorted(required_roles(operation["operation_type"]) - set(by_role))
+        if missing: return jsonify(error="mandatory roles are unassigned: " + ", ".join(missing)), 409
+        not_ready = sorted(x["role_code"] for x in rows if x["role_code"] in required_roles(operation["operation_type"]) and
+                           (x["qualification_status"] != "CURRENT" or x["availability_status"] != "CONFIRMED"))
+        if not_ready: return jsonify(error="roles are not qualified and confirmed: " + ", ".join(not_ready)), 409
+        people = {}
+        for row in rows: people.setdefault(row["person_name"].casefold(), []).append(row)
+        conflicts = []
+        for assignments in people.values():
+            codes = {x["role_code"] for x in assignments}
+            if "RSO" in codes and len(codes) > 1: conflicts.append(f"RSO must be independent ({assignments[0]['person_name']})")
+            if "TD" in codes and "LCO" in codes: conflicts.append(f"TD and LCO must be separate ({assignments[0]['person_name']})")
+            if "LD" in codes and "RSO" in codes: conflicts.append(f"LD and RSO must be separate ({assignments[0]['person_name']})")
+        calls = [x["call_sign"] for x in rows]
+        if len(calls) != len(set(calls)): conflicts.append("call signs must be unique")
+        if conflicts: return jsonify(error="authority conflict: " + "; ".join(conflicts)), 409
+        db.execute("UPDATE staffing_plans SET state='APPROVED',approved_at=?,approved_by=?,updated_at=? WHERE id=?", (stamp, actor, stamp, plan["id"]))
+        db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='TEAM'", (actor, stamp, operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='PROCEDURE'", (stamp, operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='PROCEDURE',updated_at=? WHERE id=?", (stamp, operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "TEAM_APPROVED", actor, "Staffing and authority plan approved; Procedure unlocked"))
+    return jsonify(ok=True, url=url_for("operations.operation_detail", operation_id=operation_id))
 
 
 @operations.post("/api/ops/<int:operation_id>/baseline")
