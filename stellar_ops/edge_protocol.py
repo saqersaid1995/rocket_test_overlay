@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import zlib
 
 PROTOCOL = "SMTCS-EDGE/1"
@@ -55,13 +56,20 @@ def decode_frame(frame: bytes) -> dict:
             raise ProtocolError("sample_count outside protocol limits")
         if not isinstance(message.get("sequence"), int) or message["sequence"] < 0:
             raise ProtocolError("non-negative integer sequence is required")
+        if not isinstance(message.get("first_sample_us"), int) or message["first_sample_us"] < 0:
+            raise ProtocolError("non-negative integer first_sample_us is required")
         if not isinstance(message.get("sample_period_us"), int) or message["sample_period_us"] <= 0:
             raise ProtocolError("positive sample_period_us is required")
         channels = message.get("channels")
         if not isinstance(channels, dict) or not channels:
             raise ProtocolError("channels object is required")
+        if any(not isinstance(name,str) or not name or len(name)>128 for name in channels):
+            raise ProtocolError("channel names must be non-empty strings up to 128 characters")
         if any(not isinstance(values, list) or len(values) != count for values in channels.values()):
             raise ProtocolError("every channel array must match sample_count")
+        if any(not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(value)
+               for values in channels.values() for value in values):
+            raise ProtocolError("channel samples must be finite numbers")
     return message
 
 
