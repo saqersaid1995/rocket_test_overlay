@@ -8,8 +8,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
+from .database import add_column, apply_once, connect_database
+from .evidence import close_package, open_package
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
                                 recording_status, runtime_snapshot)
 
@@ -26,10 +28,7 @@ def utc_now() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    CONTROL_DB.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(CONTROL_DB)
-    connection.row_factory = sqlite3.Row
-    return connection
+    return connect_database(CONTROL_DB)
 
 
 SCHEMA = """
@@ -111,6 +110,11 @@ CREATE TABLE IF NOT EXISTS alarm_actions(
 CREATE TABLE IF NOT EXISTS limit_profiles(
  operation_id TEXT NOT NULL, name TEXT NOT NULL, phase TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
  settings_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(operation_id,name));
+CREATE TABLE IF NOT EXISTS evidence_packages(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, run_id INTEGER NOT NULL,
+ recording_session_id INTEGER, created_at TEXT NOT NULL, closed_at TEXT, state TEXT NOT NULL,
+ directory TEXT NOT NULL, manifest_path TEXT, manifest_sha256 TEXT, telemetry_batches INTEGER NOT NULL DEFAULT 0,
+ telemetry_samples INTEGER NOT NULL DEFAULT 0, sequence_gaps INTEGER NOT NULL DEFAULT 0);
 """
 
 WORKSPACE_PRESETS = {
@@ -165,14 +169,20 @@ STEPS = [
 
 
 def event(db: sqlite3.Connection, kind: str, source: str, severity: str, message: str) -> None:
-    db.execute("INSERT INTO events(operation_id,occurred_at,event_type,source,severity,message) VALUES(?,?,?,?,?,?)",
-               (OPERATION_ID, utc_now(), kind, source, severity, message))
+    run=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(OPERATION_ID,)).fetchone()
+    db.execute("INSERT INTO events(operation_id,occurred_at,event_type,source,severity,message,run_id) VALUES(?,?,?,?,?,?,?)",
+               (OPERATION_ID, utc_now(), kind, source, severity, message,run["id"] if run else None))
 
 
 def init_control_db() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
         stamp = utc_now()
+        def run_linkage_migration(connection):
+            add_column(connection,"events","run_id INTEGER")
+            add_column(connection,"alarms","run_id INTEGER")
+            add_column(connection,"edge_batches","run_id INTEGER")
+        apply_once(db,1,"link operational records to test runs",stamp,run_linkage_migration)
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -195,6 +205,11 @@ def init_control_db() -> None:
         if not db.execute("SELECT 1 FROM test_runs WHERE operation_id=?",(OPERATION_ID,)).fetchone():
             db.execute("""INSERT INTO test_runs(operation_id,code,title,test_article,configuration_revision,status,created_at,active)
                 VALUES(?,?,?,?,?,'PLANNING',?,1)""",(OPERATION_ID,"RUN-SRM-2026-001","RNX-71V Static Qualification","RNX-71V / SERIAL UNASSIGNED","WORKING REV",stamp))
+        active_run=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(OPERATION_ID,)).fetchone()
+        if active_run:
+            db.execute("UPDATE events SET run_id=? WHERE operation_id=? AND run_id IS NULL",(active_run["id"],OPERATION_ID))
+            db.execute("UPDATE alarms SET run_id=? WHERE operation_id=? AND run_id IS NULL",(active_run["id"],OPERATION_ID))
+            db.execute("UPDATE edge_batches SET run_id=? WHERE run_id IS NULL",(active_run["id"],))
         for role, panels in WORKSPACE_PRESETS.items():
             layout=[{"panel":panel,"order":index,"span":2 if panel in {"telemetry","cameras"} else 1} for index,panel in enumerate(panels)]
             db.execute("INSERT OR IGNORE INTO workspace_layouts(operation_id,name,console_role,layout_json,is_default,updated_at) VALUES(?,?,?,?,1,?)",
@@ -243,6 +258,8 @@ def snapshot() -> dict:
         op = db.execute("SELECT * FROM operations WHERE id=?", (OPERATION_ID,)).fetchone()
         ensure_runtime_schema(db)
         op_dict = dict(op)
+        active_run_row=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(OPERATION_ID,)).fetchone()
+        active_run_id=active_run_row["id"] if active_run_row else None
         runtime = runtime_snapshot(db, op_dict, telemetry(op))
         evaluate_alarms(db, OPERATION_ID, runtime)
         data = {"operation": op_dict, "stations": [dict(x) for x in db.execute("SELECT * FROM stations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
@@ -253,8 +270,8 @@ def snapshot() -> dict:
                     FROM channels c LEFT JOIN channel_lifecycle l ON l.operation_id=c.operation_id AND l.channel_id=c.id
                     WHERE c.operation_id=? ORDER BY c.rowid""", (OPERATION_ID,))],
                 "steps": [dict(x) for x in db.execute("SELECT * FROM procedure_steps WHERE operation_id=? ORDER BY sequence", (OPERATION_ID,))],
-                "events": [dict(x) for x in db.execute("SELECT * FROM events WHERE operation_id=? ORDER BY sequence DESC LIMIT 40", (OPERATION_ID,))],
-                "alarms": [dict(x) for x in db.execute("SELECT * FROM alarms WHERE operation_id=? AND state!='CLOSED' ORDER BY id DESC", (OPERATION_ID,))]}
+                "events": [dict(x) for x in db.execute("SELECT * FROM events WHERE operation_id=? AND run_id IS ? ORDER BY sequence DESC LIMIT 40", (OPERATION_ID,active_run_id))],
+                "alarms": [dict(x) for x in db.execute("SELECT * FROM alarms WHERE operation_id=? AND run_id IS ? AND state!='CLOSED' ORDER BY id DESC", (OPERATION_ID,active_run_id))]}
         data["integrations"] = [dict(x) for x in db.execute("""SELECT i.*,d.name,d.device_type,d.endpoint
             FROM device_integrations i JOIN devices d ON d.operation_id=i.operation_id AND d.id=i.device_id
             WHERE i.operation_id=? ORDER BY d.rowid""", (OPERATION_ID,))]
@@ -264,6 +281,7 @@ def snapshot() -> dict:
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
         data["workspaces"] = [dict(x) for x in db.execute("SELECT * FROM workspace_layouts WHERE operation_id=? ORDER BY console_role,name",(OPERATION_ID,))]
         data["limit_profiles"] = [dict(x) for x in db.execute("SELECT * FROM limit_profiles WHERE operation_id=? ORDER BY name",(OPERATION_ID,))]
+        data["evidence_packages"] = [dict(x) for x in db.execute("SELECT * FROM evidence_packages WHERE operation_id=? AND run_id IS ? ORDER BY id DESC",(OPERATION_ID,active_run_id))]
         data["telemetry"] = runtime
         data["recording"] = recording_status(db, OPERATION_ID)
         for channel in data["channels"]:
@@ -311,6 +329,16 @@ def api_snapshot():
     return jsonify(snapshot())
 
 
+@control.get("/api/control/stream")
+def api_stream():
+    @stream_with_context
+    def generate():
+        while True:
+            yield f"data:{json.dumps(snapshot(),separators=(',',':'))}\n\n"
+            time.sleep(0.5)
+    return Response(generate(),mimetype="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
+
 @control.post("/api/control/workspace")
 def save_workspace():
     payload=request.get_json(silent=True) or {}; name=str(payload.get("name","")).strip(); role=str(payload.get("console_role","")).strip().upper(); layout=payload.get("layout")
@@ -345,9 +373,15 @@ def create_run():
 def activate_run(run_id: int):
     with connect() as db:
         if recording_status(db,OPERATION_ID).get("state")=="RECORDING": return jsonify(error="stop recording before changing the active run"),409
+        operation=db.execute("SELECT state FROM operations WHERE id=?",(OPERATION_ID,)).fetchone()
+        if operation["state"] not in {"CHECKOUT","HOLD"}: return jsonify(error="a run may only be activated during CHECKOUT or HOLD"),409
         run=db.execute("SELECT code FROM test_runs WHERE operation_id=? AND id=?",(OPERATION_ID,run_id)).fetchone()
         if not run: return jsonify(error="run not found"),404
-        db.execute("UPDATE test_runs SET active=0 WHERE operation_id=?",(OPERATION_ID,)); db.execute("UPDATE test_runs SET active=1,status='ACTIVE',activated_at=? WHERE id=?",(utc_now(),run_id))
+        previous=db.execute("SELECT code FROM test_runs WHERE operation_id=? AND active=1",(OPERATION_ID,)).fetchone()
+        if previous: event(db,"RUN_SUSPENDED","TEST_DIRECTOR","WARNING",f"Run {previous['code']} suspended for run change")
+        db.execute("UPDATE test_runs SET active=0,status=CASE WHEN status='ACTIVE' THEN 'SUSPENDED' ELSE status END WHERE operation_id=?",(OPERATION_ID,)); db.execute("UPDATE test_runs SET active=1,status='ACTIVE',activated_at=? WHERE id=?",(utc_now(),run_id))
+        db.execute("UPDATE operations SET state='CHECKOUT',prior_state=NULL,active_hold=NULL,firing_started_monotonic=NULL,updated_at=? WHERE id=?",(utc_now(),OPERATION_ID))
+        db.execute("UPDATE stations SET decision='PENDING',updated_at=? WHERE operation_id=?",(utc_now(),OPERATION_ID)); db.execute("UPDATE procedure_steps SET status='PENDING',completed_by=NULL,completed_at=NULL WHERE operation_id=?",(OPERATION_ID,))
         event(db,"RUN_ACTIVATED","TEST_DIRECTOR","WARNING",f"Run {run['code']} activated")
     return jsonify(ok=True,id=run_id)
 
@@ -520,17 +554,21 @@ def set_mode():
 @control.post("/api/control/recording")
 def set_recording():
     action=(request.get_json(silent=True) or {}).get("action","").upper()
+    evidence_result=None
     with connect() as db:
         ensure_runtime_schema(db); op=db.execute("SELECT * FROM operations WHERE id=?",(OPERATION_ID,)).fetchone(); current=recording_status(db,OPERATION_ID)
         if action=="START":
             if current.get("state")=="RECORDING": return jsonify(error="recording is already active"),409
+            run=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(OPERATION_ID,)).fetchone()
+            if not run: return jsonify(error="activate a test run before recording"),409
             total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
-            cursor=db.execute("INSERT INTO recording_sessions(operation_id,source_mode,started_at,state,started_by,sample_count_start) VALUES(?,?,?,'RECORDING','INSTRUMENTATION',?)",(OPERATION_ID,op["mode"],utc_now(),total)); event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode")
+            cursor=db.execute("INSERT INTO recording_sessions(operation_id,run_id,source_mode,started_at,state,started_by,sample_count_start) VALUES(?,?,?,?, 'RECORDING','INSTRUMENTATION',?)",(OPERATION_ID,run["id"],op["mode"],utc_now(),total))
+            package_id=open_package(db,OPERATION_ID,cursor.lastrowid,CONTROL_DB.parent); event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode; evidence package {package_id} opened")
         elif action=="STOP" and current.get("state")=="RECORDING":
             total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
-            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped")
+            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); evidence_result=close_package(db,OPERATION_ID,current["id"]); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped; evidence package {evidence_result['package_id']} sealed")
         else: return jsonify(error="recording command is invalid"),409
-    return jsonify(ok=True)
+    return jsonify(ok=True,evidence=evidence_result)
 
 
 @control.post("/api/control/replay/control")
