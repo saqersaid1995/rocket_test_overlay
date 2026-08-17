@@ -12,3 +12,5 @@
 .replay-transport input{min-width:120px}
 .replay-transport span{font:7px ui-monospace,monospace;color:var(--cyan)}
 @media(max-width:900px){.runtime-strip{grid-template-columns:1fr}.source-selector,.recording-controls{flex-wrap:wrap}#source-meta{justify-self:start;text-align:left}.replay-transport{grid-template-columns:repeat(3,auto)!important}}
+.row-actions{display:flex;gap:4px;white-space:nowrap}.row-actions button:last-child{border-color:#6d4040;color:#e98a8a}.row-actions button:disabled{opacity:.35;cursor:not-allowed}.retired{opacity:.48}.retired td{background:#090d10}.integration-main td small{display:block;color:var(--muted);margin-top:2px}.setup-form button.secondary{background:#07151c;border-color:#384b54;color:#8da3ad}
+.badge.enabled{color:var(--green);border-color:#27664e}.badge.archived,.badge.disabled,.badge.no-data{color:#8a7275;border-color:#59464a}.badge.replay{color:#82bfea;border-color:#315e7a}.badge.no-device,.badge.stale,.badge.invalid{color:var(--red);border-color:#773939}
