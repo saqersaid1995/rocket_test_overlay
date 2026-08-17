@@ -211,6 +211,27 @@ def snapshot() -> dict:
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["telemetry"] = runtime
         data["recording"] = recording_status(db, OPERATION_ID)
+        channel_by_source = {}
+        for channel in data["channels"]:
+            quality = runtime.get("channels", {}).get(channel["id"], {}).get("quality")
+            if quality:
+                channel_by_source.setdefault(channel["source_id"], []).append(quality)
+        for device in data["devices"]:
+            if device["device_type"] == "IP-CAMERA":
+                device["health"] = "NOT_CONNECTED"
+                device["recording"] = "STOPPED"
+            elif op_dict["mode"] == "LIVE":
+                qualities = channel_by_source.get(device["id"], [])
+                if device["id"] == "DAQ-01":
+                    device["health"] = runtime.get("meta", {}).get("status", "DISCONNECTED")
+                elif qualities:
+                    device["health"] = "GOOD" if all(q == "GOOD" for q in qualities) else qualities[0]
+                elif device["id"] != "TIME-01":
+                    device["health"] = "NOT_CONNECTED"
+                device["recording"] = data["recording"]["state"] if device["id"] == "DAQ-01" else "N/A"
+            elif op_dict["mode"] == "REPLAY":
+                device["health"] = "REPLAY" if device["id"] in channel_by_source or device["id"] == "DAQ-01" else device["health"]
+                device["recording"] = data["recording"]["state"] if device["id"] == "DAQ-01" else device["recording"]
         return data
 
 
