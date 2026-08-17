@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parent
 CONTROL_DB = Path(os.environ.get("STELLAR_OPS_DATA", ROOT / "data")) / "control.db"
 control = Blueprint("control", __name__)
 OPERATION_ID = "OP-QUAL-STATIC-001"
+DEVICE_TYPES = {"DAQ", "PRESSURE", "LOAD-CELL", "THERMOCOUPLE", "IP-CAMERA", "CONTROLLER", "TIME", "LOGGER"}
+ADAPTER_TYPES = {"SMTCS_EDGE_TCP", "SIMULATOR", "MODBUS_TCP", "OPC_UA", "TCP", "SERIAL", "MODBUS_RTU", "CAN", "ONVIF", "RTSP", "CSV_REPLAY", "NTP"}
 
 
 def utc_now() -> str:
@@ -76,6 +78,9 @@ CREATE TABLE IF NOT EXISTS channel_integrations(
  calibration_intercept REAL NOT NULL DEFAULT 0, stale_timeout_ms INTEGER NOT NULL,
  required_for_commit INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(operation_id,channel_id));
+CREATE TABLE IF NOT EXISTS channel_lifecycle(
+ operation_id TEXT NOT NULL, channel_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+ retired_at TEXT, PRIMARY KEY(operation_id,channel_id));
 CREATE TABLE IF NOT EXISTS replay_datasets(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL,
  filename TEXT NOT NULL, uploaded_at TEXT NOT NULL, row_count INTEGER NOT NULL,
@@ -160,6 +165,7 @@ def init_control_db() -> None:
             db.execute("INSERT OR IGNORE INTO channels VALUES(?,?,?,?,?,?,?,?,?)", (OPERATION_ID, *row))
             db.execute("INSERT OR IGNORE INTO channel_integrations VALUES(?,?,?,?,?,?,?)",
                        (OPERATION_ID, row[0], row[0].split(".")[-1], 1.0, 0.0, max(100, int(3000 / row[7])), 1))
+            db.execute("INSERT OR IGNORE INTO channel_lifecycle VALUES(?,?,1,NULL)", (OPERATION_ID, row[0]))
         for row in STEPS:
             db.execute("INSERT OR IGNORE INTO procedure_steps VALUES(?,?,?,?,?,?,?,?,?)",
                        (OPERATION_ID, *row, "PENDING", None, None))
@@ -189,6 +195,16 @@ def telemetry(operation: sqlite3.Row) -> dict:
             "continuity": "FIRED"}
 
 
+def configuration_error(db: sqlite3.Connection) -> str | None:
+    op = db.execute("SELECT state FROM operations WHERE id=?", (OPERATION_ID,)).fetchone()
+    if not op or op["state"] not in {"CHECKOUT", "HOLD"}:
+        return "configuration changes are only allowed during CHECKOUT or HOLD"
+    ensure_runtime_schema(db)
+    if recording_status(db, OPERATION_ID).get("state") == "RECORDING":
+        return "stop the active recording before changing device or channel configuration"
+    return None
+
+
 def snapshot() -> dict:
     init_control_db()
     with connect() as db:
@@ -198,8 +214,12 @@ def snapshot() -> dict:
         runtime = runtime_snapshot(db, op_dict, telemetry(op))
         evaluate_alarms(db, OPERATION_ID, runtime)
         data = {"operation": op_dict, "stations": [dict(x) for x in db.execute("SELECT * FROM stations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
-                "devices": [dict(x) for x in db.execute("SELECT * FROM devices WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
-                "channels": [dict(x) for x in db.execute("SELECT * FROM channels WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
+                "devices": [dict(x) for x in db.execute("""SELECT d.*,COALESCE(i.enabled,0) AS enabled
+                    FROM devices d LEFT JOIN device_integrations i ON i.operation_id=d.operation_id AND i.device_id=d.id
+                    WHERE d.operation_id=? ORDER BY d.rowid""", (OPERATION_ID,))],
+                "channels": [dict(x) for x in db.execute("""SELECT c.*,COALESCE(l.enabled,1) AS enabled
+                    FROM channels c LEFT JOIN channel_lifecycle l ON l.operation_id=c.operation_id AND l.channel_id=c.id
+                    WHERE c.operation_id=? ORDER BY c.rowid""", (OPERATION_ID,))],
                 "steps": [dict(x) for x in db.execute("SELECT * FROM procedure_steps WHERE operation_id=? ORDER BY sequence", (OPERATION_ID,))],
                 "events": [dict(x) for x in db.execute("SELECT * FROM events WHERE operation_id=? ORDER BY sequence DESC LIMIT 40", (OPERATION_ID,))],
                 "alarms": [dict(x) for x in db.execute("SELECT * FROM alarms WHERE operation_id=? AND state!='CLOSED' ORDER BY id DESC", (OPERATION_ID,))]}
@@ -211,18 +231,24 @@ def snapshot() -> dict:
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["telemetry"] = runtime
         data["recording"] = recording_status(db, OPERATION_ID)
+        for channel in data["channels"]:
+            channel["quality"] = "DISABLED" if not channel["enabled"] else runtime.get("channels", {}).get(channel["id"], {}).get("quality", "NO_DATA")
         channel_by_source = {}
         for channel in data["channels"]:
+            if not channel["enabled"]: continue
             quality = runtime.get("channels", {}).get(channel["id"], {}).get("quality")
             if quality:
                 channel_by_source.setdefault(channel["source_id"], []).append(quality)
         for device in data["devices"]:
-            if device["device_type"] == "IP-CAMERA":
+            if not device["enabled"]:
+                device["health"] = "DISABLED"
+                device["recording"] = "STOPPED"
+            elif device["device_type"] == "IP-CAMERA":
                 device["health"] = "NOT_CONNECTED"
                 device["recording"] = "STOPPED"
             elif op_dict["mode"] == "LIVE":
                 qualities = channel_by_source.get(device["id"], [])
-                if device["id"] == "DAQ-01":
+                if device["id"] == runtime.get("meta", {}).get("device_id"):
                     device["health"] = runtime.get("meta", {}).get("status", "DISCONNECTED")
                 elif qualities:
                     device["health"] = "GOOD" if all(q == "GOOD" for q in qualities) else qualities[0]
@@ -255,15 +281,22 @@ def save_device():
     if not all(char.isalnum() or char in "-_" for char in device_id):
         return jsonify(error="device id may contain letters, numbers, hyphen and underscore only"), 400
     adapter = str(payload["adapter_type"]).strip().upper()
+    device_type = str(payload["device_type"]).strip().upper()
+    if device_type not in DEVICE_TYPES: return jsonify(error="unsupported device type"), 400
+    if adapter not in ADAPTER_TYPES: return jsonify(error="unsupported adapter type"), 400
+    if device_type == "IP-CAMERA" and adapter not in {"ONVIF", "RTSP"}: return jsonify(error="IP cameras require ONVIF or RTSP adapter"), 400
+    if adapter in {"ONVIF", "RTSP"} and device_type != "IP-CAMERA": return jsonify(error="ONVIF and RTSP adapters are only valid for IP cameras"), 400
     endpoint = str(payload["endpoint"]).strip()
     config = {"endpoint": endpoint, "username": str(payload.get("username", "")).strip(),
               "profile": str(payload.get("profile", "")).strip(), "notes": str(payload.get("notes", "")).strip()}
     with connect() as db:
+        blocked = configuration_error(db)
+        if blocked: return jsonify(error=blocked), 409
         db.execute("""INSERT INTO devices(operation_id,id,name,device_type,protocol,endpoint,health,recording,required)
           VALUES(?,?,?,?,?,?,?,'STOPPED',?)
           ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,device_type=excluded.device_type,
           protocol=excluded.protocol,endpoint=excluded.endpoint,required=excluded.required""",
-          (OPERATION_ID, device_id, str(payload["name"]).strip(), str(payload["device_type"]).strip().upper(), adapter,
+          (OPERATION_ID, device_id, str(payload["name"]).strip(), device_type, adapter,
            endpoint, "NOT_TESTED", 1 if payload.get("required", True) else 0))
         db.execute("""INSERT INTO device_integrations(operation_id,device_id,adapter_type,config_json,enabled,last_test_status)
           VALUES(?,?,?,?,1,'NOT_TESTED') ON CONFLICT(operation_id,device_id) DO UPDATE SET
@@ -273,11 +306,32 @@ def save_device():
     return jsonify(ok=True, device_id=device_id)
 
 
+@control.post("/api/control/device/<device_id>/state")
+def set_device_state(device_id: str):
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
+    device_id = device_id.upper()
+    with connect() as db:
+        blocked = configuration_error(db)
+        if blocked: return jsonify(error=blocked), 409
+        row = db.execute("SELECT name FROM devices WHERE operation_id=? AND id=?", (OPERATION_ID,device_id)).fetchone()
+        if not row: return jsonify(error="device not found"), 404
+        if not enabled:
+            linked = [x["id"] for x in db.execute("""SELECT c.id FROM channels c LEFT JOIN channel_lifecycle l
+                ON l.operation_id=c.operation_id AND l.channel_id=c.id WHERE c.operation_id=? AND c.source_id=?
+                AND COALESCE(l.enabled,1)=1 ORDER BY c.id""", (OPERATION_ID,device_id))]
+            if linked: return jsonify(error="archive or reassign linked channels first: " + ", ".join(linked)), 409
+        db.execute("UPDATE device_integrations SET enabled=?,last_test_status='NOT_TESTED',last_test_message=NULL WHERE operation_id=? AND device_id=?",
+                   (1 if enabled else 0,OPERATION_ID,device_id))
+        event(db,"DEVICE_RESTORED" if enabled else "DEVICE_ARCHIVED","INSTRUMENTATION","INFO" if enabled else "WARNING",f"Device {device_id} {'restored' if enabled else 'archived'}")
+    return jsonify(ok=True,device_id=device_id,enabled=enabled)
+
+
 @control.post("/api/control/device/<device_id>/test")
 def test_device(device_id: str):
     with connect() as db:
         row = db.execute("SELECT * FROM device_integrations WHERE operation_id=? AND device_id=?", (OPERATION_ID, device_id)).fetchone()
         if not row: return jsonify(error="device integration not found"), 404
+        if not row["enabled"]: return jsonify(error="restore the device before testing its connection"), 409
         config = json.loads(row["config_json"])
         result = test_adapter(row["adapter_type"], config.get("endpoint", ""))
         db.execute("UPDATE device_integrations SET last_test_at=?,last_test_status=?,last_test_message=? WHERE operation_id=? AND device_id=?",
@@ -298,15 +352,41 @@ def save_channel():
         warning=float(payload["warning"]) if str(payload.get("warning","")).strip() else None
         critical=float(payload["critical"]) if str(payload.get("critical","")).strip() else None
     except (TypeError,ValueError): return jsonify(error="calibration, rates and limits must be numeric"), 400
-    if rate<1 or rate>10000 or stale<10: return jsonify(error="sample rate or stale timeout is outside Phase 1 limits"),400
+    if not math.isfinite(slope) or not math.isfinite(intercept) or slope == 0: return jsonify(error="calibration slope must be finite and non-zero"),400
+    if rate<1 or rate>10000 or stale<10: return jsonify(error="sample rate or stale timeout is outside supported limits"),400
+    if warning is not None and critical is not None and warning >= critical: return jsonify(error="warning limit must be below critical limit"),400
     with connect() as db:
-        if not db.execute("SELECT 1 FROM devices WHERE operation_id=? AND id=?",(OPERATION_ID,payload["source_id"])).fetchone(): return jsonify(error="source device does not exist"),409
+        blocked = configuration_error(db)
+        if blocked: return jsonify(error=blocked), 409
+        if not db.execute("""SELECT 1 FROM devices d JOIN device_integrations i ON i.operation_id=d.operation_id AND i.device_id=d.id
+            WHERE d.operation_id=? AND d.id=? AND i.enabled=1""",(OPERATION_ID,payload["source_id"])).fetchone(): return jsonify(error="source device does not exist or is disabled"),409
         db.execute("""INSERT INTO channels VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,unit=excluded.unit,source_id=excluded.source_id,warning=excluded.warning,critical=excluded.critical,sample_rate=excluded.sample_rate""",
                    (OPERATION_ID,channel_id,str(payload["name"]).strip(),str(payload["unit"]).strip(),payload["source_id"],"NOT_TESTED",warning,critical,rate))
         db.execute("""INSERT INTO channel_integrations VALUES(?,?,?,?,?,?,?) ON CONFLICT(operation_id,channel_id) DO UPDATE SET raw_field=excluded.raw_field,calibration_slope=excluded.calibration_slope,calibration_intercept=excluded.calibration_intercept,stale_timeout_ms=excluded.stale_timeout_ms,required_for_commit=excluded.required_for_commit""",
                    (OPERATION_ID,channel_id,str(payload["raw_field"]).strip(),slope,intercept,stale,1 if payload.get("required",True) else 0))
+        db.execute("""INSERT INTO channel_lifecycle VALUES(?,?,1,NULL) ON CONFLICT(operation_id,channel_id)
+            DO UPDATE SET enabled=1,retired_at=NULL""", (OPERATION_ID,channel_id))
         event(db,"CHANNEL_CONFIG","INSTRUMENTATION","INFO",f"Channel {channel_id} configuration saved")
     return jsonify(ok=True,channel_id=channel_id)
+
+
+@control.post("/api/control/channel/<path:channel_id>/state")
+def set_channel_state(channel_id: str):
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
+    with connect() as db:
+        blocked = configuration_error(db)
+        if blocked: return jsonify(error=blocked), 409
+        if not db.execute("SELECT 1 FROM channels WHERE operation_id=? AND id=?",(OPERATION_ID,channel_id)).fetchone():
+            return jsonify(error="channel not found"),404
+        if enabled:
+            source = db.execute("SELECT source_id FROM channels WHERE operation_id=? AND id=?",(OPERATION_ID,channel_id)).fetchone()[0]
+            active = db.execute("SELECT enabled FROM device_integrations WHERE operation_id=? AND device_id=?",(OPERATION_ID,source)).fetchone()
+            if not active or not active["enabled"]: return jsonify(error="restore the source device before restoring this channel"),409
+        db.execute("""INSERT INTO channel_lifecycle VALUES(?,?,?,?) ON CONFLICT(operation_id,channel_id)
+            DO UPDATE SET enabled=excluded.enabled,retired_at=excluded.retired_at""",
+            (OPERATION_ID,channel_id,1 if enabled else 0,None if enabled else utc_now()))
+        event(db,"CHANNEL_RESTORED" if enabled else "CHANNEL_ARCHIVED","INSTRUMENTATION","INFO" if enabled else "WARNING",f"Channel {channel_id} {'restored' if enabled else 'archived'}")
+    return jsonify(ok=True,channel_id=channel_id,enabled=enabled)
 
 
 @control.post("/api/control/replay")
@@ -432,7 +512,9 @@ def command():
                 if recording.get("state") != "RECORDING" or recording.get("source_mode") != "LIVE":
                     return jsonify(error="LIVE telemetry recording must be active before countdown"), 409
                 required = {row["channel_id"] for row in db.execute(
-                    "SELECT channel_id FROM channel_integrations WHERE operation_id=? AND required_for_commit=1",
+                    """SELECT i.channel_id FROM channel_integrations i LEFT JOIN channel_lifecycle l
+                    ON l.operation_id=i.operation_id AND l.channel_id=i.channel_id
+                    WHERE i.operation_id=? AND i.required_for_commit=1 AND COALESCE(l.enabled,1)=1""",
                     (OPERATION_ID,))}
                 bad = sorted(channel_id for channel_id in required
                              if live.get("channels", {}).get(channel_id, {}).get("quality") != "GOOD")
