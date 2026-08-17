@@ -38,3 +38,9 @@ python -m stellar_ops.edge_simulator --host 127.0.0.1 --port 9100
 Device Setup shows the edge session, boot identity, sequence, total samples and detected gaps. Protocol definition: `docs/smtcs/06_ETHERNET_EDGE_PROTOCOL.md`.
 
 In the console, choose **LIVE ETHERNET**, start recording, and verify each required channel reports `GOOD`. Channel names do not require code changes: map the incoming device field to the canonical channel under **Device Setup → Channel Mapping & Calibration**.
+
+## Device lifecycle
+
+Use **Device Setup** to create or edit devices and channels. The registry separates live health from the last configuration connection test. Assets are archived rather than silently erased so their audit history remains intact. Archive or reassign active channels before archiving their source device; restore the device before restoring its channels. Configuration changes are blocked while recording and outside `CHECKOUT` or `HOLD`.
+
+An Ethernet session is not trusted as a LIVE source until its `device_id` is registered with the `SMTCS_EDGE_TCP` adapter. Unregistered sessions remain visible in the gateway table for diagnosis but do not feed operational telemetry.
