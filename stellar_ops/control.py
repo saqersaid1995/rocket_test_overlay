@@ -96,7 +96,30 @@ CREATE TABLE IF NOT EXISTS edge_batches(
  sequence INTEGER NOT NULL, received_at TEXT NOT NULL, first_sample_us INTEGER NOT NULL,
  sample_period_us INTEGER NOT NULL, sample_count INTEGER NOT NULL,
  channels_json TEXT NOT NULL, UNIQUE(device_id,boot_id,sequence));
+CREATE TABLE IF NOT EXISTS test_runs(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, code TEXT NOT NULL UNIQUE,
+ title TEXT NOT NULL, test_article TEXT NOT NULL, configuration_revision TEXT,
+ propellant_batch TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, activated_at TEXT,
+ closed_at TEXT, notes TEXT, active INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS workspace_layouts(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, name TEXT NOT NULL,
+ console_role TEXT NOT NULL, layout_json TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
+ updated_at TEXT NOT NULL, UNIQUE(operation_id,name));
+CREATE TABLE IF NOT EXISTS alarm_actions(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, alarm_id INTEGER NOT NULL,
+ action TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT, occurred_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS limit_profiles(
+ operation_id TEXT NOT NULL, name TEXT NOT NULL, phase TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+ settings_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(operation_id,name));
 """
+
+WORKSPACE_PRESETS = {
+    "TEST DIRECTOR": ["mission","procedure","poll","alarms","events","cameras"],
+    "INSTRUMENTATION": ["telemetry","channels","network","alarms","events","storage"],
+    "PROPULSION": ["telemetry","derived","mission","procedure","alarms","events"],
+    "DATA & VIDEO": ["cameras","storage","network","events","telemetry","alarms"],
+    "OBSERVER": ["mission","telemetry","cameras","events"],
+}
 
 STATIONS = [
     ("TD", "Test Director", "Conduct test sequence"),
@@ -169,6 +192,15 @@ def init_control_db() -> None:
         for row in STEPS:
             db.execute("INSERT OR IGNORE INTO procedure_steps VALUES(?,?,?,?,?,?,?,?,?)",
                        (OPERATION_ID, *row, "PENDING", None, None))
+        if not db.execute("SELECT 1 FROM test_runs WHERE operation_id=?",(OPERATION_ID,)).fetchone():
+            db.execute("""INSERT INTO test_runs(operation_id,code,title,test_article,configuration_revision,status,created_at,active)
+                VALUES(?,?,?,?,?,'PLANNING',?,1)""",(OPERATION_ID,"RUN-SRM-2026-001","RNX-71V Static Qualification","RNX-71V / SERIAL UNASSIGNED","WORKING REV",stamp))
+        for role, panels in WORKSPACE_PRESETS.items():
+            layout=[{"panel":panel,"order":index,"span":2 if panel in {"telemetry","cameras"} else 1} for index,panel in enumerate(panels)]
+            db.execute("INSERT OR IGNORE INTO workspace_layouts(operation_id,name,console_role,layout_json,is_default,updated_at) VALUES(?,?,?,?,1,?)",
+                       (OPERATION_ID,role.title()+" Console",role,json.dumps(layout),stamp))
+        for name,phase in (("CHECKOUT","CHECKOUT"),("STATIC FIRE","FIRING"),("POST FIRE","POST_FIRE")):
+            db.execute("INSERT OR IGNORE INTO limit_profiles VALUES(?,?,?,1,?,?)",(OPERATION_ID,name,phase,json.dumps({"persistence_samples":5,"hysteresis_percent":2}),stamp))
         if db.execute("SELECT count(*) FROM events WHERE operation_id=?", (OPERATION_ID,)).fetchone()[0] == 0:
             event(db, "OPERATION", "SYSTEM", "INFO", "Simulation operation baseline created")
 
@@ -229,6 +261,9 @@ def snapshot() -> dict:
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
+        data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
+        data["workspaces"] = [dict(x) for x in db.execute("SELECT * FROM workspace_layouts WHERE operation_id=? ORDER BY console_role,name",(OPERATION_ID,))]
+        data["limit_profiles"] = [dict(x) for x in db.execute("SELECT * FROM limit_profiles WHERE operation_id=? ORDER BY name",(OPERATION_ID,))]
         data["telemetry"] = runtime
         data["recording"] = recording_status(db, OPERATION_ID)
         for channel in data["channels"]:
@@ -266,9 +301,71 @@ def console():
     return render_template("control.html", initial=snapshot())
 
 
+@control.get("/workspace")
+def workspace_console():
+    return render_template("workspace.html", initial=snapshot())
+
+
 @control.get("/api/control/snapshot")
 def api_snapshot():
     return jsonify(snapshot())
+
+
+@control.post("/api/control/workspace")
+def save_workspace():
+    payload=request.get_json(silent=True) or {}; name=str(payload.get("name","")).strip(); role=str(payload.get("console_role","")).strip().upper(); layout=payload.get("layout")
+    allowed={"mission","telemetry","derived","procedure","poll","alarms","events","cameras","channels","network","storage"}
+    if not name or len(name)>80 or role not in WORKSPACE_PRESETS: return jsonify(error="valid workspace name and console role are required"),400
+    if not isinstance(layout,list) or not layout or len(layout)>16: return jsonify(error="workspace must contain between 1 and 16 panels"),400
+    if any(not isinstance(item,dict) or item.get("panel") not in allowed or int(item.get("span",1)) not in {1,2,3} for item in layout): return jsonify(error="workspace contains an invalid panel definition"),400
+    normalized=[{"panel":item["panel"],"order":index,"span":int(item.get("span",1))} for index,item in enumerate(layout)]
+    with connect() as db:
+        db.execute("""INSERT INTO workspace_layouts(operation_id,name,console_role,layout_json,is_default,updated_at)
+            VALUES(?,?,?,?,0,?) ON CONFLICT(operation_id,name) DO UPDATE SET console_role=excluded.console_role,
+            layout_json=excluded.layout_json,updated_at=excluded.updated_at""",(OPERATION_ID,name,role,json.dumps(normalized,separators=(",",":")),utc_now()))
+        event(db,"WORKSPACE_CONFIG","SYSTEMS","INFO",f"Workspace saved: {name}")
+    return jsonify(ok=True,name=name)
+
+
+@control.post("/api/control/run")
+def create_run():
+    payload=request.get_json(silent=True) or {}; code=str(payload.get("code","")).strip().upper(); title=str(payload.get("title","")).strip(); article=str(payload.get("test_article","")).strip()
+    if not code or not title or not article: return jsonify(error="run code, title and test article are required"),400
+    if not all(char.isalnum() or char in "-_" for char in code): return jsonify(error="run code may contain letters, numbers, hyphen and underscore only"),400
+    with connect() as db:
+        try:
+            cursor=db.execute("""INSERT INTO test_runs(operation_id,code,title,test_article,configuration_revision,propellant_batch,status,created_at,notes)
+                VALUES(?,?,?,?,?,?,'PLANNING',?,?)""",(OPERATION_ID,code,title,article,str(payload.get("configuration_revision","")).strip(),str(payload.get("propellant_batch","")).strip(),utc_now(),str(payload.get("notes","")).strip()))
+        except sqlite3.IntegrityError: return jsonify(error="run code already exists"),409
+        event(db,"RUN_CREATED","TEST_DIRECTOR","INFO",f"Run {code} created")
+    return jsonify(ok=True,id=cursor.lastrowid,code=code)
+
+
+@control.post("/api/control/run/<int:run_id>/activate")
+def activate_run(run_id: int):
+    with connect() as db:
+        if recording_status(db,OPERATION_ID).get("state")=="RECORDING": return jsonify(error="stop recording before changing the active run"),409
+        run=db.execute("SELECT code FROM test_runs WHERE operation_id=? AND id=?",(OPERATION_ID,run_id)).fetchone()
+        if not run: return jsonify(error="run not found"),404
+        db.execute("UPDATE test_runs SET active=0 WHERE operation_id=?",(OPERATION_ID,)); db.execute("UPDATE test_runs SET active=1,status='ACTIVE',activated_at=? WHERE id=?",(utc_now(),run_id))
+        event(db,"RUN_ACTIVATED","TEST_DIRECTOR","WARNING",f"Run {run['code']} activated")
+    return jsonify(ok=True,id=run_id)
+
+
+@control.post("/api/control/alarm/<int:alarm_id>/action")
+def alarm_action(alarm_id: int):
+    payload=request.get_json(silent=True) or {}; action=str(payload.get("action","")).upper(); reason=str(payload.get("reason","")).strip()
+    if action not in {"ACKNOWLEDGE","SHELVE","CLOSE"}: return jsonify(error="invalid alarm action"),400
+    if action in {"SHELVE","CLOSE"} and not reason: return jsonify(error="a reason is required for this alarm action"),400
+    states={"ACKNOWLEDGE":"ACTIVE_ACKNOWLEDGED","SHELVE":"SHELVED","CLOSE":"CLOSED"}
+    with connect() as db:
+        alarm=db.execute("SELECT * FROM alarms WHERE operation_id=? AND id=?",(OPERATION_ID,alarm_id)).fetchone()
+        if not alarm: return jsonify(error="alarm not found"),404
+        if action=="CLOSE" and db.execute("SELECT 1 FROM alarm_keys WHERE operation_id=? AND alarm_id=?",(OPERATION_ID,alarm_id)).fetchone():
+            return jsonify(error="the alarm condition is still active; acknowledge or shelve it until the source recovers"),409
+        db.execute("UPDATE alarms SET state=? WHERE id=?",(states[action],alarm_id)); db.execute("INSERT INTO alarm_actions(operation_id,alarm_id,action,actor,reason,occurred_at) VALUES(?,?,?,?,?,?)",(OPERATION_ID,alarm_id,action,"CONSOLE OPERATOR",reason,utc_now()))
+        event(db,"ALARM_ACTION","CONSOLE OPERATOR","WARNING",f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}")
+    return jsonify(ok=True,id=alarm_id,state=states[action])
 
 
 @control.post("/api/control/device")
