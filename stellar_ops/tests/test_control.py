@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import io
 from pathlib import Path
 
 from stellar_ops.app import app
@@ -50,6 +51,31 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertEqual(snapshot["operation"]["state"], "ABORTED")
         kinds = {event["event_type"] for event in snapshot["events"]}
         self.assertTrue({"HOLD", "HOLD_RELEASE", "ABORT"}.issubset(kinds))
+
+    def test_device_channel_and_replay_configuration(self):
+        device = self.client.post("/api/control/device", json={
+            "id": "DAQ-02", "name": "Qualification DAQ", "device_type": "DAQ",
+            "adapter_type": "SIMULATOR", "endpoint": "SIM://qualification-daq", "required": True,
+        })
+        self.assertEqual(device.status_code, 200)
+        tested = self.client.post("/api/control/device/DAQ-02/test")
+        self.assertEqual(tested.status_code, 200)
+        self.assertEqual(tested.get_json()["status"], "SIMULATED")
+        channel = self.client.post("/api/control/channel", json={
+            "id": "motor.pressure_2", "name": "Secondary chamber pressure", "unit": "bar",
+            "source_id": "DAQ-02", "raw_field": "ai0", "slope": 1.25, "intercept": -0.04,
+            "sample_rate": 1000, "stale_timeout_ms": 100, "warning": 55, "critical": 70,
+            "required": True,
+        })
+        self.assertEqual(channel.status_code, 200)
+        replay = self.client.post("/api/control/replay", data={
+            "file": (io.BytesIO(b"time,pressure,thrust\n0,0,0\n0.01,2.1,14\n"), "test.csv")
+        }, content_type="multipart/form-data")
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.get_json()["row_count"], 2)
+        snapshot = self.client.get("/api/control/snapshot").get_json()
+        self.assertTrue(any(item["device_id"] == "DAQ-02" for item in snapshot["integrations"]))
+        self.assertTrue(any(item["channel_id"] == "motor.pressure_2" for item in snapshot["channel_integrations"]))
 
 
 if __name__ == "__main__":
