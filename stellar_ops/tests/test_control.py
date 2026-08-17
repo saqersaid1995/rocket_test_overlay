@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import io
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,9 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertIn(b"MISSION CONTROL WORKSPACE",workspace.data)
         self.assertEqual(len(snapshot["workspaces"]),5)
         self.assertTrue(snapshot["runs"][0]["active"])
+        health=self.client.get("/health")
+        self.assertEqual(health.status_code,200)
+        self.assertEqual(health.get_json()["database"]["journal_mode"],"WAL")
 
     def test_countdown_is_blocked_until_go_and_procedure_complete(self):
         blocked = self.client.post("/api/control/command", json={"action": "COUNTDOWN"})
@@ -205,6 +209,31 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertEqual(ack.status_code,200)
         close=self.client.post(f"/api/control/alarm/{alarm['id']}/action",json={"action":"CLOSE","reason":"operator request"})
         self.assertEqual(close.status_code,409)
+
+    def test_database_migration_and_evidence_package_integrity(self):
+        self.client.get("/api/control/snapshot")
+        with control_module.connect() as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0].lower(),"wal")
+            migration=db.execute("SELECT name FROM schema_migrations WHERE version=1").fetchone()
+            self.assertIsNotNone(migration)
+            active_run=db.execute("SELECT id FROM test_runs WHERE active=1").fetchone()[0]
+        started=self.client.post("/api/control/recording",json={"action":"START"})
+        self.assertEqual(started.status_code,200)
+        stopped=self.client.post("/api/control/recording",json={"action":"STOP"})
+        self.assertEqual(stopped.status_code,200)
+        evidence=stopped.get_json()["evidence"]
+        manifest_path=Path(evidence["manifest_path"])
+        self.assertTrue(manifest_path.exists())
+        self.assertEqual(hashlib.sha256(manifest_path.read_bytes()).hexdigest(),evidence["sha256"])
+        manifest=json.loads(manifest_path.read_text())
+        self.assertEqual(manifest["run"]["id"],active_run)
+        telemetry_path=manifest_path.parent/manifest["telemetry"]["file"]
+        self.assertTrue(telemetry_path.exists())
+        self.assertEqual(hashlib.sha256(telemetry_path.read_bytes()).hexdigest(),manifest["telemetry"]["file_sha256"])
+        with control_module.connect() as db:
+            package=db.execute("SELECT * FROM evidence_packages WHERE id=?",(evidence["package_id"],)).fetchone()
+        self.assertEqual(package["state"],"SEALED")
+        self.assertEqual(package["manifest_sha256"],evidence["sha256"])
 
 
 if __name__ == "__main__":
