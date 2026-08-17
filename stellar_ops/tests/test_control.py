@@ -30,6 +30,11 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertEqual(len(snapshot["stations"]), 7)
         self.assertEqual(len(snapshot["devices"]), 8)
         self.assertEqual(len(snapshot["steps"]), 14)
+        workspace = self.client.get("/workspace")
+        self.assertEqual(workspace.status_code,200)
+        self.assertIn(b"MISSION CONTROL WORKSPACE",workspace.data)
+        self.assertEqual(len(snapshot["workspaces"]),5)
+        self.assertTrue(snapshot["runs"][0]["active"])
 
     def test_countdown_is_blocked_until_go_and_procedure_complete(self):
         blocked = self.client.post("/api/control/command", json={"action": "COUNTDOWN"})
@@ -171,6 +176,26 @@ class StaticTestControlTests(unittest.TestCase):
         blocked = self.client.post("/api/control/device/PT-01/state",json={"enabled":False})
         self.assertEqual(blocked.status_code,409)
         self.assertIn("recording",blocked.get_json()["error"])
+
+    def test_workspace_run_and_alarm_workflows(self):
+        saved=self.client.post("/api/control/workspace",json={"name":"Qualification Wall","console_role":"TEST DIRECTOR","layout":[{"panel":"mission","span":1},{"panel":"telemetry","span":2},{"panel":"alarms","span":1}]})
+        self.assertEqual(saved.status_code,200)
+        invalid=self.client.post("/api/control/workspace",json={"name":"Unsafe","console_role":"TEST DIRECTOR","layout":[{"panel":"unknown","span":1}]})
+        self.assertEqual(invalid.status_code,400)
+        created=self.client.post("/api/control/run",json={"code":"RUN-SRM-2026-002","title":"Development static fire","test_article":"RNX-71V / SN-002","configuration_revision":"REV-B","propellant_batch":"B-006"})
+        self.assertEqual(created.status_code,200)
+        run_id=created.get_json()["id"]
+        self.assertEqual(self.client.post(f"/api/control/run/{run_id}/activate").status_code,200)
+        snapshot=self.client.get("/api/control/snapshot").get_json()
+        self.assertEqual(next(r for r in snapshot["runs"] if r["active"])["code"],"RUN-SRM-2026-002")
+
+        self.assertEqual(self.client.post("/api/control/mode",json={"mode":"LIVE"}).status_code,200)
+        alarm_snapshot=self.client.get("/api/control/snapshot").get_json()
+        alarm=alarm_snapshot["alarms"][0]
+        ack=self.client.post(f"/api/control/alarm/{alarm['id']}/action",json={"action":"ACKNOWLEDGE"})
+        self.assertEqual(ack.status_code,200)
+        close=self.client.post(f"/api/control/alarm/{alarm['id']}/action",json={"action":"CLOSE","reason":"operator request"})
+        self.assertEqual(close.status_code,409)
 
 
 if __name__ == "__main__":
