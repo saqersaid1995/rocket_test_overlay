@@ -23,6 +23,14 @@ The global Time Conductor supports live view, display pause without stopping rec
 
 Test Runs and saved workspaces persist in SQLite. Alarm acknowledgements, shelving, run changes, and workspace changes are audited. A live alarm condition cannot be manually closed until its source recovers.
 
+## Run-scoped evidence and reliability
+
+Operational events, alarms, recording sessions, and Ethernet batches are linked to the active Test Run. Starting a recording opens a run-specific evidence directory; stopping it exports the received telemetry batches to canonical JSON Lines, writes a manifest, and seals both with SHA-256 integrity metadata. The Evidence panel shows open and sealed packages.
+
+Database startup applies numbered migrations and configures SQLite WAL, foreign keys, normal synchronous mode, and a 10-second busy timeout for safer concurrent Flask/gateway development. Production deployment should still migrate operational metadata to PostgreSQL and large telemetry/video to dedicated time-series/object storage.
+
+The workspace consumes a server-sent event stream rather than repeatedly fetching a complete snapshot. `/health` reports database latency, disk capacity, active run, recording, operation and edge status; `/health/live` is the lightweight process liveness endpoint.
+
 The control console supports three explicit telemetry source modes:
 
 - `SIMULATION`: generated training signals.
