@@ -101,11 +101,15 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertEqual(disconnected["telemetry"]["meta"]["status"], "NO_DEVICE")
         self.assertEqual(disconnected["telemetry"]["channels"]["motor.thrust"]["quality"], "DISCONNECTED")
         live_devices = {item["id"]: item for item in disconnected["devices"]}
-        self.assertEqual(live_devices["DAQ-01"]["health"], "NO_DEVICE")
+        self.assertEqual(live_devices["DAQ-01"]["health"], "NOT_CONNECTED")
         self.assertEqual(live_devices["PT-01"]["health"], "DISCONNECTED")
         self.assertEqual(live_devices["CAM-01"]["health"], "NOT_CONNECTED")
         self.assertNotIn("SIMULATED", {item["health"] for item in disconnected["devices"]})
 
+        registered = self.client.post("/api/control/device", json={
+            "id":"ESP-DAQ-01","name":"Ethernet gateway","device_type":"DAQ","adapter_type":"SMTCS_EDGE_TCP",
+            "endpoint":"127.0.0.1:9100","required":True})
+        self.assertEqual(registered.status_code,200)
         stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         channels = {"chamber_pressure": [61.2], "thrust": [430.0], "case_temperature": [42.0], "continuity": [0]}
         with control_module.connect() as db:
@@ -134,6 +138,39 @@ class StaticTestControlTests(unittest.TestCase):
         blocked = self.client.post("/api/control/mode", json={"mode": "LIVE"})
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("stop", blocked.get_json()["error"])
+
+    def test_device_and_channel_archive_restore_lifecycle(self):
+        self.client.get("/api/control/snapshot")
+        blocked = self.client.post("/api/control/device/PT-01/state", json={"enabled": False})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("motor.chamber_pressure", blocked.get_json()["error"])
+        self.assertEqual(self.client.post("/api/control/channel/motor.chamber_pressure/state", json={"enabled": False}).status_code, 200)
+        self.assertEqual(self.client.post("/api/control/device/PT-01/state", json={"enabled": False}).status_code, 200)
+        snapshot = self.client.get("/api/control/snapshot").get_json()
+        devices = {item["id"]: item for item in snapshot["devices"]}
+        channels = {item["id"]: item for item in snapshot["channels"]}
+        self.assertFalse(devices["PT-01"]["enabled"])
+        self.assertEqual(devices["PT-01"]["health"], "DISABLED")
+        self.assertFalse(channels["motor.chamber_pressure"]["enabled"])
+        self.assertNotIn("motor.chamber_pressure", snapshot["telemetry"]["channels"])
+        cannot_restore = self.client.post("/api/control/channel/motor.chamber_pressure/state", json={"enabled": True})
+        self.assertEqual(cannot_restore.status_code, 409)
+        self.assertEqual(self.client.post("/api/control/device/PT-01/state", json={"enabled": True}).status_code, 200)
+        self.assertEqual(self.client.post("/api/control/channel/motor.chamber_pressure/state", json={"enabled": True}).status_code, 200)
+
+    def test_configuration_validation_and_recording_guard(self):
+        invalid_camera = self.client.post("/api/control/device", json={
+            "id":"CAM-03","name":"Pad view","device_type":"IP-CAMERA","adapter_type":"MODBUS_TCP",
+            "endpoint":"10.0.0.5:502","required":True})
+        self.assertEqual(invalid_camera.status_code, 400)
+        invalid_limit = self.client.post("/api/control/channel", json={
+            "id":"motor.bad","name":"Bad limits","unit":"bar","source_id":"PT-01","raw_field":"bad",
+            "slope":1,"intercept":0,"sample_rate":10,"stale_timeout_ms":100,"warning":80,"critical":70})
+        self.assertEqual(invalid_limit.status_code, 400)
+        self.assertEqual(self.client.post("/api/control/recording",json={"action":"START"}).status_code,200)
+        blocked = self.client.post("/api/control/device/PT-01/state",json={"enabled":False})
+        self.assertEqual(blocked.status_code,409)
+        self.assertIn("recording",blocked.get_json()["error"])
 
 
 if __name__ == "__main__":
