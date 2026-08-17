@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import os
 import sqlite3
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, jsonify, render_template, request
+from .adapters import inspect_csv, test_adapter
 
 ROOT = Path(__file__).resolve().parent
 CONTROL_DB = Path(os.environ.get("STELLAR_OPS_DATA", ROOT / "data")) / "control.db"
@@ -60,6 +62,22 @@ CREATE TABLE IF NOT EXISTS alarms(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL,
  opened_at TEXT NOT NULL, priority TEXT NOT NULL, source TEXT NOT NULL,
  message TEXT NOT NULL, state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS device_integrations(
+ operation_id TEXT NOT NULL, device_id TEXT NOT NULL,
+ adapter_type TEXT NOT NULL, config_json TEXT NOT NULL,
+ enabled INTEGER NOT NULL DEFAULT 1, last_test_at TEXT,
+ last_test_status TEXT NOT NULL DEFAULT 'NOT_TESTED', last_test_message TEXT,
+ PRIMARY KEY(operation_id,device_id));
+CREATE TABLE IF NOT EXISTS channel_integrations(
+ operation_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+ raw_field TEXT NOT NULL, calibration_slope REAL NOT NULL DEFAULT 1,
+ calibration_intercept REAL NOT NULL DEFAULT 0, stale_timeout_ms INTEGER NOT NULL,
+ required_for_commit INTEGER NOT NULL DEFAULT 1,
+ PRIMARY KEY(operation_id,channel_id));
+CREATE TABLE IF NOT EXISTS replay_datasets(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL,
+ filename TEXT NOT NULL, uploaded_at TEXT NOT NULL, row_count INTEGER NOT NULL,
+ columns_json TEXT NOT NULL, preview_json TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0);
 """
 
 STATIONS = [
@@ -122,8 +140,13 @@ def init_control_db() -> None:
                        (OPERATION_ID, code, name, authority, 1, "PENDING", "UNASSIGNED", stamp))
         for row in DEVICES:
             db.execute("INSERT OR IGNORE INTO devices VALUES(?,?,?,?,?,?,?,?,?)", (OPERATION_ID, *row))
+            default_adapter = "SIMULATOR" if row[5] == "SIMULATED" else ("ONVIF" if row[2] == "IP-CAMERA" else row[3].replace("-", "_"))
+            db.execute("INSERT OR IGNORE INTO device_integrations VALUES(?,?,?,?,?,?,?,?)",
+                       (OPERATION_ID, row[0], default_adapter, json.dumps({"endpoint": row[4]}), 1, None, "NOT_TESTED", None))
         for row in CHANNELS:
             db.execute("INSERT OR IGNORE INTO channels VALUES(?,?,?,?,?,?,?,?,?)", (OPERATION_ID, *row))
+            db.execute("INSERT OR IGNORE INTO channel_integrations VALUES(?,?,?,?,?,?,?)",
+                       (OPERATION_ID, row[0], row[0].split(".")[-1], 1.0, 0.0, max(100, int(3000 / row[7])), 1))
         for row in STEPS:
             db.execute("INSERT OR IGNORE INTO procedure_steps VALUES(?,?,?,?,?,?,?,?,?)",
                        (OPERATION_ID, *row, "PENDING", None, None))
@@ -163,6 +186,11 @@ def snapshot() -> dict:
                 "steps": [dict(x) for x in db.execute("SELECT * FROM procedure_steps WHERE operation_id=? ORDER BY sequence", (OPERATION_ID,))],
                 "events": [dict(x) for x in db.execute("SELECT * FROM events WHERE operation_id=? ORDER BY sequence DESC LIMIT 40", (OPERATION_ID,))],
                 "alarms": [dict(x) for x in db.execute("SELECT * FROM alarms WHERE operation_id=? AND state!='CLOSED' ORDER BY id DESC", (OPERATION_ID,))]}
+        data["integrations"] = [dict(x) for x in db.execute("""SELECT i.*,d.name,d.device_type,d.endpoint
+            FROM device_integrations i JOIN devices d ON d.operation_id=i.operation_id AND d.id=i.device_id
+            WHERE i.operation_id=? ORDER BY d.rowid""", (OPERATION_ID,))]
+        data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
+        data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["telemetry"] = telemetry(op)
         return data
 
@@ -175,6 +203,84 @@ def console():
 @control.get("/api/control/snapshot")
 def api_snapshot():
     return jsonify(snapshot())
+
+
+@control.post("/api/control/device")
+def save_device():
+    payload = request.get_json(silent=True) or {}
+    required = ("id", "name", "device_type", "adapter_type", "endpoint")
+    if any(not str(payload.get(key, "")).strip() for key in required):
+        return jsonify(error="id, name, device type, adapter and endpoint are required"), 400
+    device_id = str(payload["id"]).strip().upper()
+    if not all(char.isalnum() or char in "-_" for char in device_id):
+        return jsonify(error="device id may contain letters, numbers, hyphen and underscore only"), 400
+    adapter = str(payload["adapter_type"]).strip().upper()
+    endpoint = str(payload["endpoint"]).strip()
+    config = {"endpoint": endpoint, "username": str(payload.get("username", "")).strip(),
+              "profile": str(payload.get("profile", "")).strip(), "notes": str(payload.get("notes", "")).strip()}
+    with connect() as db:
+        db.execute("""INSERT INTO devices(operation_id,id,name,device_type,protocol,endpoint,health,recording,required)
+          VALUES(?,?,?,?,?,?,?,'STOPPED',?)
+          ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,device_type=excluded.device_type,
+          protocol=excluded.protocol,endpoint=excluded.endpoint,required=excluded.required""",
+          (OPERATION_ID, device_id, str(payload["name"]).strip(), str(payload["device_type"]).strip().upper(), adapter,
+           endpoint, "NOT_TESTED", 1 if payload.get("required", True) else 0))
+        db.execute("""INSERT INTO device_integrations(operation_id,device_id,adapter_type,config_json,enabled,last_test_status)
+          VALUES(?,?,?,?,1,'NOT_TESTED') ON CONFLICT(operation_id,device_id) DO UPDATE SET
+          adapter_type=excluded.adapter_type,config_json=excluded.config_json,enabled=1,last_test_status='NOT_TESTED',last_test_message=NULL""",
+          (OPERATION_ID, device_id, adapter, json.dumps(config)))
+        event(db, "DEVICE_CONFIG", "INSTRUMENTATION", "INFO", f"Device {device_id} saved with {adapter} adapter")
+    return jsonify(ok=True, device_id=device_id)
+
+
+@control.post("/api/control/device/<device_id>/test")
+def test_device(device_id: str):
+    with connect() as db:
+        row = db.execute("SELECT * FROM device_integrations WHERE operation_id=? AND device_id=?", (OPERATION_ID, device_id)).fetchone()
+        if not row: return jsonify(error="device integration not found"), 404
+        config = json.loads(row["config_json"])
+        result = test_adapter(row["adapter_type"], config.get("endpoint", ""))
+        db.execute("UPDATE device_integrations SET last_test_at=?,last_test_status=?,last_test_message=? WHERE operation_id=? AND device_id=?",
+                   (utc_now(), result.status, result.message, OPERATION_ID, device_id))
+        db.execute("UPDATE devices SET health=? WHERE operation_id=? AND id=?", (result.status, OPERATION_ID, device_id))
+        event(db, "CONNECTION_TEST", "INSTRUMENTATION", "INFO" if result.ok else "WARNING", f"{device_id}: {result.message}")
+    return jsonify(result.to_dict()), 200 if result.ok else 422
+
+
+@control.post("/api/control/channel")
+def save_channel():
+    payload = request.get_json(silent=True) or {}
+    required = ("id", "name", "unit", "source_id", "raw_field")
+    if any(not str(payload.get(key, "")).strip() for key in required): return jsonify(error="all channel identity fields are required"), 400
+    channel_id = str(payload["id"]).strip()
+    try:
+        slope=float(payload.get("slope",1)); intercept=float(payload.get("intercept",0)); rate=int(payload.get("sample_rate",10)); stale=int(payload.get("stale_timeout_ms",1000))
+        warning=float(payload["warning"]) if str(payload.get("warning","")).strip() else None
+        critical=float(payload["critical"]) if str(payload.get("critical","")).strip() else None
+    except (TypeError,ValueError): return jsonify(error="calibration, rates and limits must be numeric"), 400
+    if rate<1 or rate>10000 or stale<10: return jsonify(error="sample rate or stale timeout is outside Phase 1 limits"),400
+    with connect() as db:
+        if not db.execute("SELECT 1 FROM devices WHERE operation_id=? AND id=?",(OPERATION_ID,payload["source_id"])).fetchone(): return jsonify(error="source device does not exist"),409
+        db.execute("""INSERT INTO channels VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,unit=excluded.unit,source_id=excluded.source_id,warning=excluded.warning,critical=excluded.critical,sample_rate=excluded.sample_rate""",
+                   (OPERATION_ID,channel_id,str(payload["name"]).strip(),str(payload["unit"]).strip(),payload["source_id"],"NOT_TESTED",warning,critical,rate))
+        db.execute("""INSERT INTO channel_integrations VALUES(?,?,?,?,?,?,?) ON CONFLICT(operation_id,channel_id) DO UPDATE SET raw_field=excluded.raw_field,calibration_slope=excluded.calibration_slope,calibration_intercept=excluded.calibration_intercept,stale_timeout_ms=excluded.stale_timeout_ms,required_for_commit=excluded.required_for_commit""",
+                   (OPERATION_ID,channel_id,str(payload["raw_field"]).strip(),slope,intercept,stale,1 if payload.get("required",True) else 0))
+        event(db,"CHANNEL_CONFIG","INSTRUMENTATION","INFO",f"Channel {channel_id} configuration saved")
+    return jsonify(ok=True,channel_id=channel_id)
+
+
+@control.post("/api/control/replay")
+def upload_replay():
+    file = request.files.get("file")
+    if not file or not file.filename: return jsonify(error="CSV file is required"),400
+    try: report=inspect_csv(file.read())
+    except (UnicodeDecodeError,ValueError) as exc: return jsonify(error=str(exc)),400
+    with connect() as db:
+        db.execute("UPDATE replay_datasets SET active=0 WHERE operation_id=?",(OPERATION_ID,))
+        cursor=db.execute("INSERT INTO replay_datasets(operation_id,filename,uploaded_at,row_count,columns_json,preview_json,active) VALUES(?,?,?,?,?,?,1)",
+                          (OPERATION_ID,file.filename,utc_now(),report["row_count"],json.dumps(report["columns"]),json.dumps(report["preview"])))
+        event(db,"REPLAY_DATASET","INSTRUMENTATION","INFO",f"CSV replay dataset loaded: {file.filename} ({report['row_count']} rows)")
+    return jsonify(ok=True,id=cursor.lastrowid,**report)
 
 
 @control.post("/api/control/station/<code>")
