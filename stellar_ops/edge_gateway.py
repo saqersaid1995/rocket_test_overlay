@@ -69,11 +69,17 @@ class EdgeHandler(socketserver.StreamRequestHandler):
                         session=db.execute("SELECT last_sequence FROM edge_sessions WHERE device_id=? AND boot_id=?",
                                            (self.device_id,self.boot_id)).fetchone()
                         if session is None: raise ProtocolError("HELLO required before BATCH")
-                        last=session["last_sequence"]; gap=max(0,msg["sequence"]-(last+1)) if last is not None else 0
-                        db.execute("""INSERT OR IGNORE INTO edge_batches(device_id,boot_id,sequence,received_at,first_sample_us,sample_period_us,sample_count,channels_json)
+                        last=session["last_sequence"]; gap=max(0,msg["sequence"]-(last+1)) if last is not None and msg["sequence"] > last else 0
+                        inserted = db.execute("""INSERT OR IGNORE INTO edge_batches(device_id,boot_id,sequence,received_at,first_sample_us,sample_period_us,sample_count,channels_json)
                           VALUES(?,?,?,?,?,?,?,?)""",(self.device_id,self.boot_id,msg["sequence"],now(),msg["first_sample_us"],msg["sample_period_us"],msg["sample_count"],json.dumps(msg["channels"],separators=(",",":"))))
-                        db.execute("""UPDATE edge_sessions SET last_seen=?,last_sequence=?,total_samples=total_samples+?,sequence_gaps=sequence_gaps+?,status='STREAMING'
-                          WHERE device_id=? AND boot_id=?""",(now(),msg["sequence"],msg["sample_count"],gap,self.device_id,self.boot_id)); db.commit()
+                        if inserted.rowcount:
+                            db.execute("""UPDATE edge_sessions SET last_seen=?,last_sequence=CASE WHEN last_sequence IS NULL OR ? > last_sequence THEN ? ELSE last_sequence END,
+                              total_samples=total_samples+?,sequence_gaps=sequence_gaps+?,status='STREAMING'
+                              WHERE device_id=? AND boot_id=?""",(now(),msg["sequence"],msg["sequence"],msg["sample_count"],gap,self.device_id,self.boot_id))
+                        else:
+                            db.execute("UPDATE edge_sessions SET last_seen=?,status='STREAMING' WHERE device_id=? AND boot_id=?",
+                                       (now(),self.device_id,self.boot_id))
+                        db.commit()
                         self.reply({"type":"ACK","ack_sequence":msg["sequence"],"gateway_time_utc":now()})
                 except ProtocolError as exc:
                     self.reply({"type":"NACK","reason":str(exc),"gateway_time_utc":now()})
@@ -99,4 +105,3 @@ def main() -> None:
 
 
 if __name__ == "__main__": main()
-
