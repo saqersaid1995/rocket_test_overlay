@@ -89,6 +89,12 @@ CREATE TABLE IF NOT EXISTS baseline_items(
  source TEXT NOT NULL, notes TEXT, updated_at TEXT NOT NULL,
  UNIQUE(baseline_id,item_type),
  FOREIGN KEY(baseline_id) REFERENCES configuration_baselines(id));
+CREATE TABLE IF NOT EXISTS configuration_baseline_history(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ baseline_code TEXT NOT NULL, revision TEXT NOT NULL, canonical_sha256 TEXT NOT NULL,
+ snapshot_json TEXT NOT NULL, superseded_reason TEXT NOT NULL,
+ superseded_by TEXT NOT NULL, superseded_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
 CREATE TABLE IF NOT EXISTS staffing_plans(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
  state TEXT NOT NULL, approved_at TEXT, approved_by TEXT, notes TEXT,
@@ -405,6 +411,8 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["baseline"]:
         item["baseline"]["items"] = [dict(x) for x in db.execute(
             "SELECT * FROM baseline_items WHERE baseline_id=? ORDER BY item_type", (baseline["id"],))]
+    item["baseline_history"] = [dict(x) for x in db.execute(
+        "SELECT * FROM configuration_baseline_history WHERE operation_id=? ORDER BY id DESC", (operation_id,))]
     staffing = db.execute("SELECT * FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
     item["staffing"] = dict(staffing) if staffing else None
     if item["staffing"]:
@@ -1483,6 +1491,42 @@ def approve_team(operation_id: int):
     return jsonify(ok=True, url=url_for("operations.operation_detail", operation_id=operation_id))
 
 
+def next_controlled_revision(value:str)->str:
+    match=re.fullmatch(r"REV-([A-Z])",value.strip().upper())
+    if match and match.group(1)!="Z":return f"REV-{chr(ord(match.group(1))+1)}"
+    match=re.fullmatch(r"REV-(\d+)",value.strip().upper())
+    if match:return f"REV-{int(match.group(1))+1}"
+    return "REV-A"
+
+
+@operations.post("/api/ops/<int:operation_id>/baseline/revise")
+def revise_baseline(operation_id:int):
+    p=request.get_json(silent=True) or {};reason=str(p.get("reason","")).strip();actor=str(p.get("requested_by","CONFIGURATION MANAGER")).strip() or "CONFIGURATION MANAGER";stamp=utc_now()
+    if len(reason)<12:return jsonify(error="a specific revision reason of at least 12 characters is required"),400
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        if operation["current_stage"] not in {"TEAM","PROCEDURE"}:return jsonify(error="baseline rework is only permitted before procedure approval"),409
+        baseline=db.execute("SELECT * FROM configuration_baselines WHERE operation_id=?",(operation_id,)).fetchone()
+        procedure=db.execute("SELECT state FROM operation_procedures WHERE operation_id=?",(operation_id,)).fetchone()
+        if not baseline or baseline["state"]!="RELEASED":return jsonify(error="a released baseline is required for controlled revision"),409
+        if procedure and procedure["state"]=="APPROVED":return jsonify(error="procedure is already approved; use formal change control instead"),409
+        items=[dict(x) for x in db.execute("SELECT * FROM baseline_items WHERE baseline_id=? ORDER BY item_type",(baseline["id"],))]
+        snapshot={"schema":"SMTCS-BASELINE-SNAPSHOT/1","baseline":{k:baseline[k] for k in ("baseline_code","revision","canonical_sha256","released_at","released_by","notes")},"items":[{k:x[k] for k in ("item_type","reference","revision","required","verification_status","source","notes")} for x in items]}
+        db.execute("INSERT INTO configuration_baseline_history(operation_id,baseline_code,revision,canonical_sha256,snapshot_json,superseded_reason,superseded_by,superseded_at) VALUES(?,?,?,?,?,?,?,?)",
+                   (operation_id,baseline["baseline_code"],baseline["revision"],baseline["canonical_sha256"],json.dumps(snapshot,sort_keys=True),reason,actor,stamp))
+        new_revision=next_controlled_revision(baseline["revision"])
+        db.execute("UPDATE configuration_baselines SET revision=?,state='DRAFT',notes=?,canonical_sha256=NULL,released_at=NULL,released_by=NULL,updated_at=? WHERE id=?",
+                   (new_revision,f"{baseline['notes'] or ''}\nREVISION REASON: {reason}".strip(),stamp,baseline["id"]))
+        db.execute("UPDATE staffing_plans SET state='DRAFT',approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='LOCKED',blocker='Superseded baseline requires revalidation',updated_at=? WHERE operation_id=? AND sequence>3",(stamp,operation_id))
+        db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',blocker=NULL,owner=?,updated_at=? WHERE operation_id=? AND section_key='BASELINE'",(actor,stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage='BASELINE',status='CONTROLLED REWORK',updated_at=? WHERE id=?",(stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,stamp,"BASELINE_REVISION_OPENED",actor,f"Baseline {baseline['baseline_code']}/{baseline['revision']} superseded; {new_revision} opened: {reason}"))
+    return jsonify(ok=True,revision=new_revision,url=url_for("operations.baseline_builder",operation_id=operation_id))
+
+
 @operations.post("/api/ops/<int:operation_id>/baseline")
 def save_baseline(operation_id: int):
     p = request.get_json(silent=True) or {}
@@ -1554,6 +1598,9 @@ def release_baseline(operation_id: int):
         approved = {x["item_type"] for x in items if x["verification_status"] in {"VERIFIED", "APPROVED"}}
         missing = sorted(baseline_requirements(operation["operation_type"]) - approved)
         if missing: return jsonify(error="required baseline items are missing or unverified: " + ", ".join(missing)), 409
+        placeholders={"","-","UNASSIGNED","WORKING","TBD","N/A","NA","NONE"}
+        invalid=sorted(x["item_type"] for x in items if x["required"] and (x["reference"].strip().upper() in placeholders or x["revision"].strip().upper() in placeholders or x["source"].strip().upper() in placeholders))
+        if invalid:return jsonify(error="required baseline items contain placeholder identity values: "+", ".join(invalid)),409
         canonical = {"schema": "SMTCS-BASELINE/1", "operation": {"code": operation["code"], "type": operation["operation_type"]},
                      "article": {"serial": article["serial_number"], "revision": article["configuration_revision"]},
                      "baseline": {"code": baseline["baseline_code"], "revision": baseline["revision"]},

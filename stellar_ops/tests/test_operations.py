@@ -159,6 +159,18 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(team["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=payload).status_code, 409)
 
+    def test_baseline_release_rejects_placeholder_controlled_identities(self):
+        operation_id = self.prepare_identified_article("QBASE-PLACEHOLDER")
+        required = ["PROCEDURE", "CHANNEL_MAP", "LIMIT_PROFILE", "DEVICE_MANIFEST", "CAMERA_MANIFEST", "SOFTWARE"]
+        payload = {"baseline_code": "QBASE-PLACEHOLDER-CB", "revision": "REV-A", "items": [
+            {"item_type": kind, "reference": "UNASSIGNED" if kind == "PROCEDURE" else f"REF-{kind}",
+             "revision": "WORKING" if kind == "PROCEDURE" else "REV-A", "source": "CONTROLLED_RECORD", "verification_status": "VERIFIED"}
+            for kind in required]}
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/baseline", json=payload).status_code, 200)
+        blocked = self.client.post(f"/api/ops/{operation_id}/baseline/release")
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("PROCEDURE", blocked.get_json()["error"])
+
     def prepare_team_stage(self, code="QTEAM-010"):
         operation_id = self.prepare_identified_article(code)
         required = ["PROCEDURE", "CHANNEL_MAP", "LIMIT_PROFILE", "DEVICE_MANIFEST", "CAMERA_MANIFEST", "SOFTWARE"]
@@ -252,6 +264,28 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(approval.status_code, 409)
         self.assertIn("baseline requires REF-PROCEDURE / REV-A", approval.get_json()["error"])
         self.assertIn("WRONG-PROCEDURE / REV-A", approval.get_json()["error"])
+
+    def test_controlled_baseline_revision_preserves_history_and_invalidates_downstream_approval(self):
+        operation_id = self.prepare_procedure_stage("QPROC-REWORK")
+        revised = self.client.post(f"/api/ops/{operation_id}/baseline/revise", json={
+            "reason": "Replace placeholder procedure identity with the controlled document reference",
+            "requested_by": "Configuration Manager"})
+        self.assertEqual(revised.status_code, 200)
+        self.assertEqual(revised.get_json()["revision"], "REV-B")
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage,status FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            baseline = db.execute("SELECT state,revision,canonical_sha256 FROM configuration_baselines WHERE operation_id=?", (operation_id,)).fetchone()
+            history = db.execute("SELECT revision,canonical_sha256,superseded_reason FROM configuration_baseline_history WHERE operation_id=?", (operation_id,)).fetchone()
+            staffing = db.execute("SELECT state,approved_at FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+        self.assertEqual(operation["current_stage"], "BASELINE")
+        self.assertEqual(operation["status"], "CONTROLLED REWORK")
+        self.assertEqual(baseline["state"], "DRAFT")
+        self.assertEqual(baseline["revision"], "REV-B")
+        self.assertIsNone(baseline["canonical_sha256"])
+        self.assertEqual(history["revision"], "REV-A")
+        self.assertEqual(len(history["canonical_sha256"]), 64)
+        self.assertEqual(staffing["state"], "DRAFT")
+        self.assertIsNone(staffing["approved_at"])
 
     def test_approved_procedure_is_hashed_locked_and_unlocks_instrumentation(self):
         operation_id = self.prepare_procedure_stage("QPROC-020")
