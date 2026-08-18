@@ -236,6 +236,12 @@ class OperationWorkflowTests(unittest.TestCase):
         page = self.client.get(f"/ops/{operation_id}/procedure")
         self.assertEqual(page.status_code, 200)
         self.assertIn(b"Procedure Control", page.data)
+        self.assertIn(b"RELEASED BASELINE REQUIRES", page.data)
+        self.assertIn(b"REF-PROCEDURE", page.data)
+        placeholder = self.procedure_payload(); placeholder["steps"][2]["abort_action"] = "-"
+        response = self.client.post(f"/api/ops/{operation_id}/procedure", json=placeholder)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("explicit abort/safe action", response.get_json()["error"])
         unsafe = self.procedure_payload(); unsafe["steps"][2]["verification_mode"] = "SELF"
         response = self.client.post(f"/api/ops/{operation_id}/procedure", json=unsafe)
         self.assertEqual(response.status_code, 400)
@@ -244,7 +250,8 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=mismatch).status_code, 200)
         approval = self.client.post(f"/api/ops/{operation_id}/procedure/approve")
         self.assertEqual(approval.status_code, 409)
-        self.assertIn("released configuration baseline", approval.get_json()["error"])
+        self.assertIn("baseline requires REF-PROCEDURE / REV-A", approval.get_json()["error"])
+        self.assertIn("WRONG-PROCEDURE / REV-A", approval.get_json()["error"])
 
     def test_approved_procedure_is_hashed_locked_and_unlocks_instrumentation(self):
         operation_id = self.prepare_procedure_stage("QPROC-020")

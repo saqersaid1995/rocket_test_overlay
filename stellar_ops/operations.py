@@ -508,9 +508,10 @@ def team_builder(operation_id: int):
 def procedure_builder(operation_id: int):
     with connect() as db:
         item = operation_view(db, operation_id)
+        procedure_identity = next((x for x in (item.get("baseline", {}).get("items", []) if item and item.get("baseline") else []) if x["item_type"] == "PROCEDURE"), None)
     if not item: return "Operation not found", 404
     roles = item.get("staffing", {}).get("assignments", []) if item.get("staffing") else []
-    return render_template("ops_procedure.html", operation=item, assigned_roles=roles)
+    return render_template("ops_procedure.html", operation=item, assigned_roles=roles, procedure_identity=procedure_identity)
 
 
 @operations.get("/ops/<int:operation_id>/instrumentation")
@@ -1290,6 +1291,7 @@ def approve_instrumentation(operation_id:int):
 
 def validate_procedure_steps(steps: list, assigned_roles: set[str]) -> tuple[list, list[str]]:
     normalized, errors, sequences, codes = [], [], set(), set()
+    meaningful=lambda value:bool(value and value.strip().lower() not in {"-","n/a","na","none","tbd"})
     for index, entry in enumerate(steps, 1):
         try: sequence = int(entry.get("sequence", index))
         except (TypeError, ValueError): sequence = 0
@@ -1308,13 +1310,13 @@ def validate_procedure_steps(steps: list, assigned_roles: set[str]) -> tuple[lis
         if not valid_code(code) or code in codes: errors.append(f"step {index} requires a unique controlled step code")
         if phase not in PROCEDURE_PHASES: errors.append(f"{code or index} has an invalid phase")
         if step_type not in PROCEDURE_STEP_TYPES: errors.append(f"{code or index} has an invalid step type")
-        if not instruction or not evidence: errors.append(f"{code or index} requires instruction and expected evidence")
+        if not meaningful(instruction) or not meaningful(evidence): errors.append(f"{code or index} requires a meaningful instruction and expected evidence; placeholders such as '-' are not accepted")
         if responsible not in assigned_roles: errors.append(f"{code or index} responsible role is not assigned")
         if mode not in {"SELF", "TWO_PERSON", "AUTOMATED"}: errors.append(f"{code or index} has an invalid verification mode")
         if mode == "TWO_PERSON" and (not verifier or verifier not in assigned_roles or verifier == responsible):
             errors.append(f"{code or index} requires a different assigned verifier")
-        if critical and (not abort or mode == "SELF"): errors.append(f"{code or index} safety-critical step requires abort action and independent/automated verification")
-        if step_type == "HOLD_POINT" and not hold: errors.append(f"{code or index} hold point requires a release condition")
+        if critical and (not meaningful(abort) or mode == "SELF"): errors.append(f"{code or index} safety-critical step requires an explicit abort/safe action and independent/automated verification")
+        if step_type == "HOLD_POINT" and not meaningful(hold): errors.append(f"{code or index} hold point requires an explicit release condition")
         sequences.add(sequence); codes.add(code)
         normalized.append((sequence, code, phase, step_type, instruction, responsible, mode, verifier,
                            evidence, int(critical), hold or None, abort or None))
@@ -1370,8 +1372,11 @@ def approve_procedure(operation_id: int):
         if not procedure: return jsonify(error="save the procedure draft first"), 409
         baseline = db.execute("SELECT id FROM configuration_baselines WHERE operation_id=? AND state='RELEASED'", (operation_id,)).fetchone()
         baseline_ref = db.execute("SELECT reference,revision FROM baseline_items WHERE baseline_id=? AND item_type='PROCEDURE'", (baseline["id"],)).fetchone() if baseline else None
-        if not baseline_ref or baseline_ref["reference"].upper() != procedure["document_code"] or baseline_ref["revision"].upper() != procedure["revision"]:
-            return jsonify(error="procedure identity does not match the released configuration baseline"), 409
+        if not baseline_ref:
+            return jsonify(error="released baseline has no PROCEDURE identity; create a new operation or controlled baseline revision"), 409
+        expected_code=baseline_ref["reference"].strip().upper();expected_revision=baseline_ref["revision"].strip().upper()
+        if expected_code != procedure["document_code"] or expected_revision != procedure["revision"]:
+            return jsonify(error=f"procedure identity mismatch: baseline requires {expected_code} / {expected_revision}, but draft contains {procedure['document_code']} / {procedure['revision']}"), 409
         steps = [dict(x) for x in db.execute("SELECT * FROM operation_procedure_steps WHERE procedure_id=? ORDER BY sequence", (procedure["id"],))]
         phases = {x["phase"] for x in steps}
         missing_phases = sorted({"SITE", "PREPARATION", "COUNTDOWN", "EXECUTION", "SAFING"} - phases)
