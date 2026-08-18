@@ -40,9 +40,42 @@ class OperationWorkflowTests(unittest.TestCase):
         detail = self.client.get(f"/ops/{demo['id']}")
         self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
         for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
-                     "readiness", "rehearsal", "execution", "review"):
+                     "readiness", "rehearsal", "execution", "review", "planning"):
             response = self.client.get(f"/ops/{demo['id']}/{page}")
             self.assertEqual(response.status_code, 200, page)
+        planning = self.client.get(f"/ops/{demo['id']}/planning")
+        self.assertIn(b"Integrated Preparation Plan", planning.data)
+        self.assertIn(b"TRAINING EXAMPLE", planning.data)
+        self.assertIn(b"INST-040", planning.data)
+        self.assertIn(b"Nasser Al Rawahi", planning.data)
+
+    def test_planning_generation_calculates_timeline_and_enforces_dependencies(self):
+        response = self.client.post("/api/ops", json={
+            "mission_id": 1, "code": "QPLAN-001", "title": "Planning workflow",
+            "operation_type": "STATIC_FIRE", "site": "Test Site",
+            "planned_start": "2026-10-01T08:00", "objective": "Validate planning controls",
+            "success_criteria": ["Preparation accepted"], "owner": "Test Director"})
+        self.assertEqual(response.status_code, 200)
+        operation_id = response.get_json()["id"]
+        generated = self.client.post(f"/api/ops/{operation_id}/planning/generate", json={})
+        self.assertEqual(generated.status_code, 200)
+        self.assertEqual(generated.get_json()["created"], 10)
+        with control_module.connect() as db:
+            task = db.execute("SELECT planned_start,due_at,assigned_person FROM operation_tasks WHERE operation_id=? AND task_code='CFG-010'", (operation_id,)).fetchone()
+        self.assertTrue(task["planned_start"].startswith("2026-09-21T08:00"))
+        self.assertTrue(task["due_at"].startswith("2026-09-24T08:00"))
+        self.assertEqual(task["assigned_person"], "UNASSIGNED")
+        blocked = self.client.post(f"/api/ops/{operation_id}/planning/tasks/PROP-020", json={
+            "assigned_person": "Training Propulsion Lead", "status": "READY_FOR_REVIEW", "blocker": ""})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("CFG-010", blocked.get_json()["error"])
+
+    def test_blocked_planning_task_requires_reason(self):
+        with control_module.connect() as db:
+            demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
+        response = self.client.post(f"/api/ops/{demo['id']}/planning/tasks/INST-030", json={
+            "assigned_person": "Nasser Al Rawahi", "status": "BLOCKED", "blocker": ""})
+        self.assertEqual(response.status_code, 400)
 
     def test_builder_creates_controlled_operation_and_unlocks_article(self):
         response = self.client.post("/api/ops", json={

@@ -4,7 +4,7 @@ import json
 import hashlib
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
@@ -259,11 +259,162 @@ CREATE TABLE IF NOT EXISTS corrective_actions(
  status TEXT NOT NULL, closure_evidence TEXT NOT NULL, transfer_reference TEXT NOT NULL,
  notes TEXT NOT NULL, updated_at TEXT NOT NULL,
  UNIQUE(review_id,action_code), FOREIGN KEY(review_id) REFERENCES post_operation_reviews(id));
+CREATE TABLE IF NOT EXISTS departments(
+ code TEXT PRIMARY KEY, name TEXT NOT NULL, purpose TEXT NOT NULL,
+ lead_role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS personnel(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, staff_code TEXT NOT NULL UNIQUE,
+ person_name TEXT NOT NULL, department_code TEXT NOT NULL, job_title TEXT NOT NULL,
+ email TEXT, phone TEXT, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(department_code) REFERENCES departments(code));
+CREATE TABLE IF NOT EXISTS task_templates(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_type TEXT NOT NULL,
+ task_code TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
+ department_code TEXT NOT NULL, responsible_role TEXT NOT NULL,
+ accountable_role TEXT NOT NULL, verifier_role TEXT NOT NULL,
+ task_type TEXT NOT NULL, phase TEXT NOT NULL,
+ start_offset_hours INTEGER NOT NULL, due_offset_hours INTEGER NOT NULL,
+ duration_hours REAL NOT NULL, priority TEXT NOT NULL,
+ safety_critical INTEGER NOT NULL, required_inputs TEXT NOT NULL,
+ acceptance_criteria TEXT NOT NULL, required_evidence TEXT NOT NULL,
+ UNIQUE(operation_type,task_code), FOREIGN KEY(department_code) REFERENCES departments(code));
+CREATE TABLE IF NOT EXISTS operation_tasks(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ task_code TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
+ department_code TEXT NOT NULL, responsible_role TEXT NOT NULL,
+ assigned_person TEXT NOT NULL, accountable_role TEXT NOT NULL,
+ verifier_role TEXT NOT NULL, task_type TEXT NOT NULL, phase TEXT NOT NULL,
+ planned_start TEXT NOT NULL, due_at TEXT NOT NULL, duration_hours REAL NOT NULL,
+ priority TEXT NOT NULL, safety_critical INTEGER NOT NULL,
+ required_inputs TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+ required_evidence TEXT NOT NULL, status TEXT NOT NULL,
+ blocker TEXT NOT NULL, source_template TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(operation_id,task_code),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id),
+ FOREIGN KEY(department_code) REFERENCES departments(code));
+CREATE TABLE IF NOT EXISTS task_dependencies(
+ operation_id INTEGER NOT NULL, predecessor_code TEXT NOT NULL,
+ successor_code TEXT NOT NULL, dependency_type TEXT NOT NULL DEFAULT 'FINISH_TO_START',
+ PRIMARY KEY(operation_id,predecessor_code,successor_code),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS operation_milestones(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ milestone_code TEXT NOT NULL, name TEXT NOT NULL, scheduled_at TEXT NOT NULL,
+ owner_role TEXT NOT NULL, status TEXT NOT NULL, notes TEXT NOT NULL,
+ UNIQUE(operation_id,milestone_code),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
 """
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+DEPARTMENT_CATALOG = (
+    ("OPS", "Operations", "Integrated planning, command and coordination", "TD"),
+    ("SAFE", "Safety & Range", "Hazard controls, exclusion zone and stop authority", "RSO"),
+    ("PROP", "Propulsion", "Motor configuration, preparation and safing", "PROP"),
+    ("INST", "Instrumentation", "Sensors, calibration, acquisition and data quality", "INST"),
+    ("GND", "Ground Systems", "Test stand, power, firing circuit and site services", "GND"),
+    ("DATA", "Data & Video", "Cameras, recording, time sync and evidence custody", "DATA"),
+    ("AVN", "Avionics", "Flight computers, power and telemetry", "AVN"),
+    ("REC", "Recovery", "Recovery hardware, team and field response", "REC"),
+    ("CFG", "Configuration Management", "Released baselines and controlled changes", "CM"),
+)
+
+STATIC_FIRE_TASKS = (
+    ("CFG-010", "Freeze test configuration", "Verify article genealogy and release the configuration references used by every downstream team.", "CFG", "CM", "TD", "PROP", "DELIVERABLE", "CONFIGURATION", -240, -168, 4, "CRITICAL", 1, "Article identity; component genealogy", "Released baseline contains every mandatory reference and revision", "Released baseline SHA-256"),
+    ("PROP-020", "Complete motor build inspection", "Inspect case, nozzle, propellant grains, seals and igniter interface against the released build record.", "PROP", "PROP", "TD", "RSO", "PREPARATION", "ARTICLE", -168, -120, 3, "CRITICAL", 1, "Released article baseline; build traveller", "All components match serial/lot identity and inspection is accepted", "Signed build inspection and article photographs"),
+    ("INST-030", "Install and map instrumentation", "Install pressure, thrust, temperature and ignition-continuity channels and confirm physical-to-canonical mapping.", "INST", "INST", "TD", "PROP", "PREPARATION", "INSTRUMENTATION", -144, -96, 5, "HIGH", 1, "Channel map; device manifest; sensor data sheets", "Every mandatory measurement is mapped to the correct device and channel", "Installation checklist and channel map"),
+    ("INST-040", "Validate calibration and end-to-end chain", "Confirm calibration validity, engineering conversion, sample rate, time source and recorded end-to-end response.", "INST", "INST", "TD", "RSO", "VERIFICATION", "INSTRUMENTATION", -96, -72, 4, "CRITICAL", 1, "Installed channels; calibration certificates; limit profile", "All mandatory channels pass E2E test and calibration remains valid through T0", "E2E test record; calibration references; sample trace"),
+    ("DATA-050", "Commission cameras and evidence recording", "Frame mandatory views, verify signal, record test, time synchronisation and primary/backup storage.", "DATA", "DATA", "TD", "INST", "PREPARATION", "VIDEO", -96, -60, 4, "HIGH", 0, "Camera manifest; view plan; network allocation", "Mandatory views pass signal, record and sync tests with redundant storage", "Camera test clips; sync check; storage estimate"),
+    ("GND-060", "Verify stand and firing circuit", "Inspect test stand restraint, grounding, firing circuit isolation, emergency power removal and local controls.", "GND", "GND", "TD", "RSO", "VERIFICATION", "SITE", -72, -48, 4, "CRITICAL", 1, "Stand drawing; firing schematic; isolation procedure", "Stand is serviceable and firing circuit proves SAFE with hardware power inhibited", "Stand inspection; continuity/isolation test"),
+    ("SAFE-070", "Establish site safety controls", "Verify exclusion zone, access control, emergency response, firefighting equipment and stop-work communication.", "SAFE", "RSO", "TD", "GND", "VERIFICATION", "SITE", -72, -36, 3, "CRITICAL", 1, "Site plan; hazard controls; emergency contacts", "Exclusion zone and emergency controls are established and independently verified", "Signed site safety checklist and marked exclusion map"),
+    ("OPS-080", "Conduct Test Readiness Review", "Review configuration, staffing, procedure, instrumentation, video, site and safety evidence and disposition findings.", "OPS", "TD", "TD", "RSO", "GATE", "READINESS", -36, -24, 2, "CRITICAL", 1, "Accepted preparation evidence from all departments", "Every mandatory gate is GO and critical findings are closed", "Signed TRR decision and gate matrix"),
+    ("OPS-090", "Run integrated dry rehearsal", "Execute the approved sequence in simulation including communications, hold, abort, recording and safing paths.", "OPS", "TD", "TD", "RSO", "REHEARSAL", "REHEARSAL", -24, -12, 3, "CRITICAL", 1, "Approved procedure; approved readiness review", "All mandatory checkpoints pass and no retest anomaly remains open", "Rehearsal record; event log; anomaly disposition"),
+    ("OPS-100", "Issue day-of-test handover", "Confirm unchanged configuration, crew presence, evidence recording readiness and current site status before live release.", "OPS", "TD", "TD", "RSO", "MILESTONE", "EXECUTION", -2, -1, 1, "CRITICAL", 1, "Rehearsal record; current configuration fingerprints; crew poll", "TD, RSO and LCO independently authorize handover", "Execution release package"),
+)
+
+STATIC_FIRE_DEPENDENCIES = (
+    ("CFG-010", "PROP-020"), ("CFG-010", "INST-030"), ("PROP-020", "GND-060"),
+    ("INST-030", "INST-040"), ("INST-030", "DATA-050"), ("GND-060", "SAFE-070"),
+    ("INST-040", "OPS-080"), ("DATA-050", "OPS-080"), ("SAFE-070", "OPS-080"),
+    ("OPS-080", "OPS-090"), ("OPS-090", "OPS-100"),
+)
+
+
+def seed_planning_catalog(db: sqlite3.Connection) -> None:
+    for code, name, purpose, lead in DEPARTMENT_CATALOG:
+        db.execute("INSERT OR IGNORE INTO departments(code,name,purpose,lead_role,active) VALUES(?,?,?,?,1)", (code, name, purpose, lead))
+    for row in STATIC_FIRE_TASKS:
+        db.execute("""INSERT OR IGNORE INTO task_templates(operation_type,task_code,title,description,
+            department_code,responsible_role,accountable_role,verifier_role,task_type,phase,
+            start_offset_hours,due_offset_hours,duration_hours,priority,safety_critical,
+            required_inputs,acceptance_criteria,required_evidence) VALUES('STATIC_FIRE',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", row)
+
+
+def parse_t0(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def generate_operation_plan(db: sqlite3.Connection, operation_id: int, replace: bool = False) -> tuple[int, str | None]:
+    operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+    if not operation:
+        return 0, "operation not found"
+    t0 = parse_t0(operation["planned_start"])
+    if not t0:
+        return 0, "set PLANNED START in the Operation Brief before generating the preparation plan"
+    templates = db.execute("SELECT * FROM task_templates WHERE operation_type=? ORDER BY due_offset_hours", (operation["operation_type"],)).fetchall()
+    if not templates:
+        return 0, f"no controlled task template exists for {operation['operation_type']}"
+    staffing = db.execute("SELECT id FROM staffing_plans WHERE operation_id=?", (operation_id,)).fetchone()
+    people = {}
+    if staffing:
+        people = {x["role_code"]: x["person_name"] for x in db.execute(
+            "SELECT role_code,person_name FROM operation_role_assignments WHERE staffing_plan_id=?", (staffing["id"],))}
+    if replace:
+        db.execute("DELETE FROM task_dependencies WHERE operation_id=?", (operation_id,))
+        db.execute("DELETE FROM operation_tasks WHERE operation_id=?", (operation_id,))
+        db.execute("DELETE FROM operation_milestones WHERE operation_id=?", (operation_id,))
+    stamp = utc_now(); created = 0
+    for template in templates:
+        start = (t0 + timedelta(hours=template["start_offset_hours"])).isoformat(timespec="minutes")
+        due = (t0 + timedelta(hours=template["due_offset_hours"])).isoformat(timespec="minutes")
+        assigned = people.get(template["responsible_role"], "UNASSIGNED")
+        cursor = db.execute("""INSERT OR IGNORE INTO operation_tasks(operation_id,task_code,title,description,
+            department_code,responsible_role,assigned_person,accountable_role,verifier_role,task_type,phase,
+            planned_start,due_at,duration_hours,priority,safety_critical,required_inputs,acceptance_criteria,
+            required_evidence,status,blocker,source_template,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'NOT_STARTED','','CONTROLLED_TEMPLATE',?)""",
+            (operation_id, template["task_code"], template["title"], template["description"], template["department_code"],
+             template["responsible_role"], assigned, template["accountable_role"], template["verifier_role"],
+             template["task_type"], template["phase"], start, due, template["duration_hours"], template["priority"],
+             template["safety_critical"], template["required_inputs"], template["acceptance_criteria"],
+             template["required_evidence"], stamp))
+        created += cursor.rowcount
+    if operation["operation_type"] == "STATIC_FIRE":
+        for predecessor, successor in STATIC_FIRE_DEPENDENCIES:
+            db.execute("INSERT OR IGNORE INTO task_dependencies(operation_id,predecessor_code,successor_code) VALUES(?,?,?)", (operation_id, predecessor, successor))
+    for code, name, offset, owner in (("TRR", "Test Readiness Review", -24, "TD"), ("DRYRUN", "Integrated Dry Rehearsal", -12, "TD"), ("T0", "Operation Start", 0, "TD")):
+        scheduled = (t0 + timedelta(hours=offset)).isoformat(timespec="minutes")
+        db.execute("INSERT OR IGNORE INTO operation_milestones(operation_id,milestone_code,name,scheduled_at,owner_role,status,notes) VALUES(?,?,?,?,?,'PLANNED','Generated from T0')", (operation_id, code, name, scheduled, owner))
+    return created, None
+
+
+def seed_demo_planning(db: sqlite3.Connection) -> None:
+    demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
+    if not demo:
+        return
+    generate_operation_plan(db, demo["id"])
+    status_map = {"CFG-010":"ACCEPTED", "PROP-020":"ACCEPTED", "INST-030":"IN_PROGRESS", "INST-040":"NOT_STARTED", "DATA-050":"IN_PROGRESS"}
+    for code, status in status_map.items():
+        db.execute("UPDATE operation_tasks SET status=?,blocker=? WHERE operation_id=? AND task_code=?", (status, "Awaiting final channel installation" if code=="INST-030" else "", demo["id"], code))
 
 
 def seed_training_operation(db: sqlite3.Connection, mission_id: int, stamp: str) -> None:
@@ -350,6 +501,7 @@ def init_operations_db() -> None:
     stamp = utc_now()
     with connect() as db:
         db.executescript(SCHEMA)
+        seed_planning_catalog(db)
         mission = db.execute("SELECT id FROM missions WHERE code='QUALSRM-01'").fetchone()
         if not mission:
             cursor = db.execute("""INSERT INTO missions(code,name,mission_type,objectives,target_date,status,created_at,updated_at)
@@ -359,6 +511,7 @@ def init_operations_db() -> None:
         else:
             mission_id = mission["id"]
         seed_training_operation(db, mission_id, stamp)
+        seed_demo_planning(db)
         operation = db.execute("SELECT id FROM operation_registry WHERE code='QST-001'").fetchone()
         if not operation:
             cursor = db.execute("""INSERT INTO operation_registry(
@@ -455,6 +608,14 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
         item["post_review"]["objectives"] = [dict(x) for x in db.execute("SELECT * FROM objective_assessments WHERE review_id=? ORDER BY objective_code", (review_id,))]
         item["post_review"]["evidence_items"] = [dict(x) for x in db.execute("SELECT * FROM closeout_evidence_items WHERE review_id=? ORDER BY item_code", (review_id,))]
         item["post_review"]["corrective_actions"] = [dict(x) for x in db.execute("SELECT * FROM corrective_actions WHERE review_id=? ORDER BY severity DESC,action_code", (review_id,))]
+    item["planning_tasks"] = [dict(x) for x in db.execute("""SELECT t.*,d.name department_name
+        FROM operation_tasks t JOIN departments d ON d.code=t.department_code
+        WHERE t.operation_id=? ORDER BY t.due_at,t.task_code""", (operation_id,))]
+    item["planning_milestones"] = [dict(x) for x in db.execute(
+        "SELECT * FROM operation_milestones WHERE operation_id=? ORDER BY scheduled_at", (operation_id,))]
+    task_total = len(item["planning_tasks"])
+    task_accepted = sum(1 for x in item["planning_tasks"] if x["status"] == "ACCEPTED")
+    item["planning_progress"] = round(task_accepted / task_total * 100) if task_total else 0
     return item
 
 
@@ -571,6 +732,73 @@ def post_operation_review_builder(operation_id:int):
     with connect() as db:item=operation_view(db,operation_id)
     if not item:return "Operation not found",404
     return render_template("ops_review.html",operation=item,evidence_catalog=closeout_evidence_catalog(item["operation_type"]))
+
+
+@operations.get("/ops/<int:operation_id>/planning")
+def planning_workspace(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+        departments = [dict(x) for x in db.execute("SELECT * FROM departments WHERE active=1 ORDER BY name")]
+        dependencies = [dict(x) for x in db.execute(
+            "SELECT * FROM task_dependencies WHERE operation_id=? ORDER BY successor_code,predecessor_code", (operation_id,))]
+    if not item:
+        return "Operation not found", 404
+    dep_map: dict[str, list[str]] = {}
+    for dependency in dependencies:
+        dep_map.setdefault(dependency["successor_code"], []).append(dependency["predecessor_code"])
+    now = datetime.now(timezone.utc)
+    for task in item["planning_tasks"]:
+        due = parse_t0(task["due_at"])
+        task["is_overdue"] = bool(due and due < now and task["status"] not in {"ACCEPTED", "CANCELLED"})
+        task["dependencies"] = dep_map.get(task["task_code"], [])
+        task["t_minus"] = round((due - parse_t0(item["planned_start"])).total_seconds() / 3600) if due and parse_t0(item["planned_start"]) else None
+    return render_template("ops_planning.html", operation=item, departments=departments)
+
+
+@operations.post("/api/ops/<int:operation_id>/planning/generate")
+def generate_planning_workspace(operation_id: int):
+    p = request.get_json(silent=True) or {}
+    with connect() as db:
+        created, error = generate_operation_plan(db, operation_id, bool(p.get("replace")))
+        if error:
+            return jsonify(error=error), 409
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, utc_now(), "PLAN_GENERATED", "PLANNING CONTROL", f"Preparation plan generated; {created} controlled tasks created"))
+    return jsonify(ok=True, created=created, url=url_for("operations.planning_workspace", operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/planning/tasks/<task_code>")
+def update_planning_task(operation_id: int, task_code: str):
+    p = request.get_json(silent=True) or {}
+    status = str(p.get("status", "")).strip().upper()
+    assigned = str(p.get("assigned_person", "")).strip()
+    blocker = str(p.get("blocker", "")).strip()
+    if status not in {"NOT_STARTED", "IN_PROGRESS", "BLOCKED", "READY_FOR_REVIEW", "ACCEPTED", "CANCELLED"}:
+        return jsonify(error="select a valid controlled task status"), 400
+    if not assigned:
+        return jsonify(error="an assigned person is required"), 400
+    if status == "BLOCKED" and not blocker:
+        return jsonify(error="a blocked task requires a clear blocker description"), 400
+    stamp = utc_now()
+    with connect() as db:
+        task = db.execute("SELECT * FROM operation_tasks WHERE operation_id=? AND task_code=?", (operation_id, task_code)).fetchone()
+        if not task:
+            return jsonify(error="planning task not found"), 404
+        if status == "ACCEPTED" and task["safety_critical"] and task["verifier_role"] == task["responsible_role"]:
+            return jsonify(error="a safety-critical task requires an independent verifier role"), 409
+        dependencies = [x["predecessor_code"] for x in db.execute(
+            "SELECT predecessor_code FROM task_dependencies WHERE operation_id=? AND successor_code=?", (operation_id, task_code))]
+        if status in {"READY_FOR_REVIEW", "ACCEPTED"} and dependencies:
+            marks = ",".join("?" for _ in dependencies)
+            incomplete = [x["task_code"] for x in db.execute(
+                f"SELECT task_code FROM operation_tasks WHERE operation_id=? AND task_code IN ({marks}) AND status!='ACCEPTED'", (operation_id, *dependencies))]
+            if incomplete:
+                return jsonify(error="predecessor tasks must be accepted first: " + ", ".join(incomplete)), 409
+        db.execute("UPDATE operation_tasks SET assigned_person=?,status=?,blocker=?,updated_at=? WHERE operation_id=? AND task_code=?",
+                   (assigned, status, blocker if status == "BLOCKED" else "", stamp, operation_id, task_code))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "TASK_UPDATED", assigned, f"{task_code} changed to {status}"))
+    return jsonify(ok=True)
 
 
 def valid_code(value: str) -> bool:
