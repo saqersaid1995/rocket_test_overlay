@@ -12,6 +12,7 @@ from flask import Blueprint, jsonify, redirect, render_template, request, send_f
 from .control import OPERATION_ID, connect, init_control_db
 from .documents import ALLOWED_SCOPES, EXPORT_ROOT, create_package_files, safe_token, scoped_tasks, validate_export
 from .handbook import create_handbook_file, default_chapters, validate_handbook
+from .execution_packs import create_execution_pack, validate_execution_pack
 
 operations = Blueprint("operations", __name__)
 
@@ -365,6 +366,16 @@ CREATE TABLE IF NOT EXISTS handbook_revisions(
  mime_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
  validation_json TEXT NOT NULL, UNIQUE(operation_id,handbook_code,issue_sequence),
  FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS execution_pack_issues(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ pack_code TEXT NOT NULL, issue_sequence INTEGER NOT NULL, scope_kind TEXT NOT NULL,
+ scope_key TEXT NOT NULL, recipient_name TEXT NOT NULL, state TEXT NOT NULL,
+ issued_by TEXT NOT NULL, issued_at TEXT NOT NULL, superseded_at TEXT,
+ filename TEXT NOT NULL, storage_path TEXT NOT NULL, mime_type TEXT NOT NULL,
+ byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL, validation_json TEXT NOT NULL,
+ delivery_status TEXT NOT NULL, delivered_at TEXT, acknowledged_at TEXT,
+ acknowledged_by TEXT, acknowledgement_note TEXT NOT NULL,
+ UNIQUE(operation_id,pack_code,issue_sequence), FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
 CREATE TABLE IF NOT EXISTS operation_hazards(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
  hazard_code TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL,
@@ -1055,10 +1066,26 @@ def package_context(db: sqlite3.Connection, operation_id: int) -> tuple[dict | N
     return item, departments, assignments
 
 
+def execution_pack_scope(item: dict, departments: list[dict], assignments: list[dict], scope_kind: str, scope_key: str):
+    scope_kind, scope_key = scope_kind.upper(), scope_key.upper()
+    if scope_kind == "DEPARTMENT":
+        scope = next((x for x in departments if x["code"] == scope_key), None)
+        tasks = [x for x in item["planning_tasks"] if x["department_code"] == scope_key]
+        verification = []
+    elif scope_kind == "PERSON":
+        scope = next((x for x in assignments if x["role_code"] == scope_key), None)
+        tasks = [x for x in item["planning_tasks"] if x["responsible_role"] == scope_key]
+        verification = [x for x in item["planning_tasks"] if x["verifier_role"] == scope_key and x["responsible_role"] != scope_key]
+    else:
+        return None, [], []
+    return scope, tasks, verification
+
+
 @operations.get("/ops/<int:operation_id>/work-packages")
 def work_package_center(operation_id: int):
     with connect() as db:
         item, departments, assignments = package_context(db, operation_id)
+        issues = [dict(x) for x in db.execute("SELECT * FROM execution_pack_issues WHERE operation_id=? ORDER BY id DESC",(operation_id,))]
     if not item:
         return "Operation not found", 404
     department_packages = []
@@ -1073,7 +1100,7 @@ def work_package_center(operation_id: int):
         if tasks:
             people.append({**assignment, "tasks": tasks, "accepted": sum(x["status"] == "ACCEPTED" for x in tasks)})
     return render_template("ops_work_packages.html", operation=item, scope_kind="OVERVIEW",
-                           department_packages=department_packages, people=people, scoped_tasks=item["planning_tasks"])
+                           department_packages=department_packages, people=people, scoped_tasks=item["planning_tasks"], issues=issues)
 
 
 @operations.get("/ops/<int:operation_id>/work-packages/department/<department_code>")
@@ -1087,8 +1114,10 @@ def department_work_package(operation_id: int, department_code: str):
         return "Department not found", 404
     tasks = [x for x in item["planning_tasks"] if x["department_code"] == department["code"]]
     members = [x for x in assignments if any(t["responsible_role"] == x["role_code"] for t in tasks)]
+    with connect() as db: issues=[dict(x) for x in db.execute("SELECT * FROM execution_pack_issues WHERE operation_id=? AND scope_kind='DEPARTMENT' AND scope_key=? ORDER BY id DESC",(operation_id,department["code"]))]
     return render_template("ops_work_packages.html", operation=item, scope_kind="DEPARTMENT", scope=department,
-                           scoped_tasks=tasks, members=members, department_packages=[], people=[])
+                           scoped_tasks=tasks, members=members, department_packages=[], people=[], issues=issues,
+                           pack_validation=validate_execution_pack(item,"DEPARTMENT",department,tasks),release_validation=validate_execution_pack(item,"DEPARTMENT",department,tasks,True))
 
 
 @operations.get("/ops/<int:operation_id>/work-packages/person/<role_code>")
@@ -1102,8 +1131,61 @@ def person_work_package(operation_id: int, role_code: str):
         return "Assigned role not found", 404
     tasks = [x for x in item["planning_tasks"] if x["responsible_role"] == assignment["role_code"]]
     reviews = [x for x in item["planning_tasks"] if x["verifier_role"] == assignment["role_code"] and x["responsible_role"] != assignment["role_code"]]
+    with connect() as db: issues=[dict(x) for x in db.execute("SELECT * FROM execution_pack_issues WHERE operation_id=? AND scope_kind='PERSON' AND scope_key=? ORDER BY id DESC",(operation_id,assignment["role_code"]))]
     return render_template("ops_work_packages.html", operation=item, scope_kind="PERSON", scope=assignment,
-                           scoped_tasks=tasks, verification_queue=reviews, department_packages=[], people=[])
+                           scoped_tasks=tasks, verification_queue=reviews, department_packages=[], people=[], issues=issues,
+                           pack_validation=validate_execution_pack(item,"PERSON",assignment,tasks),release_validation=validate_execution_pack(item,"PERSON",assignment,tasks,True))
+
+
+@operations.post("/api/ops/<int:operation_id>/execution-packs/generate")
+def generate_execution_pack(operation_id:int):
+    p=request.get_json(silent=True) or {}; scope_kind=str(p.get("scope_kind","")).upper(); scope_key=str(p.get("scope_key","")).upper()
+    state=str(p.get("state","DRAFT")).upper(); actor=str(p.get("issued_by","DOCUMENT CONTROL")).strip() or "DOCUMENT CONTROL"
+    if state not in {"DRAFT","RELEASED"}:return jsonify(error="pack state must be DRAFT or RELEASED"),400
+    with connect() as db:
+        item,departments,assignments=package_context(db,operation_id)
+        if not item:return jsonify(error="operation not found"),404
+        scope,tasks,verification=execution_pack_scope(item,departments,assignments,scope_kind,scope_key)
+        if not scope:return jsonify(error="controlled recipient was not found"),404
+        validation=validate_execution_pack(item,scope_kind,scope,tasks,state=="RELEASED")
+        if validation["blockers"]:return jsonify(error="execution pack preflight failed",blockers=validation["blockers"],warnings=validation["warnings"]),409
+        pack_code=f"{item['code']}-{'DEPT' if scope_kind=='DEPARTMENT' else 'ROLE'}-{scope_key}-EP"
+        latest=db.execute("SELECT MAX(issue_sequence) n FROM execution_pack_issues WHERE operation_id=? AND pack_code=?",(operation_id,pack_code)).fetchone(); issue=int(latest["n"] or 0)+1; stamp=utc_now()
+        if state=="RELEASED":db.execute("UPDATE execution_pack_issues SET state='SUPERSEDED',superseded_at=? WHERE operation_id=? AND pack_code=? AND state='RELEASED'",(stamp,operation_id,pack_code))
+        recipient=scope.get("person_name") if scope_kind=="PERSON" else scope.get("name")
+        metadata={"pack_code":pack_code,"issue":issue,"state":state,"issued_by":actor,"issued_at":stamp}
+        directory=EXPORT_ROOT/safe_token(item["code"])/"EXECUTION-PACKS"/safe_token(pack_code)/f"I{issue:03d}"
+        try:file=create_execution_pack(directory,item,scope_kind,scope,tasks,verification,metadata)
+        except ImportError as exc:return jsonify(error=f"document dependency is missing: {exc.name}"),503
+        cur=db.execute("""INSERT INTO execution_pack_issues(operation_id,pack_code,issue_sequence,scope_kind,scope_key,recipient_name,state,issued_by,issued_at,
+            superseded_at,filename,storage_path,mime_type,byte_size,sha256,validation_json,delivery_status,delivered_at,acknowledged_at,acknowledged_by,acknowledgement_note)
+            VALUES(?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,'GENERATED',NULL,NULL,NULL,'')""",(operation_id,pack_code,issue,scope_kind,scope_key,recipient,state,actor,stamp,file["filename"],file["storage_path"],file["mime_type"],file["byte_size"],file["sha256"],json.dumps(validation)))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_PACK_GENERATED",actor,f"{state} {scope_kind} execution pack {pack_code} issue {issue} generated for {recipient}"))
+    return jsonify(ok=True,issue_id=cur.lastrowid,url=request.referrer or url_for("operations.work_package_center",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/execution-packs/<int:issue_id>/delivery")
+def update_execution_pack_delivery(operation_id:int,issue_id:int):
+    p=request.get_json(silent=True) or {}; action=str(p.get("action","")).upper(); actor=str(p.get("actor","")).strip(); note=str(p.get("note","")).strip(); stamp=utc_now()
+    if action not in {"DELIVER","ACKNOWLEDGE"} or not actor:return jsonify(error="delivery action and named actor are required"),400
+    with connect() as db:
+        issue=db.execute("SELECT * FROM execution_pack_issues WHERE id=? AND operation_id=?",(issue_id,operation_id)).fetchone()
+        if not issue:return jsonify(error="execution pack issue not found"),404
+        if issue["state"]!="RELEASED":return jsonify(error="only a RELEASED pack may enter controlled distribution"),409
+        if action=="ACKNOWLEDGE" and issue["delivery_status"] not in {"DELIVERED","ACKNOWLEDGED"}:return jsonify(error="pack must be delivered before acknowledgement"),409
+        if action=="DELIVER": db.execute("UPDATE execution_pack_issues SET delivery_status='DELIVERED',delivered_at=? WHERE id=?",(stamp,issue_id)); message=f"Pack {issue['pack_code']} delivered by {actor}"
+        else: db.execute("UPDATE execution_pack_issues SET delivery_status='ACKNOWLEDGED',acknowledged_at=?,acknowledged_by=?,acknowledgement_note=? WHERE id=?",(stamp,actor,note,issue_id)); message=f"Pack {issue['pack_code']} acknowledged by {actor}"
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,f"EXECUTION_PACK_{action}",actor,message))
+    return jsonify(ok=True,url=request.referrer or url_for("operations.work_package_center",operation_id=operation_id))
+
+
+@operations.get("/ops/<int:operation_id>/execution-packs/files/<int:issue_id>")
+def download_execution_pack(operation_id:int,issue_id:int):
+    with connect() as db: row=db.execute("SELECT * FROM execution_pack_issues WHERE id=? AND operation_id=?",(issue_id,operation_id)).fetchone()
+    if not row:return "Execution pack issue not found",404
+    path=Path(row["storage_path"]).resolve()
+    if EXPORT_ROOT.resolve() not in path.parents or not path.is_file():return "Controlled execution pack file is unavailable",404
+    return send_file(path,mimetype=row["mime_type"],as_attachment=True,download_name=row["filename"])
 
 
 @operations.get("/ops/<int:operation_id>/documents")

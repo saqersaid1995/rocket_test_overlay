@@ -84,16 +84,16 @@ class OperationWorkflowTests(unittest.TestCase):
             demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
         center = self.client.get(f"/ops/{demo['id']}/work-packages")
         self.assertEqual(center.status_code, 200)
-        self.assertIn(b"Department & Employee Work Packages", center.data)
+        self.assertIn(b"Targeted Execution Pack Control", center.data)
         self.assertIn(b"RACI / INDEPENDENT VERIFICATION MATRIX", center.data)
         self.assertIn(b"Nasser Al Rawahi", center.data)
         department = self.client.get(f"/ops/{demo['id']}/work-packages/department/INST")
         self.assertEqual(department.status_code, 200)
-        self.assertIn(b"Instrumentation Work Package", department.data)
+        self.assertIn(b"Instrumentation Execution Pack", department.data)
         self.assertIn(b"Instrumentation installation checklist", department.data)
         person = self.client.get(f"/ops/{demo['id']}/work-packages/person/INST")
         self.assertEqual(person.status_code, 200)
-        self.assertIn(b"Individual Assignment Package", person.data)
+        self.assertIn(b"Individual Execution Pack", person.data)
         self.assertIn(b"INDEPENDENT VERIFICATION QUEUE", person.data)
 
     def test_task_evidence_and_independent_review_issue_acceptance(self):
@@ -302,6 +302,25 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(len(revision["sha256"]),64)
         self.assertGreater(revision["byte_size"],1000)
         self.assertEqual(self.client.get(f"/ops/{operation_id}/handbook/files/{revision['id']}").status_code,200)
+
+    def test_targeted_execution_pack_issue_delivery_and_acknowledgement(self):
+        self.assertEqual(self.client.get("/ops").status_code,200)
+        with control_module.connect() as db:
+            operation_id=db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
+        page=self.client.get(f"/ops/{operation_id}/work-packages/person/PROP")
+        self.assertEqual(page.status_code,200);self.assertIn(b"Individual Execution Pack",page.data)
+        draft=self.client.post(f"/api/ops/{operation_id}/execution-packs/generate",json={"scope_kind":"PERSON","scope_key":"PROP","state":"DRAFT","issued_by":"Training Document Control"})
+        self.assertEqual(draft.status_code,200,draft.get_json())
+        released=self.client.post(f"/api/ops/{operation_id}/execution-packs/generate",json={"scope_kind":"PERSON","scope_key":"PROP","state":"RELEASED","issued_by":"Training Document Control"})
+        self.assertEqual(released.status_code,200,released.get_json())
+        issue_id=released.get_json()["issue_id"]
+        delivered=self.client.post(f"/api/ops/{operation_id}/execution-packs/{issue_id}/delivery",json={"action":"DELIVER","actor":"Training Document Control"})
+        self.assertEqual(delivered.status_code,200,delivered.get_json())
+        acknowledged=self.client.post(f"/api/ops/{operation_id}/execution-packs/{issue_id}/delivery",json={"action":"ACKNOWLEDGE","actor":"Maha Al Hinai","note":"Brief reviewed"})
+        self.assertEqual(acknowledged.status_code,200,acknowledged.get_json())
+        with control_module.connect() as db: issue=db.execute("SELECT * FROM execution_pack_issues WHERE id=?",(issue_id,)).fetchone()
+        self.assertEqual(issue["delivery_status"],"ACKNOWLEDGED");self.assertEqual(issue["acknowledged_by"],"Maha Al Hinai");self.assertEqual(len(issue["sha256"]),64)
+        self.assertEqual(self.client.get(f"/ops/{operation_id}/execution-packs/files/{issue_id}").status_code,200)
 
     def prepare_team_stage(self, code="QTEAM-010"):
         operation_id = self.prepare_identified_article(code)

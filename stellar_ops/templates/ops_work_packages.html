@@ -4,7 +4,7 @@
 <main class="packages-shell" data-operation-id="{{operation.id}}">
   <header class="packages-title">
     <div><small>CONTROLLED WORK DISTRIBUTION / PHASE 2</small>
-      <h1>{% if scope_kind=='OVERVIEW' %}Department & Employee Work Packages{% elif scope_kind=='DEPARTMENT' %}{{scope.name}} Work Package{% else %}Individual Assignment Package{% endif %}</h1>
+      <h1>{% if scope_kind=='OVERVIEW' %}Targeted Execution Pack Control{% elif scope_kind=='DEPARTMENT' %}{{scope.name}} Execution Pack{% else %}Individual Execution Pack{% endif %}</h1>
       <p>{{operation.code}} · {{operation.title}}</p>
     </div>
     <nav><a href="/ops/{{operation.id}}">OPERATION</a><a href="/ops/{{operation.id}}/planning">MASTER PLAN</a><a href="/ops/{{operation.id}}/documents">DOCUMENT EXPORTS</a>{% if scope_kind!='OVERVIEW' %}<a href="/ops/{{operation.id}}/work-packages">ALL PACKAGES</a>{% endif %}</nav>
@@ -40,11 +40,18 @@
       {% for task in scoped_tasks %}<tr><td><code>{{task.task_code}}</code><b>{{task.title}}</b></td><td>{{task.department_code}}</td><td><span class="r">R</span>{{task.responsible_role}}</td><td>{{task.assigned_person}}</td><td><span class="a">A</span>{{task.accountable_role}}</td><td><span class="c">C</span>{{task.consulted_roles|join(' · ') or '—'}}</td><td><span class="i">I</span>{{task.informed_roles|join(' · ') or '—'}}</td><td><span class="v">V</span>{{task.verifier_role}}</td><td>{{task.verified_evidence_count}} VERIFIED</td><td><em class="state {{task.status.lower()}}">{{task.status.replace('_',' ')}}</em></td></tr>{% endfor %}
     </tbody></table>
   </section>
+  <section class="distribution-register"><header><div><b>CONTROLLED DISTRIBUTION REGISTER</b><small>ISSUE · DELIVERY · ACKNOWLEDGEMENT · CUSTODY</small></div><span>{{issues|length}} ISSUES</span></header>
+    <table><thead><tr><th>PACK</th><th>RECIPIENT</th><th>SCOPE</th><th>ISSUE</th><th>STATE</th><th>DISTRIBUTION</th><th>SHA-256</th><th>FILE</th></tr></thead><tbody>{% for x in issues %}<tr><td><b>{{x.pack_code}}</b><small>{{x.issued_at}}</small></td><td>{{x.recipient_name}}</td><td>{{x.scope_kind}} · {{x.scope_key}}</td><td>I{{'%03d'|format(x.issue_sequence)}}</td><td><em class="state {{x.state|lower}}">{{x.state}}</em></td><td><b>{{x.delivery_status}}</b><small>{{x.acknowledged_by or x.delivered_at or 'NOT DISTRIBUTED'}}</small></td><td><code>{{x.sha256[:16]}}…</code></td><td><a href="/ops/{{operation.id}}/execution-packs/files/{{x.id}}">DOWNLOAD PDF</a></td></tr>{% else %}<tr><td colspan="8" class="empty">No targeted pack has been issued. Open a department or individual package to generate one.</td></tr>{% endfor %}</tbody></table>
+  </section>
   {% else %}
   <section class="scope-identity">
     {% if scope_kind=='DEPARTMENT' %}<span>{{scope.code}}</span><div><small>DEPARTMENT PURPOSE</small><h2>{{scope.name}}</h2><p>{{scope.purpose}}</p></div><aside><small>LEAD ROLE</small><b>{{scope.lead_role}}</b><small>ASSIGNED MEMBERS</small><b>{{members|length}}</b></aside>
     {% else %}<span>{{scope.role_code}}</span><div><small>ASSIGNED PERSON</small><h2>{{scope.person_name}}</h2><p>{{scope.organization}} · {{scope.contact_method}}</p></div><aside><small>CALL SIGN</small><b>{{scope.call_sign}}</b><small>QUALIFICATION</small><b>{{scope.qualification_status}}</b></aside>{% endif %}
   </section>
+
+  <section class="issue-control" data-scope-kind="{{scope_kind}}" data-scope-key="{{scope.code if scope_kind=='DEPARTMENT' else scope.role_code}}"><div><small>EXECUTION PACK PREFLIGHT</small><h3>{{'RELEASE READY' if release_validation.release_ready else 'DRAFT ONLY'}}</h3><p>{{pack_validation.summary.tasks}} assigned tasks · {{pack_validation.summary.safety_critical}} safety-critical · {{pack_validation.summary.evidence}} evidence records</p></div><aside>{% for x in release_validation.blockers %}<p>× {{x}}</p>{% else %}<p class="pass">✓ No controlled-release blockers.</p>{% endfor %}</aside><label>ISSUED BY<input id="pack-issued-by" value="DOCUMENT CONTROL"></label><button id="generate-draft-pack">GENERATE DRAFT</button><button id="generate-release-pack" {% if not release_validation.release_ready %}disabled{% endif %}>ISSUE RELEASED PACK</button></section>
+
+  {% if issues %}<section class="distribution-register scoped"><header><div><b>RECIPIENT ISSUE HISTORY</b><small>CONTROLLED HANDOFF AND ACKNOWLEDGEMENT</small></div></header><table><thead><tr><th>ISSUE</th><th>STATE</th><th>ISSUED</th><th>DISTRIBUTION</th><th>CUSTODY ACTION</th><th>FILE</th></tr></thead><tbody>{% for x in issues %}<tr data-issue-id="{{x.id}}"><td>I{{'%03d'|format(x.issue_sequence)}}</td><td>{{x.state}}</td><td>{{x.issued_at}}<small>{{x.issued_by}}</small></td><td>{{x.delivery_status}}<small>{{x.acknowledged_by or ''}}</small></td><td>{% if x.state=='RELEASED' and x.delivery_status=='GENERATED' %}<button class="mark-delivered">MARK DELIVERED</button>{% elif x.state=='RELEASED' and x.delivery_status=='DELIVERED' %}<button class="ack-pack">RECORD ACKNOWLEDGEMENT</button>{% else %}—{% endif %}</td><td><a href="/ops/{{operation.id}}/execution-packs/files/{{x.id}}">PDF</a></td></tr>{% endfor %}</tbody></table></section>{% endif %}
 
   {% if scope_kind=='PERSON' %}<section class="personal-brief"><article><small>YOUR RESPONSIBILITY</small><p>Complete assigned work exactly against the controlled inputs and acceptance criteria. Supply traceable evidence before requesting review.</p></article><article><small>YOUR AUTHORITY</small><p>{{'Operational decision authority is assigned to this role.' if scope.decision_authority else 'This role provides technical execution and recommendation; final authority remains with the accountable role.'}}</p></article><article><small>ESCALATION</small><p>Use BLOCKED when work cannot proceed. State the exact cause; do not bypass dependencies or substitute uncontrolled evidence.</p></article></section>{% endif %}
 
@@ -56,6 +63,6 @@
     {% for task in verification_queue %}{% include 'partials/work_package_task.html' %}{% else %}<div class="empty">No tasks currently require this role's independent verification.</div>{% endfor %}
   </section>{% endif %}
   {% endif %}
-  <footer class="packages-footer"><span id="package-message"></span><p>All acceptance decisions and evidence changes are appended to the operation activity record.</p></footer>
+  <footer class="packages-footer"><span id="package-message"></span><p>All issues, delivery events, acknowledgements, acceptance decisions and evidence changes are appended to the operation activity record.</p></footer>
 </main>
 {% endblock %}{% block scripts %}<script src="{{url_for('static',filename='work_packages.js')}}"></script>{% endblock %}
