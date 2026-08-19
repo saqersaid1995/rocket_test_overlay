@@ -40,7 +40,7 @@ class OperationWorkflowTests(unittest.TestCase):
         detail = self.client.get(f"/ops/{demo['id']}")
         self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
         for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
-                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents", "handbook", "briefing"):
+                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents", "handbook", "briefing", "changes"):
             response = self.client.get(f"/ops/{demo['id']}/{page}")
             self.assertEqual(response.status_code, 200, page)
         planning = self.client.get(f"/ops/{demo['id']}/planning")
@@ -889,6 +889,63 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(review["state"], "CLOSED")
         self.assertEqual(section["status"], "COMPLETE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 409)
+
+    def test_operational_change_controls_approval_invalidation_and_verification(self):
+        self.assertEqual(self.client.get("/ops").status_code, 200)
+        with control_module.connect() as db:
+            operation_id = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
+            # A released runtime must first be returned to controlled planning.
+            db.execute("UPDATE execution_releases SET state='DRAFT',release_sha256=NULL,released_at=NULL WHERE operation_id=?", (operation_id,))
+
+        created = self.client.post(f"/api/ops/{operation_id}/changes", json={
+            "change_code": "CR-WX-001", "change_type": "CHANGE", "category": "WEATHER",
+            "severity": "MAJOR", "title": "Revised wind operating constraint",
+            "description": "Apply a revised wind limit to the planned operation window.",
+            "reason": "Updated site forecast and range assessment.",
+            "proposed_solution": "Revalidate readiness, briefing and execution release against the revised limit.",
+            "requested_by": "Range Coordinator", "owner_role": "TD", "due_at": "2026-09-14T12:00",
+            "implementation_plan": "Invalidate affected approvals and update their controlled evidence.",
+            "verification_plan": "Independent review of each regenerated controlled record.",
+            "impacts": []})
+        self.assertEqual(created.status_code, 200)
+        change_id = created.get_json()["id"]
+        with control_module.connect() as db:
+            domains = {row["domain_key"] for row in db.execute("SELECT domain_key FROM change_impacts WHERE change_id=?", (change_id,))}
+        self.assertEqual(domains, {"READINESS", "BRIEFING", "EXECUTION"})
+
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/changes/{change_id}/submit").status_code, 200)
+        decisions = (("TD", "Aisha Al Harthy"), ("RSO", "Omar Al Balushi"), ("CM", "Training Configuration Manager"))
+        for role, person in decisions:
+            response = self.client.post(f"/api/ops/{operation_id}/changes/{change_id}/approve", json={
+                "role_code": role, "person_name": person, "decision": "APPROVED",
+                "rationale": f"{role} accepts the controlled impact and verification plan."})
+            self.assertEqual(response.status_code, 200, role)
+        self.assertEqual(response.get_json()["state"], "APPROVED")
+
+        implemented = self.client.post(f"/api/ops/{operation_id}/changes/{change_id}/implement", json={"implemented_by": "Aisha Al Harthy"})
+        self.assertEqual(implemented.status_code, 200)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/changes/{change_id}/close", json={"closed_by": "Aisha Al Harthy"}).status_code, 409)
+        briefing = self.client.get(f"/ops/{operation_id}/briefing")
+        self.assertIn(b"CR-WX-001", briefing.data)
+        with control_module.connect() as db:
+            operation = db.execute("SELECT current_stage,status FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+            readiness = db.execute("SELECT state,final_decision FROM readiness_reviews WHERE operation_id=?", (operation_id,)).fetchone()
+            briefing_row = db.execute("SELECT state,canonical_sha256 FROM operation_briefings WHERE operation_id=?", (operation_id,)).fetchone()
+        self.assertEqual((operation["current_stage"], operation["status"]), ("READINESS", "CONTROLLED CHANGE REWORK"))
+        self.assertEqual((readiness["state"], readiness["final_decision"]), ("DRAFT", "PENDING"))
+        self.assertEqual(briefing_row["state"], "DRAFT")
+        self.assertIsNone(briefing_row["canonical_sha256"])
+
+        for domain in sorted(domains):
+            verified = self.client.post(f"/api/ops/{operation_id}/changes/{change_id}/verify", json={
+                "domain_key": domain, "status": "VERIFIED", "verified_by": "Independent Reviewer",
+                "notes": f"Regenerated {domain} record checked against CR-WX-001."})
+            self.assertEqual(verified.status_code, 200, domain)
+        closed = self.client.post(f"/api/ops/{operation_id}/changes/{change_id}/close", json={"closed_by": "Aisha Al Harthy"})
+        self.assertEqual(closed.status_code, 200)
+        with control_module.connect() as db:
+            state = db.execute("SELECT state FROM operation_changes WHERE id=?", (change_id,)).fetchone()["state"]
+        self.assertEqual(state, "CLOSED")
 
 
 if __name__ == "__main__":

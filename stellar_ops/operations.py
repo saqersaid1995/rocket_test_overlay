@@ -398,6 +398,27 @@ CREATE TABLE IF NOT EXISTS briefing_attendance(
  concern_status TEXT NOT NULL, concern TEXT NOT NULL,
  signed_at TEXT, signed_by TEXT, updated_at TEXT NOT NULL,
  UNIQUE(briefing_id,role_code), FOREIGN KEY(briefing_id) REFERENCES operation_briefings(id));
+CREATE TABLE IF NOT EXISTS operation_changes(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ change_code TEXT NOT NULL, change_type TEXT NOT NULL, category TEXT NOT NULL,
+ severity TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
+ reason TEXT NOT NULL, proposed_solution TEXT NOT NULL, temporary INTEGER NOT NULL,
+ requested_by TEXT NOT NULL, owner_role TEXT NOT NULL, state TEXT NOT NULL,
+ implementation_plan TEXT NOT NULL, verification_plan TEXT NOT NULL,
+ due_at TEXT NOT NULL, canonical_sha256 TEXT, created_at TEXT NOT NULL,
+ submitted_at TEXT, approved_at TEXT, implemented_at TEXT, closed_at TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(operation_id,change_code), FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS change_impacts(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, change_id INTEGER NOT NULL,
+ domain_key TEXT NOT NULL, impact_level TEXT NOT NULL, affected_reference TEXT NOT NULL,
+ disposition TEXT NOT NULL, reapproval_required INTEGER NOT NULL,
+ status TEXT NOT NULL, verified_by TEXT, verified_at TEXT, notes TEXT NOT NULL,
+ UNIQUE(change_id,domain_key), FOREIGN KEY(change_id) REFERENCES operation_changes(id));
+CREATE TABLE IF NOT EXISTS change_approvals(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, change_id INTEGER NOT NULL,
+ role_code TEXT NOT NULL, required INTEGER NOT NULL, decision TEXT NOT NULL,
+ person_name TEXT NOT NULL, rationale TEXT NOT NULL, decided_at TEXT,
+ UNIQUE(change_id,role_code), FOREIGN KEY(change_id) REFERENCES operation_changes(id));
 CREATE TABLE IF NOT EXISTS operation_hazards(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
  hazard_code TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL,
@@ -1218,6 +1239,185 @@ BRIEFING_TOPICS = (
     ("COMMUNICATIONS","Primary and backup net communications check","LCO"),("SAFING","Post-operation safing and site release","PROP"),
 )
 
+CHANGE_CATEGORIES={
+    "CONFIGURATION":{"label":"Vehicle / Motor Configuration","impacts":["BASELINE","PROCEDURE","INSTRUMENTATION","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION"]},
+    "PROCEDURE":{"label":"Controlled Procedure","impacts":["PROCEDURE","SAFETY","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION"]},
+    "SAFETY":{"label":"Safety / Hazard Control","impacts":["SAFETY","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION"]},
+    "INSTRUMENTATION":{"label":"Instrumentation / Limits","impacts":["INSTRUMENTATION","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION"]},
+    "VIDEO":{"label":"Video / Recording","impacts":["VIDEO","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION"]},
+    "STAFFING":{"label":"Crew / Authority","impacts":["STAFFING","READINESS","REHEARSAL","PACKS","BRIEFING","EXECUTION"]},
+    "SITE":{"label":"Site / Range","impacts":["SAFETY","READINESS","REHEARSAL","BRIEFING","EXECUTION"]},
+    "WEATHER":{"label":"Weather / Environment","impacts":["READINESS","BRIEFING","EXECUTION"]},
+    "SCHEDULE":{"label":"Schedule / Window","impacts":["READINESS","PACKS","BRIEFING","EXECUTION"]},
+    "SOFTWARE":{"label":"Software / Firmware","impacts":["BASELINE","INSTRUMENTATION","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION"]},
+}
+CHANGE_DOMAINS=("BASELINE","STAFFING","PROCEDURE","SAFETY","INSTRUMENTATION","VIDEO","READINESS","REHEARSAL","HANDBOOK","PACKS","BRIEFING","EXECUTION")
+
+
+def required_change_approvals(change:dict)->set[str]:
+    roles={change.get("owner_role") or "TD"}
+    if change.get("severity") in {"MAJOR","CRITICAL"}:roles|={"TD","CM"}
+    if change.get("severity")=="CRITICAL" or change.get("category") in {"SAFETY","SITE","WEATHER"} or change.get("change_type")=="WAIVER":roles.add("RSO")
+    return roles
+
+
+def change_view(db:sqlite3.Connection,operation_id:int):
+    rows=[dict(x) for x in db.execute("SELECT * FROM operation_changes WHERE operation_id=? ORDER BY id DESC",(operation_id,))]
+    for change in rows:
+        change["impacts"]=[dict(x) for x in db.execute("SELECT * FROM change_impacts WHERE change_id=? ORDER BY domain_key",(change["id"],))]
+        change["approvals"]=[dict(x) for x in db.execute("SELECT * FROM change_approvals WHERE change_id=? ORDER BY role_code",(change["id"],))]
+    return rows
+
+
+def open_change_findings(changes:list[dict])->list[str]:
+    # IMPLEMENTED is intentionally still open: every impacted domain must be
+    # independently verified before the change may stop blocking operations.
+    return [f"{x['change_code']} / {x['title']}: {x['state']}" for x in changes if x["state"] not in {"CLOSED","REJECTED","CANCELLED"}]
+
+
+@operations.get("/ops/<int:operation_id>/changes")
+def change_control_board(operation_id:int):
+    with connect() as db:item=operation_view(db,operation_id);changes=change_view(db,operation_id) if item else []
+    if not item:return "Operation not found",404
+    return render_template("ops_changes.html",operation=item,changes=changes,categories=CHANGE_CATEGORIES,domains=CHANGE_DOMAINS,open_findings=open_change_findings(changes))
+
+
+@operations.post("/api/ops/<int:operation_id>/changes")
+def save_operation_change(operation_id:int):
+    p=request.get_json(silent=True) or {};stamp=utc_now();change_id=p.get("id")
+    fields={k:str(p.get(k,"")).strip() for k in ("change_code","change_type","category","severity","title","description","reason","proposed_solution","requested_by","owner_role","implementation_plan","verification_plan","due_at")}
+    fields["change_code"]=fields["change_code"].upper();fields["change_type"]=fields["change_type"].upper();fields["category"]=fields["category"].upper();fields["severity"]=fields["severity"].upper();fields["owner_role"]=fields["owner_role"].upper()
+    if not valid_code(fields["change_code"]) or fields["change_type"] not in {"CHANGE","DEVIATION","WAIVER"} or fields["category"] not in CHANGE_CATEGORIES or fields["severity"] not in {"MINOR","MAJOR","CRITICAL"}:return jsonify(error="valid change identity, type, category and severity are required"),400
+    if any(not fields[k] for k in ("title","description","reason","proposed_solution","requested_by","owner_role","due_at")):return jsonify(error="title, description, reason, solution, requester, owner and due date are required"),400
+    requested={str(x).upper() for x in p.get("impacts",[]) if str(x).upper() in CHANGE_DOMAINS};required=set(CHANGE_CATEGORIES[fields["category"]]["impacts"]);impacts=required|requested
+    with connect() as db:
+        operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
+        if not operation:return jsonify(error="operation not found"),404
+        existing=db.execute("SELECT * FROM operation_changes WHERE id=? AND operation_id=?",(change_id,operation_id)).fetchone() if change_id else None
+        if existing and existing["state"]!="DRAFT":return jsonify(error="only a DRAFT change may be edited"),409
+        try:
+            values=(fields["change_code"],fields["change_type"],fields["category"],fields["severity"],fields["title"],fields["description"],fields["reason"],fields["proposed_solution"],1 if p.get("temporary") else 0,fields["requested_by"],fields["owner_role"],fields["implementation_plan"],fields["verification_plan"],fields["due_at"])
+            if existing:
+                db.execute("""UPDATE operation_changes SET change_code=?,change_type=?,category=?,severity=?,title=?,description=?,reason=?,proposed_solution=?,temporary=?,requested_by=?,owner_role=?,implementation_plan=?,verification_plan=?,due_at=?,updated_at=? WHERE id=?""",(*values,stamp,existing["id"]));cid=existing["id"]
+            else:
+                cur=db.execute("""INSERT INTO operation_changes(operation_id,change_code,change_type,category,severity,title,description,reason,proposed_solution,temporary,requested_by,owner_role,state,implementation_plan,verification_plan,due_at,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?,?,?,?,?)""",(operation_id,*values,stamp,stamp));cid=cur.lastrowid
+        except sqlite3.IntegrityError:return jsonify(error="change code already exists for this operation"),409
+        db.execute("DELETE FROM change_impacts WHERE change_id=?",(cid,))
+        for domain in sorted(impacts):db.execute("INSERT INTO change_impacts(change_id,domain_key,impact_level,affected_reference,disposition,reapproval_required,status,notes) VALUES(?,?,?,?,?,1,'PENDING','')",(cid,domain,fields["severity"],str((p.get("impact_details") or {}).get(domain,{}).get("reference","")).strip(),str((p.get("impact_details") or {}).get(domain,{}).get("disposition","Reassess and reapprove affected controlled record")).strip()))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"CHANGE_DRAFT_SAVED",fields["requested_by"],f"{fields['change_type']} {fields['change_code']} saved with {len(impacts)} impacted domains"))
+    return jsonify(ok=True,id=cid,url=url_for("operations.change_control_board",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/changes/<int:change_id>/submit")
+def submit_operation_change(operation_id:int,change_id:int):
+    stamp=utc_now()
+    with connect() as db:
+        change=db.execute("SELECT * FROM operation_changes WHERE id=? AND operation_id=?",(change_id,operation_id)).fetchone()
+        if not change:return jsonify(error="change record not found"),404
+        if change["state"]!="DRAFT":return jsonify(error="only a DRAFT change may be submitted"),409
+        impacts=db.execute("SELECT * FROM change_impacts WHERE change_id=?",(change_id,)).fetchall()
+        if not impacts:return jsonify(error="impact analysis is required"),409
+        if change["severity"] in {"MAJOR","CRITICAL"} and (not change["implementation_plan"] or not change["verification_plan"]):return jsonify(error="major and critical changes require implementation and verification plans"),409
+        db.execute("DELETE FROM change_approvals WHERE change_id=?",(change_id,))
+        for role in sorted(required_change_approvals(dict(change))):db.execute("INSERT INTO change_approvals(change_id,role_code,required,decision,person_name,rationale) VALUES(?,?,1,'PENDING','','')",(change_id,role))
+        db.execute("UPDATE operation_changes SET state='APPROVAL_PENDING',submitted_at=?,updated_at=? WHERE id=?",(stamp,stamp,change_id))
+    return jsonify(ok=True,url=url_for("operations.change_control_board",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/changes/<int:change_id>/approve")
+def approve_operation_change(operation_id:int,change_id:int):
+    p=request.get_json(silent=True) or {};role=str(p.get("role_code","")).upper();person=str(p.get("person_name","")).strip();decision=str(p.get("decision","")).upper();rationale=str(p.get("rationale","")).strip();stamp=utc_now()
+    if decision not in {"APPROVED","REJECTED"} or not person or not rationale:return jsonify(error="role, named approver, decision and rationale are required"),400
+    with connect() as db:
+        change=db.execute("SELECT * FROM operation_changes WHERE id=? AND operation_id=?",(change_id,operation_id)).fetchone();approval=db.execute("SELECT * FROM change_approvals WHERE change_id=? AND role_code=?",(change_id,role)).fetchone()
+        if not change or not approval:return jsonify(error="required approval assignment not found"),404
+        if change["state"]!="APPROVAL_PENDING":return jsonify(error="change is not awaiting approval"),409
+        staffing=db.execute("""SELECT a.person_name FROM operation_role_assignments a JOIN staffing_plans s ON s.id=a.staffing_plan_id WHERE s.operation_id=? AND a.role_code=?""",(operation_id,role)).fetchone()
+        if staffing and staffing["person_name"]!=person:return jsonify(error=f"{role} approver does not match approved staffing assignment"),409
+        db.execute("UPDATE change_approvals SET decision=?,person_name=?,rationale=?,decided_at=? WHERE id=?",(decision,person,rationale,stamp,approval["id"]))
+        approvals=[dict(x) for x in db.execute("SELECT * FROM change_approvals WHERE change_id=?",(change_id,))]
+        state="REJECTED" if any(x["decision"]=="REJECTED" for x in approvals) else ("APPROVED" if all(x["decision"]=="APPROVED" for x in approvals) else "APPROVAL_PENDING")
+        digest=None
+        if state=="APPROVED":digest=hashlib.sha256(json.dumps({"change":dict(change),"impacts":[dict(x) for x in db.execute("SELECT * FROM change_impacts WHERE change_id=?",(change_id,))],"approvals":approvals},sort_keys=True,default=str).encode()).hexdigest()
+        db.execute("UPDATE operation_changes SET state=?,canonical_sha256=?,approved_at=?,updated_at=? WHERE id=?",(state,digest,stamp if state=="APPROVED" else None,stamp,change_id))
+    return jsonify(ok=True,state=state,url=url_for("operations.change_control_board",operation_id=operation_id))
+
+
+def apply_change_invalidations(db:sqlite3.Connection,operation_id:int,domains:set[str],stamp:str):
+    release=db.execute("SELECT state FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()
+    if release and release["state"] in {"RELEASED","CLOSED"}:raise ValueError("LIVE or closed execution cannot be invalidated by an in-place change; place the operation in a controlled stop/closure first")
+    if "BASELINE" in domains:db.execute("UPDATE configuration_baselines SET state='DRAFT',canonical_sha256=NULL,released_at=NULL,released_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "STAFFING" in domains:db.execute("UPDATE staffing_plans SET state='DRAFT',approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "PROCEDURE" in domains:db.execute("UPDATE operation_procedures SET state='DRAFT',canonical_sha256=NULL,approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "SAFETY" in domains:db.execute("UPDATE operation_safety_cases SET state='DRAFT',canonical_sha256=NULL,approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "INSTRUMENTATION" in domains:db.execute("UPDATE instrumentation_plans SET state='DRAFT',canonical_sha256=NULL,approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "VIDEO" in domains:db.execute("UPDATE video_recording_plans SET state='DRAFT',canonical_sha256=NULL,approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "READINESS" in domains:db.execute("UPDATE readiness_reviews SET state='DRAFT',final_decision='PENDING',decision_rationale='',canonical_sha256=NULL,approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "REHEARSAL" in domains:db.execute("UPDATE rehearsal_campaigns SET state='DRAFT',result='PENDING',canonical_sha256=NULL,completed_at=NULL,completed_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id))
+    if "HANDBOOK" in domains:
+        db.execute("UPDATE handbook_configurations SET state='DRAFT',approved_by=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id));db.execute("UPDATE handbook_revisions SET state='SUPERSEDED',superseded_at=? WHERE operation_id=? AND state='RELEASED'",(stamp,operation_id))
+    if "PACKS" in domains:db.execute("UPDATE execution_pack_issues SET state='SUPERSEDED',superseded_at=?,delivery_status='SUPERSEDED' WHERE operation_id=? AND state='RELEASED'",(stamp,operation_id))
+    if "BRIEFING" in domains:
+        briefing=db.execute("SELECT id FROM operation_briefings WHERE operation_id=?",(operation_id,)).fetchone()
+        db.execute("UPDATE operation_briefings SET state='DRAFT',canonical_sha256=NULL,closed_at=NULL,closed_by=NULL,change_summary='CHANGE IMPLEMENTED - REBRIEF REQUIRED',updated_at=? WHERE operation_id=?",(stamp,operation_id))
+        if briefing:
+            db.execute("UPDATE briefing_topics SET status='PENDING',updated_at=? WHERE briefing_id=?",(stamp,briefing["id"]));db.execute("UPDATE briefing_attendance SET signed_at=NULL,signed_by=NULL,updated_at=? WHERE briefing_id=?",(stamp,briefing["id"]))
+    if "EXECUTION" in domains and release:
+        db.execute("UPDATE execution_releases SET state='DRAFT',release_sha256=NULL,released_at=NULL,updated_at=? WHERE operation_id=?",(stamp,operation_id));rid=db.execute("SELECT id FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone();
+        if rid:db.execute("DELETE FROM execution_authorizations WHERE release_id=?",(rid["id"],))
+    domain_stage={"BASELINE":"BASELINE","STAFFING":"TEAM","PROCEDURE":"PROCEDURE","SAFETY":"PROCEDURE","INSTRUMENTATION":"INSTRUMENTATION","VIDEO":"VIDEO","READINESS":"READINESS","REHEARSAL":"REHEARSAL","EXECUTION":"EXECUTION"}
+    candidates=[domain_stage[x] for x in domains if x in domain_stage]
+    if candidates:
+        rank={"BASELINE":0,"TEAM":1,"PROCEDURE":2,"INSTRUMENTATION":3,"VIDEO":4,"READINESS":5,"REHEARSAL":6,"EXECUTION":7};stage=min(candidates,key=lambda x:rank[x])
+        target=db.execute("SELECT sequence FROM operation_workflow_sections WHERE operation_id=? AND section_key=?",(operation_id,stage)).fetchone()
+        if target:
+            db.execute("UPDATE operation_workflow_sections SET status=CASE WHEN sequence<? THEN 'COMPLETE' WHEN sequence=? THEN 'ACTIVE' ELSE 'LOCKED' END,updated_at=? WHERE operation_id=?",(target["sequence"],target["sequence"],stamp,operation_id))
+        db.execute("UPDATE operation_registry SET current_stage=?,status='CONTROLLED CHANGE REWORK',updated_at=? WHERE id=?",(stage,stamp,operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/changes/<int:change_id>/implement")
+def implement_operation_change(operation_id:int,change_id:int):
+    p=request.get_json(silent=True) or {};actor=str(p.get("implemented_by","")).strip();stamp=utc_now()
+    if not actor:return jsonify(error="named implementer is required"),400
+    with connect() as db:
+        change=db.execute("SELECT * FROM operation_changes WHERE id=? AND operation_id=?",(change_id,operation_id)).fetchone()
+        if not change:return jsonify(error="change record not found"),404
+        if change["state"]!="APPROVED":return jsonify(error="only an APPROVED change may be implemented"),409
+        impacts=[dict(x) for x in db.execute("SELECT * FROM change_impacts WHERE change_id=?",(change_id,))];domains={x["domain_key"] for x in impacts if x["reapproval_required"]}
+        try:apply_change_invalidations(db,operation_id,domains,stamp)
+        except ValueError as exc:return jsonify(error=str(exc)),409
+        db.execute("UPDATE change_impacts SET status='IMPLEMENTED',notes=CASE WHEN notes='' THEN 'Affected record invalidated for controlled reapproval' ELSE notes END WHERE change_id=?",(change_id,))
+        db.execute("UPDATE operation_changes SET state='IMPLEMENTED',implemented_at=?,updated_at=? WHERE id=?",(stamp,stamp,change_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"CHANGE_IMPLEMENTED",actor,f"{change['change_code']} implemented; invalidated domains: {', '.join(sorted(domains))}"))
+    return jsonify(ok=True,url=url_for("operations.change_control_board",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/changes/<int:change_id>/verify")
+def verify_operation_change(operation_id:int,change_id:int):
+    p=request.get_json(silent=True) or {};domain=str(p.get("domain_key","")).upper();verifier=str(p.get("verified_by","")).strip();status=str(p.get("status","")).upper();notes=str(p.get("notes","")).strip();stamp=utc_now()
+    if status not in {"VERIFIED","FAILED"} or not verifier or not notes:return jsonify(error="domain, verification status, verifier and evidence note are required"),400
+    with connect() as db:
+        change=db.execute("SELECT * FROM operation_changes WHERE id=? AND operation_id=?",(change_id,operation_id)).fetchone();impact=db.execute("SELECT * FROM change_impacts WHERE change_id=? AND domain_key=?",(change_id,domain)).fetchone()
+        if not change or not impact:return jsonify(error="change impact not found"),404
+        if change["state"]!="IMPLEMENTED":return jsonify(error="change must be IMPLEMENTED before verification"),409
+        db.execute("UPDATE change_impacts SET status=?,verified_by=?,verified_at=?,notes=? WHERE id=?",(status,verifier,stamp,notes,impact["id"]))
+    return jsonify(ok=True,url=url_for("operations.change_control_board",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/changes/<int:change_id>/close")
+def close_operation_change(operation_id:int,change_id:int):
+    p=request.get_json(silent=True) or {};actor=str(p.get("closed_by","")).strip();stamp=utc_now()
+    if not actor:return jsonify(error="named closure authority is required"),400
+    with connect() as db:
+        change=db.execute("SELECT * FROM operation_changes WHERE id=? AND operation_id=?",(change_id,operation_id)).fetchone();impacts=[dict(x) for x in db.execute("SELECT * FROM change_impacts WHERE change_id=?",(change_id,))]
+        if not change:return jsonify(error="change record not found"),404
+        if change["state"]!="IMPLEMENTED":return jsonify(error="only an IMPLEMENTED change may be closed"),409
+        failed=[x["domain_key"] for x in impacts if x["status"]!="VERIFIED"]
+        if failed:return jsonify(error="change verification is incomplete",domains=failed),409
+        db.execute("UPDATE operation_changes SET state='CLOSED',closed_at=?,updated_at=? WHERE id=?",(stamp,stamp,change_id));db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"CHANGE_CLOSED",actor,f"{change['change_code']} verification closed"))
+    return jsonify(ok=True,url=url_for("operations.change_control_board",operation_id=operation_id))
+
 
 def briefing_context(db:sqlite3.Connection,operation_id:int):
     item=operation_view(db,operation_id)
@@ -1244,11 +1444,13 @@ def briefing_context(db:sqlite3.Connection,operation_id:int):
         a["pack_issue"]=dict(issue) if issue else None;a["pack_status"]=(issue["delivery_status"] if issue else "NOT_ISSUED") if a["pack_required"] else "NOT_REQUIRED"
         assignment=next((x for x in assignments if x["role_code"]==a["role_code"]),{})
         a["qualification_status"]=assignment.get("qualification_status","UNKNOWN");a["availability_status"]=assignment.get("availability_status","UNKNOWN")
+    item["changes"]=change_view(db,operation_id)
     return item,briefing,topics,attendees
 
 
 def briefing_findings(item:dict,briefing:dict,topics:list[dict],attendees:list[dict]):
     findings=[]
+    findings.extend(f"Open change control: {x}" for x in open_change_findings(item.get("changes",[])))
     if (item.get("staffing") or {}).get("state")!="APPROVED":findings.append("Approved staffing plan is required.")
     if (item.get("readiness") or {}).get("final_decision")!="GO":findings.append("Readiness Review GO decision is required.")
     if not briefing.get("scheduled_at") or not briefing.get("location") or not briefing.get("recorder"):findings.append("Schedule, location and named recorder are required.")
@@ -1871,6 +2073,8 @@ def issue_execution_release(operation_id:int):
         briefing=db.execute("SELECT state,canonical_sha256 FROM operation_briefings WHERE operation_id=?",(operation_id,)).fetchone()
         if not briefing or briefing["state"]!="CLOSED" or not briefing["canonical_sha256"]:
             return jsonify(error="a closed Day-of-Operation Briefing and complete crew sign-off are required before LIVE release"),409
+        open_changes=db.execute("SELECT change_code,state FROM operation_changes WHERE operation_id=? AND state NOT IN ('CLOSED','REJECTED','CANCELLED')",(operation_id,)).fetchall()
+        if open_changes:return jsonify(error="open change controls block LIVE release: "+", ".join(f"{x['change_code']} ({x['state']})" for x in open_changes)),409
         gates=[dict(x) for x in db.execute("SELECT * FROM execution_release_gates WHERE release_id=?",(release["id"],))]
         expected={x["code"] for x in execution_gate_catalog(operation["operation_type"])};present={x["gate_code"] for x in gates}
         missing=sorted(expected-present)
