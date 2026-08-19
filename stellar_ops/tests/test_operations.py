@@ -40,7 +40,7 @@ class OperationWorkflowTests(unittest.TestCase):
         detail = self.client.get(f"/ops/{demo['id']}")
         self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
         for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
-                     "readiness", "rehearsal", "execution", "review", "planning"):
+                     "readiness", "rehearsal", "execution", "review", "planning", "documents"):
             response = self.client.get(f"/ops/{demo['id']}/{page}")
             self.assertEqual(response.status_code, 200, page)
         planning = self.client.get(f"/ops/{demo['id']}/planning")
@@ -247,6 +247,35 @@ class OperationWorkflowTests(unittest.TestCase):
         blocked = self.client.post(f"/api/ops/{operation_id}/baseline/release")
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("PROCEDURE", blocked.get_json()["error"])
+
+    def test_document_export_center_and_draft_package_contract(self):
+        with control_module.connect() as db:
+            operation_id = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
+        page = self.client.get(f"/ops/{operation_id}/documents")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Document Export Center", page.data)
+        generated = self.client.post(f"/api/ops/{operation_id}/documents/generate", json={
+            "scope_kind": "MASTER", "scope_key": "ALL", "state": "DRAFT",
+            "generated_by": "Training Document Controller", "notes": "Workflow review copy"})
+        self.assertEqual(generated.status_code, 200)
+        with control_module.connect() as db:
+            package = db.execute("SELECT * FROM document_packages WHERE id=?", (generated.get_json()["package_id"],)).fetchone()
+            files = db.execute("SELECT * FROM generated_documents WHERE package_id=? ORDER BY document_type", (package["id"],)).fetchall()
+        self.assertEqual(package["state"], "DRAFT")
+        self.assertEqual(len(package["manifest_sha256"]), 64)
+        self.assertEqual({x["document_type"] for x in files}, {"PDF", "XLSX", "ZIP"})
+        for document in files:
+            self.assertEqual(len(document["sha256"]), 64)
+            self.assertGreater(document["byte_size"], 0)
+            self.assertEqual(self.client.get(f"/ops/{operation_id}/documents/files/{document['id']}").status_code, 200)
+
+    def test_released_document_package_respects_preflight_controls(self):
+        with control_module.connect() as db:
+            operation_id = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
+        blocked = self.client.post(f"/api/ops/{operation_id}/documents/generate", json={
+            "scope_kind": "MASTER", "state": "RELEASED", "generated_by": "Document Control"})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("blockers", blocked.get_json())
 
     def prepare_team_stage(self, code="QTEAM-010"):
         operation_id = self.prepare_identified_article(code)

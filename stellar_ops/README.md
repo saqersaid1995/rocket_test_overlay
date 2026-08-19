@@ -62,3 +62,11 @@ In the console, choose **LIVE ETHERNET**, start recording, and verify each requi
 Use **Device Setup** to create or edit devices and channels. The registry separates live health from the last configuration connection test. Assets are archived rather than silently erased so their audit history remains intact. Archive or reassign active channels before archiving their source device; restore the device before restoring its channels. Configuration changes are blocked while recording and outside `CHECKOUT` or `HOLD`.
 
 An Ethernet session is not trusted as a LIVE source until its `device_id` is registered with the `SMTCS_EDGE_TCP` adapter. Unregistered sessions remain visible in the gateway table for diagnosis but do not feed operational telemetry.
+
+## Controlled preparation documents
+
+Each operation includes a Document Export Center at `/ops/<operation-id>/documents`. It creates master-operation, department, or individual work packages from the controlled preparation plan.
+
+Every package contains a paginated PDF, a filterable Excel workbook, and a ZIP bundle with a JSON manifest. The register records revision, state, generator, creation time, file size, document SHA-256 values, and a package manifest fingerprint. Draft copies may expose open work for coordination; released copies are blocked until the operation has a planned start, named assignments, independent safety-critical verification, accepted tasks, and evidence records.
+
+Generated packages are stored under `stellar_ops/data/exports/` and are intentionally excluded from source control. Install `reportlab` and `openpyxl` through `requirements.txt` before generating documents.

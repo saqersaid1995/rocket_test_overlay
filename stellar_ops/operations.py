@@ -4,11 +4,13 @@ import json
 import hashlib
 import re
 import sqlite3
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, send_file, url_for
 
 from .control import OPERATION_ID, connect, init_control_db
+from .documents import ALLOWED_SCOPES, EXPORT_ROOT, create_package_files, safe_token, scoped_tasks, validate_export
 
 operations = Blueprint("operations", __name__)
 
@@ -327,6 +329,20 @@ CREATE TABLE IF NOT EXISTS task_stakeholders(
  role_code TEXT NOT NULL, stakeholder_type TEXT NOT NULL,
  PRIMARY KEY(operation_id,task_code,role_code,stakeholder_type),
  FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS document_packages(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ package_code TEXT NOT NULL, revision INTEGER NOT NULL, scope_kind TEXT NOT NULL,
+ scope_key TEXT NOT NULL, state TEXT NOT NULL, generated_by TEXT NOT NULL,
+ generated_at TEXT NOT NULL, released_at TEXT, superseded_at TEXT,
+ manifest_sha256 TEXT NOT NULL, validation_json TEXT NOT NULL, notes TEXT NOT NULL,
+ UNIQUE(operation_id,package_code,revision),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS generated_documents(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, package_id INTEGER NOT NULL,
+ document_type TEXT NOT NULL, filename TEXT NOT NULL, storage_path TEXT NOT NULL,
+ mime_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+ created_at TEXT NOT NULL, UNIQUE(package_id,document_type),
+ FOREIGN KEY(package_id) REFERENCES document_packages(id));
 """
 
 
@@ -888,6 +904,99 @@ def person_work_package(operation_id: int, role_code: str):
     reviews = [x for x in item["planning_tasks"] if x["verifier_role"] == assignment["role_code"] and x["responsible_role"] != assignment["role_code"]]
     return render_template("ops_work_packages.html", operation=item, scope_kind="PERSON", scope=assignment,
                            scoped_tasks=tasks, verification_queue=reviews, department_packages=[], people=[])
+
+
+@operations.get("/ops/<int:operation_id>/documents")
+def document_export_center(operation_id: int):
+    with connect() as db:
+        item, departments, assignments = package_context(db, operation_id)
+        packages = [dict(x) for x in db.execute(
+            "SELECT * FROM document_packages WHERE operation_id=? ORDER BY id DESC", (operation_id,))]
+        for package in packages:
+            package["documents"] = [dict(x) for x in db.execute(
+                "SELECT * FROM generated_documents WHERE package_id=? ORDER BY document_type", (package["id"],))]
+            package["validation"] = json.loads(package.pop("validation_json") or "{}")
+    if not item:
+        return "Operation not found", 404
+    validation = validate_export(item)
+    release_validation = validate_export(item, release=True)
+    return render_template("ops_documents.html", operation=item, departments=departments,
+                           assignments=assignments, packages=packages, validation=validation,
+                           release_validation=release_validation)
+
+
+@operations.post("/api/ops/<int:operation_id>/documents/generate")
+def generate_document_package(operation_id: int):
+    payload = request.get_json(silent=True) or {}
+    scope_kind = str(payload.get("scope_kind", "MASTER")).strip().upper()
+    scope_key = str(payload.get("scope_key", "ALL")).strip().upper() or "ALL"
+    state = str(payload.get("state", "DRAFT")).strip().upper()
+    actor = str(payload.get("generated_by", "DOCUMENT CONTROL")).strip() or "DOCUMENT CONTROL"
+    notes = str(payload.get("notes", "")).strip()
+    if scope_kind not in ALLOWED_SCOPES or state not in {"DRAFT", "RELEASED"}:
+        return jsonify(error="scope and document state are invalid"), 400
+    with connect() as db:
+        item = operation_view(db, operation_id)
+        if not item:
+            return jsonify(error="operation not found"), 404
+        if scope_kind == "DEPARTMENT" and not db.execute("SELECT 1 FROM departments WHERE code=? AND active=1", (scope_key,)).fetchone():
+            return jsonify(error="department scope was not found"), 404
+        assignment = None
+        if scope_kind == "PERSON":
+            assignment = next((x for x in ((item.get("staffing") or {}).get("assignments", [])) if x["role_code"] == scope_key), None)
+            if not assignment:
+                return jsonify(error="person scope requires an assigned operation role"), 404
+        tasks = scoped_tasks(item, scope_kind, scope_key)
+        if not tasks:
+            return jsonify(error="selected scope has no controlled tasks"), 409
+        validation = validate_export(item, release=state == "RELEASED")
+        if state == "RELEASED" and validation["blockers"]:
+            return jsonify(error="released export is blocked", blockers=validation["blockers"]), 409
+        prefix = {"MASTER":"MASTER", "DEPARTMENT":f"DEPT-{scope_key}", "PERSON":f"PERSON-{scope_key}"}[scope_kind]
+        package_code = f"{item['code']}-{prefix}-WP"
+        latest = db.execute("SELECT MAX(revision) revision FROM document_packages WHERE operation_id=? AND package_code=?", (operation_id, package_code)).fetchone()
+        revision = int(latest["revision"] or 0) + 1
+        if state == "RELEASED":
+            stamp = utc_now()
+            db.execute("UPDATE document_packages SET state='SUPERSEDED',superseded_at=? WHERE operation_id=? AND package_code=? AND state='RELEASED'", (stamp, operation_id, package_code))
+        else:
+            stamp = utc_now()
+        scope_label = "MASTER OPERATION"
+        if scope_kind == "DEPARTMENT":
+            scope_label = db.execute("SELECT name FROM departments WHERE code=?", (scope_key,)).fetchone()["name"]
+        elif assignment:
+            scope_label = f"{assignment['person_name']} / {assignment['role_code']}"
+        metadata = {"package_code":package_code,"revision":revision,"state":state,"scope_kind":scope_kind,
+                    "scope_key":scope_key,"scope_label":scope_label,"generated_at":stamp,"generated_by":actor}
+        directory = EXPORT_ROOT / safe_token(item["code"]) / safe_token(package_code) / f"R{revision}"
+        try:
+            files = create_package_files(directory, item, tasks, metadata)
+        except ImportError as exc:
+            return jsonify(error=f"document dependency is missing: {exc.name}; install project requirements and retry"), 503
+        manifest_sha = hashlib.sha256(json.dumps({"metadata":metadata,"files":[x["sha256"] for x in files]},sort_keys=True).encode()).hexdigest()
+        cursor = db.execute("""INSERT INTO document_packages(operation_id,package_code,revision,scope_kind,scope_key,state,generated_by,generated_at,released_at,superseded_at,manifest_sha256,validation_json,notes)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (operation_id,package_code,revision,scope_kind,scope_key,state,actor,stamp,stamp if state=="RELEASED" else None,None,manifest_sha,json.dumps(validation),notes))
+        package_id = cursor.lastrowid
+        for file in files:
+            db.execute("""INSERT INTO generated_documents(package_id,document_type,filename,storage_path,mime_type,byte_size,sha256,created_at)
+                VALUES(?,?,?,?,?,?,?,?)""", (package_id,file["document_type"],file["filename"],file["storage_path"],file["mime_type"],file["byte_size"],file["sha256"],stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,stamp,"DOCUMENT_PACKAGE_GENERATED",actor,f"{state} {scope_label} package {package_code} revision {revision} generated"))
+    return jsonify(ok=True, package_id=package_id, url=url_for("operations.document_export_center", operation_id=operation_id))
+
+
+@operations.get("/ops/<int:operation_id>/documents/files/<int:document_id>")
+def download_generated_document(operation_id: int, document_id: int):
+    with connect() as db:
+        document = db.execute("""SELECT d.* FROM generated_documents d JOIN document_packages p ON p.id=d.package_id
+            WHERE d.id=? AND p.operation_id=?""", (document_id, operation_id)).fetchone()
+    if not document:
+        return "Document not found", 404
+    path = Path(document["storage_path"]).resolve()
+    root = EXPORT_ROOT.resolve()
+    if root not in path.parents or not path.is_file():
+        return "Controlled document file is unavailable", 404
+    return send_file(path, mimetype=document["mime_type"], as_attachment=True, download_name=document["filename"])
 
 
 @operations.post("/api/ops/<int:operation_id>/planning/generate")

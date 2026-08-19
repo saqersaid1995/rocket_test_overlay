@@ -7,7 +7,7 @@
       <h1>{% if scope_kind=='OVERVIEW' %}Department & Employee Work Packages{% elif scope_kind=='DEPARTMENT' %}{{scope.name}} Work Package{% else %}Individual Assignment Package{% endif %}</h1>
       <p>{{operation.code}} · {{operation.title}}</p>
     </div>
-    <nav><a href="/ops/{{operation.id}}">OPERATION</a><a href="/ops/{{operation.id}}/planning">MASTER PLAN</a>{% if scope_kind!='OVERVIEW' %}<a href="/ops/{{operation.id}}/work-packages">ALL PACKAGES</a>{% endif %}</nav>
+    <nav><a href="/ops/{{operation.id}}">OPERATION</a><a href="/ops/{{operation.id}}/planning">MASTER PLAN</a><a href="/ops/{{operation.id}}/documents">DOCUMENT EXPORTS</a>{% if scope_kind!='OVERVIEW' %}<a href="/ops/{{operation.id}}/work-packages">ALL PACKAGES</a>{% endif %}</nav>
   </header>
 
   {% if operation.is_training %}<section class="training-band"><b>TRAINING WORK PACKAGE</b><span>Named personnel and evidence below are representative examples for learning the responsibility and acceptance flow.</span></section>{% endif %}

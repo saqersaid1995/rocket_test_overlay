@@ -4,7 +4,7 @@
 <main class="planning-shell" data-operation-id="{{operation.id}}">
   <header class="planning-title">
     <div><small>CONTROLLED PREPARATION / PLANNING FOUNDATION</small><h1>Integrated Preparation Plan</h1><p>{{operation.code}} · {{operation.title}}</p></div>
-    <div class="title-actions"><a href="/ops/{{operation.id}}">BACK TO OPERATION</a><a href="/ops/{{operation.id}}/work-packages">WORK PACKAGES</a><span>{{operation.planning_progress}}% ACCEPTED</span></div>
+    <div class="title-actions"><a href="/ops/{{operation.id}}">BACK TO OPERATION</a><a href="/ops/{{operation.id}}/work-packages">WORK PACKAGES</a><a href="/ops/{{operation.id}}/documents">DOCUMENT EXPORTS</a><span>{{operation.planning_progress}}% ACCEPTED</span></div>
   </header>
 
   {% if operation.is_training %}<section class="training-band"><b>TRAINING EXAMPLE</b><span>This plan demonstrates how departments, operational roles, named personnel, evidence and dependencies connect before a static fire.</span></section>{% endif %}
@@ -71,6 +71,6 @@
   {% else %}
   <section class="empty-plan"><b>NO PREPARATION PLAN GENERATED</b><p>Set a planned operation start, assign the team where available, then generate the controlled plan. Dates will be calculated backward from T0.</p></section>
   {% endif %}
-  <footer class="planning-footer"><span id="planning-message"></span><p>Phase 1 establishes planning and accountability. Controlled employee/department PDF packages are delivered in the next phase.</p></footer>
+  <footer class="planning-footer"><span id="planning-message"></span><p>Planning drives controlled department, individual and master document packages through Document Export Center.</p></footer>
 </main>
 {% endblock %}{% block scripts %}<script src="{{url_for('static',filename='planning.js')}}"></script>{% endblock %}
