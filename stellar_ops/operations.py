@@ -11,6 +11,7 @@ from flask import Blueprint, jsonify, redirect, render_template, request, send_f
 
 from .control import OPERATION_ID, connect, init_control_db
 from .documents import ALLOWED_SCOPES, EXPORT_ROOT, create_package_files, safe_token, scoped_tasks, validate_export
+from .handbook import create_handbook_file, default_chapters, validate_handbook
 
 operations = Blueprint("operations", __name__)
 
@@ -343,6 +344,27 @@ CREATE TABLE IF NOT EXISTS generated_documents(
  mime_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
  created_at TEXT NOT NULL, UNIQUE(package_id,document_type),
  FOREIGN KEY(package_id) REFERENCES document_packages(id));
+CREATE TABLE IF NOT EXISTS handbook_configurations(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ handbook_code TEXT NOT NULL, revision TEXT NOT NULL, title TEXT NOT NULL,
+ template_key TEXT NOT NULL, state TEXT NOT NULL, distribution_classification TEXT NOT NULL,
+ prepared_by TEXT NOT NULL, checked_by TEXT NOT NULL, approved_by TEXT,
+ notes TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS handbook_chapters(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, configuration_id INTEGER NOT NULL,
+ chapter_key TEXT NOT NULL, title TEXT NOT NULL, sequence INTEGER NOT NULL,
+ mandatory INTEGER NOT NULL, included INTEGER NOT NULL, source_status TEXT NOT NULL,
+ source_label TEXT NOT NULL, custom_note TEXT NOT NULL,
+ UNIQUE(configuration_id,chapter_key), FOREIGN KEY(configuration_id) REFERENCES handbook_configurations(id));
+CREATE TABLE IF NOT EXISTS handbook_revisions(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ handbook_code TEXT NOT NULL, revision TEXT NOT NULL, issue_sequence INTEGER NOT NULL,
+ state TEXT NOT NULL, generated_by TEXT NOT NULL, generated_at TEXT NOT NULL,
+ released_at TEXT, superseded_at TEXT, filename TEXT NOT NULL, storage_path TEXT NOT NULL,
+ mime_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+ validation_json TEXT NOT NULL, UNIQUE(operation_id,handbook_code,issue_sequence),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
 CREATE TABLE IF NOT EXISTS operation_hazards(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
  hazard_code TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL,
@@ -1101,6 +1123,102 @@ def document_export_center(operation_id: int):
     return render_template("ops_documents.html", operation=item, departments=departments,
                            assignments=assignments, packages=packages, validation=validation,
                            release_validation=release_validation)
+
+
+def handbook_context(db: sqlite3.Connection, operation_id: int):
+    item = operation_view(db, operation_id)
+    if not item:
+        return None, None, [], []
+    config_row = db.execute("SELECT * FROM handbook_configurations WHERE operation_id=?", (operation_id,)).fetchone()
+    if not config_row:
+        stamp = utc_now()
+        code = f"{item['code']}-OEH"
+        cursor = db.execute("""INSERT INTO handbook_configurations(operation_id,handbook_code,revision,title,template_key,state,
+            distribution_classification,prepared_by,checked_by,approved_by,notes,created_at,updated_at)
+            VALUES(?,?,?,?,?,'DRAFT','INTERNAL CONTROLLED','DOCUMENT CONTROL','TEST DIRECTOR',NULL,'',?,?)""",
+            (operation_id, code, "A", f"{item['title']} - Operation Execution Handbook", "TECHNICAL", stamp, stamp))
+        config_id = cursor.lastrowid
+        for chapter in default_chapters(item):
+            db.execute("""INSERT INTO handbook_chapters(configuration_id,chapter_key,title,sequence,mandatory,included,source_status,source_label,custom_note)
+                VALUES(?,?,?,?,?,?,?,?,?)""", (config_id, chapter["chapter_key"], chapter["title"], chapter["sequence"], chapter["mandatory"], chapter["included"], chapter["source_status"], chapter["source_label"], ""))
+        config_row = db.execute("SELECT * FROM handbook_configurations WHERE id=?", (config_id,)).fetchone()
+    config = dict(config_row)
+    current = {x["chapter_key"]: x for x in default_chapters(item)}
+    chapters = [dict(x) for x in db.execute("SELECT * FROM handbook_chapters WHERE configuration_id=? ORDER BY sequence", (config["id"],))]
+    for chapter in chapters:
+        status, label = current[chapter["chapter_key"]]["source_status"], current[chapter["chapter_key"]]["source_label"]
+        chapter["source_status"], chapter["source_label"] = status, label
+    revisions = [dict(x) for x in db.execute("SELECT * FROM handbook_revisions WHERE operation_id=? ORDER BY issue_sequence DESC", (operation_id,))]
+    return item, config, chapters, revisions
+
+
+@operations.get("/ops/<int:operation_id>/handbook")
+def handbook_composer(operation_id: int):
+    with connect() as db:
+        item, config, chapters, revisions = handbook_context(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    return render_template("ops_handbook.html", operation=item, config=config, chapters=chapters, revisions=revisions,
+                           validation=validate_handbook(item, config, chapters),
+                           release_validation=validate_handbook(item, config, chapters, release=True))
+
+
+@operations.post("/api/ops/<int:operation_id>/handbook")
+def save_handbook(operation_id: int):
+    payload = request.get_json(silent=True) or {}
+    with connect() as db:
+        item, config, chapters, _ = handbook_context(db, operation_id)
+        if not item: return jsonify(error="operation not found"), 404
+        fields = {key: str(payload.get(key, config[key])).strip() for key in ("handbook_code","revision","title","template_key","distribution_classification","prepared_by","checked_by","notes")}
+        if fields["template_key"] not in {"TECHNICAL","FIELD","EXECUTIVE"}: return jsonify(error="unsupported document template"), 400
+        db.execute("""UPDATE handbook_configurations SET handbook_code=?,revision=?,title=?,template_key=?,distribution_classification=?,
+            prepared_by=?,checked_by=?,notes=?,state='DRAFT',approved_by=NULL,updated_at=? WHERE id=?""",
+            (*fields.values(), utc_now(), config["id"]))
+        incoming = {str(x.get("chapter_key")): x for x in payload.get("chapters", []) if isinstance(x, dict)}
+        for chapter in chapters:
+            update = incoming.get(chapter["chapter_key"], {})
+            included = 1 if update.get("included", bool(chapter["included"])) else 0
+            if chapter["mandatory"]: included = 1
+            db.execute("UPDATE handbook_chapters SET included=?,source_status=?,source_label=?,custom_note=? WHERE id=?",
+                       (included, chapter["source_status"], chapter["source_label"], str(update.get("custom_note", chapter["custom_note"])).strip(), chapter["id"]))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id,utc_now(),"HANDBOOK_SAVED",fields["prepared_by"],f"Handbook {fields['handbook_code']} revision {fields['revision']} saved as draft"))
+    return jsonify(ok=True,url=url_for("operations.handbook_composer",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/handbook/generate")
+def generate_handbook(operation_id: int):
+    payload=request.get_json(silent=True) or {}; state=str(payload.get("state","DRAFT")).upper()
+    if state not in {"DRAFT","RELEASED"}: return jsonify(error="document state must be DRAFT or RELEASED"),400
+    actor=str(payload.get("generated_by","DOCUMENT CONTROL")).strip() or "DOCUMENT CONTROL"
+    with connect() as db:
+        item, config, chapters, _=handbook_context(db,operation_id)
+        if not item:return jsonify(error="operation not found"),404
+        validation=validate_handbook(item,config,chapters,release=state=="RELEASED")
+        if validation["blockers"]:return jsonify(error="handbook preflight failed",blockers=validation["blockers"],warnings=validation["warnings"]),409
+        latest=db.execute("SELECT MAX(issue_sequence) n FROM handbook_revisions WHERE operation_id=? AND handbook_code=?",(operation_id,config["handbook_code"])).fetchone()
+        sequence=int(latest["n"] or 0)+1; stamp=utc_now()
+        if state=="RELEASED":
+            db.execute("UPDATE handbook_revisions SET state='SUPERSEDED',superseded_at=? WHERE operation_id=? AND handbook_code=? AND state='RELEASED'",(stamp,operation_id,config["handbook_code"]))
+        output_config={**config,"state":state,"approved_by":actor if state=="RELEASED" else None,"generated_at":stamp}
+        directory=EXPORT_ROOT/safe_token(item["code"])/"HANDBOOK"/f"I{sequence:03d}"
+        try:file=create_handbook_file(directory,item,output_config,chapters)
+        except ImportError as exc:return jsonify(error=f"document dependency is missing: {exc.name}"),503
+        cur=db.execute("""INSERT INTO handbook_revisions(operation_id,handbook_code,revision,issue_sequence,state,generated_by,generated_at,
+            released_at,superseded_at,filename,storage_path,mime_type,byte_size,sha256,validation_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (operation_id,config["handbook_code"],config["revision"],sequence,state,actor,stamp,stamp if state=="RELEASED" else None,None,file["filename"],file["storage_path"],file["mime_type"],file["byte_size"],file["sha256"],json.dumps(validation)))
+        if state=="RELEASED": db.execute("UPDATE handbook_configurations SET state='RELEASED',approved_by=?,updated_at=? WHERE id=?",(actor,stamp,config["id"]))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"HANDBOOK_GENERATED",actor,f"{state} handbook issue {sequence} generated"))
+    return jsonify(ok=True,revision_id=cur.lastrowid,url=url_for("operations.handbook_composer",operation_id=operation_id))
+
+
+@operations.get("/ops/<int:operation_id>/handbook/files/<int:revision_id>")
+def download_handbook(operation_id:int,revision_id:int):
+    with connect() as db: row=db.execute("SELECT * FROM handbook_revisions WHERE id=? AND operation_id=?",(revision_id,operation_id)).fetchone()
+    if not row:return "Handbook revision not found",404
+    path=Path(row["storage_path"]).resolve()
+    if EXPORT_ROOT.resolve() not in path.parents or not path.is_file():return "Controlled handbook file is unavailable",404
+    return send_file(path,mimetype=row["mime_type"],as_attachment=True,download_name=row["filename"])
 
 
 @operations.post("/api/ops/<int:operation_id>/documents/generate")

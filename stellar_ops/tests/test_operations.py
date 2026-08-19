@@ -40,7 +40,7 @@ class OperationWorkflowTests(unittest.TestCase):
         detail = self.client.get(f"/ops/{demo['id']}")
         self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
         for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
-                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents"):
+                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents", "handbook"):
             response = self.client.get(f"/ops/{demo['id']}/{page}")
             self.assertEqual(response.status_code, 200, page)
         planning = self.client.get(f"/ops/{demo['id']}/planning")
@@ -280,6 +280,28 @@ class OperationWorkflowTests(unittest.TestCase):
             "scope_kind": "MASTER", "state": "RELEASED", "generated_by": "Document Control"})
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("blockers", blocked.get_json())
+
+    def test_handbook_composer_saves_and_generates_immutable_draft(self):
+        self.assertEqual(self.client.get("/ops").status_code, 200)
+        with control_module.connect() as db:
+            operation_id = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
+        page = self.client.get(f"/ops/{operation_id}/handbook")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Operation Handbook Composer", page.data)
+        saved = self.client.post(f"/api/ops/{operation_id}/handbook", json={
+            "handbook_code":"DEMO-SF-001-OEH", "revision":"A", "title":"Training Operation Execution Handbook",
+            "prepared_by":"Training Document Controller", "checked_by":"Training Test Director",
+            "template_key":"TECHNICAL", "distribution_classification":"INTERNAL CONTROLLED", "notes":"Training issue",
+            "chapters":[{"chapter_key":"COMMUNICATIONS","included":False,"custom_note":"Formal net plan to be supplied."}]})
+        self.assertEqual(saved.status_code, 200)
+        generated = self.client.post(f"/api/ops/{operation_id}/handbook/generate", json={"state":"DRAFT","generated_by":"Training Document Controller"})
+        self.assertEqual(generated.status_code, 200)
+        with control_module.connect() as db:
+            revision = db.execute("SELECT * FROM handbook_revisions WHERE id=?",(generated.get_json()["revision_id"],)).fetchone()
+        self.assertEqual(revision["state"],"DRAFT")
+        self.assertEqual(len(revision["sha256"]),64)
+        self.assertGreater(revision["byte_size"],1000)
+        self.assertEqual(self.client.get(f"/ops/{operation_id}/handbook/files/{revision['id']}").status_code,200)
 
     def prepare_team_stage(self, code="QTEAM-010"):
         operation_id = self.prepare_identified_article(code)

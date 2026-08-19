@@ -2,7 +2,7 @@
 {% block head %}<link rel="stylesheet" href="{{url_for('static',filename='documents.css')}}">{% endblock %}
 {% block content %}
 <main class="documents-shell" data-operation-id="{{operation.id}}">
-  <header class="documents-title"><div><small>PHASE 3 / CONTROLLED DOCUMENT GENERATION</small><h1>Document Export Center</h1><p>{{operation.code}} · {{operation.title}}</p></div><nav><a href="/ops/{{operation.id}}">OPERATION</a><a href="/ops/{{operation.id}}/planning">MASTER PLAN</a><a href="/ops/{{operation.id}}/work-packages">WORK PACKAGES</a></nav></header>
+  <header class="documents-title"><div><small>PHASE 3 / CONTROLLED DOCUMENT GENERATION</small><h1>Document Export Center</h1><p>{{operation.code}} · {{operation.title}}</p></div><nav><a href="/ops/{{operation.id}}">OPERATION</a><a href="/ops/{{operation.id}}/planning">MASTER PLAN</a><a href="/ops/{{operation.id}}/work-packages">WORK PACKAGES</a><a href="/ops/{{operation.id}}/handbook">HANDBOOK COMPOSER</a></nav></header>
   {% if operation.is_training %}<section class="training"><b>TRAINING EXPORT ENVIRONMENT</b><span>This example operation is safe for reviewing draft department, individual and master packages. It does not issue operational authority.</span></section>{% endif %}
   <section class="control-grid">
     <article class="preflight"><header><div><b>EXPORT PREFLIGHT</b><small>DATA QUALITY BEFORE DOCUMENT CREATION</small></div><em class="{{'ready' if release_validation.release_ready else 'blocked'}}">{{'RELEASE READY' if release_validation.release_ready else 'DRAFT ONLY'}}</em></header>
