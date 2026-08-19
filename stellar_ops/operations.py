@@ -343,6 +343,52 @@ CREATE TABLE IF NOT EXISTS generated_documents(
  mime_type TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
  created_at TEXT NOT NULL, UNIQUE(package_id,document_type),
  FOREIGN KEY(package_id) REFERENCES document_packages(id));
+CREATE TABLE IF NOT EXISTS operation_hazards(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ hazard_code TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL,
+ cause TEXT NOT NULL, consequence TEXT NOT NULL, likelihood INTEGER NOT NULL,
+ severity INTEGER NOT NULL, inherent_risk INTEGER NOT NULL,
+ residual_likelihood INTEGER NOT NULL, residual_severity INTEGER NOT NULL,
+ residual_risk INTEGER NOT NULL, owner_role TEXT NOT NULL,
+ acceptance_authority TEXT NOT NULL, status TEXT NOT NULL, notes TEXT NOT NULL,
+ updated_at TEXT NOT NULL, UNIQUE(operation_id,hazard_code),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS operation_safety_cases(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ safety_case_code TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL,
+ scope TEXT NOT NULL, emergency_policy TEXT NOT NULL, canonical_sha256 TEXT,
+ approved_by TEXT, approved_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS hazard_controls(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, hazard_id INTEGER NOT NULL,
+ control_code TEXT NOT NULL, control_type TEXT NOT NULL,
+ description TEXT NOT NULL, verification_method TEXT NOT NULL,
+ responsible_role TEXT NOT NULL, evidence_required TEXT NOT NULL,
+ status TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(hazard_id,control_code), FOREIGN KEY(hazard_id) REFERENCES operation_hazards(id));
+CREATE TABLE IF NOT EXISTS procedure_resources(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, procedure_id INTEGER NOT NULL,
+ resource_code TEXT NOT NULL, resource_type TEXT NOT NULL,
+ description TEXT NOT NULL, quantity INTEGER NOT NULL, required INTEGER NOT NULL,
+ readiness_status TEXT NOT NULL, certification_reference TEXT NOT NULL,
+ owner_role TEXT NOT NULL, notes TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(procedure_id,resource_code), FOREIGN KEY(procedure_id) REFERENCES operation_procedures(id));
+CREATE TABLE IF NOT EXISTS procedure_step_hazards(
+ step_id INTEGER NOT NULL, hazard_id INTEGER NOT NULL,
+ PRIMARY KEY(step_id,hazard_id), FOREIGN KEY(step_id) REFERENCES operation_procedure_steps(id),
+ FOREIGN KEY(hazard_id) REFERENCES operation_hazards(id));
+CREATE TABLE IF NOT EXISTS procedure_step_resources(
+ step_id INTEGER NOT NULL, resource_id INTEGER NOT NULL,
+ PRIMARY KEY(step_id,resource_id), FOREIGN KEY(step_id) REFERENCES operation_procedure_steps(id),
+ FOREIGN KEY(resource_id) REFERENCES procedure_resources(id));
+CREATE TABLE IF NOT EXISTS operational_hold_points(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ step_id INTEGER NOT NULL, hold_code TEXT NOT NULL, trigger_condition TEXT NOT NULL,
+ safe_state TEXT NOT NULL, release_criteria TEXT NOT NULL,
+ call_authority TEXT NOT NULL, release_authority TEXT NOT NULL,
+ mandatory INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(operation_id,hold_code), FOREIGN KEY(operation_id) REFERENCES operation_registry(id),
+ FOREIGN KEY(step_id) REFERENCES operation_procedure_steps(id));
 """
 
 
@@ -574,6 +620,64 @@ def seed_training_operation(db: sqlite3.Connection, mission_id: int, stamp: str)
                (operation_id,stamp,"TRAINING_RECORD_CREATED","SYSTEM","End-to-end sample operation created for interface and workflow review"))
 
 
+def seed_demo_safety_foundation(db: sqlite3.Connection, stamp: str) -> None:
+    operation = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
+    if not operation:
+        return
+    operation_id = operation["id"]
+    procedure = db.execute("SELECT id FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()
+    if not procedure:
+        return
+    db.execute("""INSERT OR IGNORE INTO operation_safety_cases(operation_id,safety_case_code,revision,state,scope,emergency_policy,canonical_sha256,approved_by,approved_at,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (operation_id,"DEMO-SF-SAFE","REV-C","APPROVED","Static-fire preparation, execution, contingency and post-fire safing",
+        "Any station may call HOLD. RSO or TD may declare ABORT. LCO removes firing energy and Propulsion confirms the article safe.",hashlib.sha256(b"demo-safety-case").hexdigest(),"Training RSO",stamp,stamp,stamp))
+    hazards = (
+        ("HZ-IGN-001","Uncommanded ignition","IGNITION","Firing energy reaches the igniter outside the authorised sequence","Personnel injury, motor firing and facility damage",3,5,1,5,"RSO","TEST DIRECTOR","ACCEPTED","Representative controlled ignition hazard"),
+        ("HZ-PRS-001","Pressure vessel rupture","PRESSURE","Motor pressure exceeds the qualified structural envelope","Fragment projection, blast and loss of test article",3,5,1,5,"PROP","RSO","ACCEPTED","Pressure limits must remain configuration controlled"),
+        ("HZ-ACC-001","Personnel inside exclusion zone","SITE","Access control fails before arming or firing","Personnel exposed to blast, fragments or fire",3,5,1,5,"RSO","RSO","ACCEPTED","Positive zone-clear confirmation required"),
+        ("HZ-DAT-001","Loss of critical evidence","DATA","DAQ, time synchronisation or recording chain fails","Unsafe continuation decision or unusable qualification result",3,3,1,3,"DATA","TEST DIRECTOR","CONTROLLED","Does not replace safety controls"),
+    )
+    for code,title,category,cause,consequence,likelihood,severity,res_l,res_s,owner,authority,status,notes in hazards:
+        db.execute("""INSERT OR IGNORE INTO operation_hazards(operation_id,hazard_code,title,category,cause,consequence,likelihood,severity,inherent_risk,
+            residual_likelihood,residual_severity,residual_risk,owner_role,acceptance_authority,status,notes,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (operation_id,code,title,category,cause,consequence,likelihood,severity,likelihood*severity,
+            res_l,res_s,res_l*res_s,owner,authority,status,notes,stamp))
+    controls = {
+        "HZ-IGN-001": (("CTL-IGN-01","ENGINEERED","Key-controlled firing-energy isolation and removable physical disconnect","Prove SAFE indication and zero firing voltage","LCO","Firing circuit isolation test","VERIFIED"),
+                       ("CTL-IGN-02","PROCEDURAL","Install igniter last and arm only after final station poll","Two-person procedure verification","PROP","Signed procedure event","VERIFIED")),
+        "HZ-PRS-001": (("CTL-PRS-01","ENGINEERED","Configuration-controlled pressure limit with critical and abort thresholds","Independent limit-profile review","INST","Released limit profile and channel injection result","VERIFIED"),),
+        "HZ-ACC-001": (("CTL-ACC-01","ADMINISTRATIVE","Guarded exclusion zone with positive RSO clear declaration","Physical sweep and access log review","RSO","Signed exclusion-zone checklist","VERIFIED"),),
+        "HZ-DAT-001": (("CTL-DAT-01","ENGINEERED","Primary and backup recording with common UTC time reference","Record and replay representative test","DATA","Recording test and sync evidence","VERIFIED"),),
+    }
+    for hazard_code, rows in controls.items():
+        hazard_id = db.execute("SELECT id FROM operation_hazards WHERE operation_id=? AND hazard_code=?", (operation_id,hazard_code)).fetchone()["id"]
+        for code,kind,description,verification,role,evidence,status in rows:
+            db.execute("""INSERT OR IGNORE INTO hazard_controls(hazard_id,control_code,control_type,description,verification_method,responsible_role,evidence_required,status,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""", (hazard_id,code,kind,description,verification,role,evidence,status,stamp))
+    resources = (
+        ("PPE-FR-01","PPE","Flame-resistant coverall",4,1,"READY","PPE-ISSUE-LOG","GND","Required inside controlled test area"),
+        ("PPE-EYE-01","PPE","Impact-rated eye protection",4,1,"READY","EN166 / CURRENT","GND","Required during article integration"),
+        ("EQ-FIRE-01","EMERGENCY_EQUIPMENT","Serviceable dry-powder fire extinguisher",2,1,"READY","SITE-FIRE-INSPECTION","RSO","Located at control and stand access points"),
+        ("EQ-ISO-01","TOOL","Firing circuit isolation key and physical disconnect",1,1,"READY","FC-ISO-REV-C","LCO","Key custody remains with LCO"),
+        ("DOC-SITE-01","CONTROLLED_DOCUMENT","Approved exclusion-zone map",1,1,"READY","SITE-MAP-REV-B","RSO","Controlled field copy"),
+    )
+    for row in resources:
+        db.execute("""INSERT OR IGNORE INTO procedure_resources(procedure_id,resource_code,resource_type,description,quantity,required,readiness_status,certification_reference,owner_role,notes,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (procedure["id"],*row,stamp))
+    step_rows = [dict(x) for x in db.execute("SELECT id,step_code,phase FROM operation_procedure_steps WHERE procedure_id=?", (procedure["id"],))]
+    for step in step_rows:
+        hazard_codes = ["HZ-ACC-001"] if step["phase"] == "SITE" else (["HZ-IGN-001","HZ-PRS-001"] if step["phase"] in {"COUNTDOWN","EXECUTION","CONTINGENCY"} else ["HZ-DAT-001"])
+        for code in hazard_codes:
+            hazard = db.execute("SELECT id FROM operation_hazards WHERE operation_id=? AND hazard_code=?", (operation_id,code)).fetchone()
+            if hazard: db.execute("INSERT OR IGNORE INTO procedure_step_hazards(step_id,hazard_id) VALUES(?,?)", (step["id"],hazard["id"]))
+        for resource in db.execute("SELECT id FROM procedure_resources WHERE procedure_id=?", (procedure["id"],)):
+            db.execute("INSERT OR IGNORE INTO procedure_step_resources(step_id,resource_id) VALUES(?,?)", (step["id"],resource["id"]))
+        if step["phase"] in {"COUNTDOWN","CONTINGENCY"}:
+            db.execute("""INSERT OR IGNORE INTO operational_hold_points(operation_id,step_id,hold_code,trigger_condition,safe_state,release_criteria,call_authority,release_authority,mandatory,status,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (operation_id,step["id"],f"HOLD-{step['step_code']}","Any failed poll, limit violation, loss of communications or unexpected field condition",
+                "Firing power removed; ignition circuit SAFE; countdown stopped","Cause identified, corrective action verified and all affected stations return GO","ANY STATION","RSO",1,"VERIFIED",stamp))
+
+
 def init_operations_db() -> None:
     init_control_db()
     stamp = utc_now()
@@ -590,6 +694,7 @@ def init_operations_db() -> None:
             mission_id = mission["id"]
         seed_training_operation(db, mission_id, stamp)
         seed_demo_planning(db)
+        seed_demo_safety_foundation(db, stamp)
         operation = db.execute("SELECT id FROM operation_registry WHERE code='QST-001'").fetchone()
         if not operation:
             cursor = db.execute("""INSERT INTO operation_registry(
@@ -654,6 +759,31 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     if item["procedure"]:
         item["procedure"]["steps"] = [dict(x) for x in db.execute(
             "SELECT * FROM operation_procedure_steps WHERE procedure_id=? ORDER BY sequence", (procedure["id"],))]
+        item["procedure"]["resources"] = [dict(x) for x in db.execute(
+            "SELECT * FROM procedure_resources WHERE procedure_id=? ORDER BY resource_type,resource_code", (procedure["id"],))]
+        for resource in item["procedure"]["resources"]:
+            resource["linked_steps"] = [x["step_code"] for x in db.execute(
+                """SELECT s.step_code FROM procedure_step_resources l JOIN operation_procedure_steps s ON s.id=l.step_id
+                WHERE l.resource_id=? ORDER BY s.sequence""", (resource["id"],))]
+        for step in item["procedure"]["steps"]:
+            step["hazard_codes"] = [x["hazard_code"] for x in db.execute(
+                """SELECT h.hazard_code FROM procedure_step_hazards l JOIN operation_hazards h ON h.id=l.hazard_id
+                WHERE l.step_id=? ORDER BY h.hazard_code""", (step["id"],))]
+            step["resource_codes"] = [x["resource_code"] for x in db.execute(
+                """SELECT r.resource_code FROM procedure_step_resources l JOIN procedure_resources r ON r.id=l.resource_id
+                WHERE l.step_id=? ORDER BY r.resource_code""", (step["id"],))]
+            hold = db.execute("SELECT * FROM operational_hold_points WHERE step_id=?", (step["id"],)).fetchone()
+            step["hold_point"] = dict(hold) if hold else None
+    safety_case = db.execute("SELECT * FROM operation_safety_cases WHERE operation_id=?", (operation_id,)).fetchone()
+    item["safety_case"] = dict(safety_case) if safety_case else None
+    item["hazards"] = [dict(x) for x in db.execute(
+        "SELECT * FROM operation_hazards WHERE operation_id=? ORDER BY residual_risk DESC,hazard_code", (operation_id,))]
+    for hazard in item["hazards"]:
+        hazard["controls"] = [dict(x) for x in db.execute(
+            "SELECT * FROM hazard_controls WHERE hazard_id=? ORDER BY control_code", (hazard["id"],))]
+        hazard["linked_steps"] = [dict(x) for x in db.execute(
+            """SELECT s.id,s.step_code,s.phase FROM procedure_step_hazards l JOIN operation_procedure_steps s ON s.id=l.step_id
+            WHERE l.hazard_id=? ORDER BY s.sequence""", (hazard["id"],))]
     instrumentation = db.execute("SELECT * FROM instrumentation_plans WHERE operation_id=?", (operation_id,)).fetchone()
     item["instrumentation"] = dict(instrumentation) if instrumentation else None
     if item["instrumentation"]:
@@ -772,6 +902,54 @@ def procedure_builder(operation_id: int):
     if not item: return "Operation not found", 404
     roles = item.get("staffing", {}).get("assignments", []) if item.get("staffing") else []
     return render_template("ops_procedure.html", operation=item, assigned_roles=roles, procedure_identity=procedure_identity)
+
+
+def safety_assurance_findings(operation: dict) -> list[str]:
+    findings: list[str] = []
+    procedure = operation.get("procedure")
+    safety_case = operation.get("safety_case")
+    hazards = operation.get("hazards", [])
+    if not procedure:
+        return ["Save the controlled procedure draft before configuring safety assurance."]
+    if not safety_case:
+        findings.append("Safety case identity, scope and emergency policy are not defined.")
+    if not hazards:
+        findings.append("At least one operation hazard must be identified.")
+    for hazard in hazards:
+        if not hazard.get("controls"):
+            findings.append(f"{hazard['hazard_code']}: no preventive or mitigating control is defined.")
+        if not any(x["status"] == "VERIFIED" for x in hazard.get("controls", [])):
+            findings.append(f"{hazard['hazard_code']}: no control has verified implementation evidence.")
+        if hazard["residual_risk"] >= 15 and hazard["status"] != "ACCEPTED":
+            findings.append(f"{hazard['hazard_code']}: extreme residual risk requires formal acceptance.")
+        if not hazard.get("linked_steps"):
+            findings.append(f"{hazard['hazard_code']}: hazard is not linked to an operational step.")
+    for step in procedure.get("steps", []):
+        if step["safety_critical"] and not step.get("hazard_codes"):
+            findings.append(f"{step['step_code']}: safety-critical step has no linked hazard.")
+        if step["step_type"] == "HOLD_POINT" and not step.get("hold_point"):
+            findings.append(f"{step['step_code']}: HOLD_POINT lacks controlled trigger, safe state and release authority.")
+    required_resources = [x for x in procedure.get("resources", []) if x["required"]]
+    if not required_resources:
+        findings.append("No mandatory equipment, PPE or controlled-document resource is defined.")
+    for resource in required_resources:
+        if resource["readiness_status"] != "READY":
+            findings.append(f"{resource['resource_code']}: mandatory resource is not READY.")
+    if not any(step.get("hold_point") and step["hold_point"]["mandatory"] for step in procedure.get("steps", [])):
+        findings.append("At least one mandatory operational HOLD point is required.")
+    return list(dict.fromkeys(findings))
+
+
+@operations.get("/ops/<int:operation_id>/safety")
+def safety_assurance_builder(operation_id: int):
+    with connect() as db:
+        item = operation_view(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    roles = (item.get("staffing") or {}).get("assignments", [])
+    return render_template("ops_safety.html", operation=item, assigned_roles=roles,
+                           findings=safety_assurance_findings(item),
+                           control_count=sum(len(x.get("controls", [])) for x in item.get("hazards", [])))
 
 
 @operations.get("/ops/<int:operation_id>/instrumentation")
@@ -1892,6 +2070,121 @@ def validate_procedure_steps(steps: list, assigned_roles: set[str]) -> tuple[lis
     return normalized, errors
 
 
+@operations.post("/api/ops/<int:operation_id>/safety")
+def save_safety_assurance(operation_id: int):
+    payload = request.get_json(silent=True) or {}
+    hazards = payload.get("hazards", []); resources = payload.get("resources", []); holds = payload.get("holds", [])
+    code = str(payload.get("safety_case_code", "")).strip().upper(); revision = str(payload.get("revision", "")).strip().upper()
+    scope = str(payload.get("scope", "")).strip(); emergency = str(payload.get("emergency_policy", "")).strip()
+    if not valid_code(code) or not revision or not scope or not emergency:
+        return jsonify(error="safety case code, revision, scope and emergency policy are required"), 400
+    if not all(isinstance(x, list) for x in (hazards, resources, holds)):
+        return jsonify(error="hazards, resources and hold points must be lists"), 400
+    stamp = utc_now(); errors: list[str] = []
+    with connect() as db:
+        operation = db.execute("SELECT * FROM operation_registry WHERE id=?", (operation_id,)).fetchone()
+        if not operation: return jsonify(error="operation not found"), 404
+        if operation["current_stage"] != "PROCEDURE": return jsonify(error="safety assurance is controlled during the PROCEDURE stage"), 409
+        procedure = db.execute("SELECT * FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()
+        if not procedure: return jsonify(error="save the controlled procedure draft first"), 409
+        if procedure["state"] == "APPROVED": return jsonify(error="approved procedure and safety assurance are immutable; create a controlled revision"), 409
+        existing_case = db.execute("SELECT * FROM operation_safety_cases WHERE operation_id=?", (operation_id,)).fetchone()
+        if existing_case and existing_case["state"] == "APPROVED": return jsonify(error="approved safety case is immutable; create a controlled revision"), 409
+        steps = {x["step_code"]: dict(x) for x in db.execute("SELECT * FROM operation_procedure_steps WHERE procedure_id=?", (procedure["id"],))}
+        assigned = {x["role_code"] for x in db.execute("""SELECT a.role_code FROM operation_role_assignments a JOIN staffing_plans s ON s.id=a.staffing_plan_id
+            WHERE s.operation_id=?""", (operation_id,))}
+        normalized_hazards = []
+        for index, hazard in enumerate(hazards, 1):
+            hazard_code = str(hazard.get("hazard_code", "")).strip().upper(); title = str(hazard.get("title", "")).strip()
+            category = str(hazard.get("category", "")).strip().upper(); cause = str(hazard.get("cause", "")).strip(); consequence = str(hazard.get("consequence", "")).strip()
+            owner = str(hazard.get("owner_role", "")).strip().upper(); authority = str(hazard.get("acceptance_authority", "")).strip().upper()
+            status = str(hazard.get("status", "OPEN")).strip().upper(); linked_steps = [str(x).strip().upper() for x in hazard.get("linked_steps", [])]
+            try:
+                likelihood=int(hazard.get("likelihood")); severity=int(hazard.get("severity")); residual_l=int(hazard.get("residual_likelihood")); residual_s=int(hazard.get("residual_severity"))
+            except (TypeError,ValueError): errors.append(f"hazard {index} risk ratings must be integers from 1 to 5"); continue
+            if not valid_code(hazard_code) or not title or not category or not cause or not consequence: errors.append(f"hazard {index} is missing controlled identity, cause or consequence")
+            if not all(1 <= x <= 5 for x in (likelihood,severity,residual_l,residual_s)): errors.append(f"{hazard_code or index} risk ratings must be between 1 and 5")
+            if owner not in assigned or authority not in assigned: errors.append(f"{hazard_code or index} owner and acceptance authority must be assigned operation roles")
+            if status not in {"OPEN","CONTROLLED","ACCEPTED"}: errors.append(f"{hazard_code or index} has an invalid hazard status")
+            if any(x not in steps for x in linked_steps): errors.append(f"{hazard_code or index} references an unknown procedure step")
+            controls=[]
+            for control_index, control in enumerate(hazard.get("controls", []), 1):
+                control_code=str(control.get("control_code","")).strip().upper(); control_type=str(control.get("control_type","")).strip().upper()
+                description=str(control.get("description","")).strip(); verification=str(control.get("verification_method","")).strip()
+                responsible=str(control.get("responsible_role","")).strip().upper(); evidence=str(control.get("evidence_required","")).strip(); control_status=str(control.get("status","PLANNED")).strip().upper()
+                if not valid_code(control_code) or control_type not in {"ELIMINATION","ENGINEERED","ADMINISTRATIVE","PROCEDURAL","PPE"} or not description or not verification or not evidence:
+                    errors.append(f"{hazard_code} control {control_index} is incomplete")
+                if responsible not in assigned: errors.append(f"{control_code or control_index} responsible role is not assigned")
+                if control_status not in {"PLANNED","IMPLEMENTED","VERIFIED","FAILED"}: errors.append(f"{control_code or control_index} has an invalid status")
+                controls.append((control_code,control_type,description,verification,responsible,evidence,control_status))
+            normalized_hazards.append((hazard_code,title,category,cause,consequence,likelihood,severity,residual_l,residual_s,owner,authority,status,str(hazard.get("notes","")).strip(),linked_steps,controls))
+        normalized_resources=[]
+        for index, resource in enumerate(resources,1):
+            resource_code=str(resource.get("resource_code","")).strip().upper(); kind=str(resource.get("resource_type","")).strip().upper(); description=str(resource.get("description","")).strip()
+            readiness=str(resource.get("readiness_status","NOT_READY")).strip().upper(); certification=str(resource.get("certification_reference","")).strip(); owner=str(resource.get("owner_role","")).strip().upper()
+            try: quantity=int(resource.get("quantity",1))
+            except (TypeError,ValueError): quantity=0
+            linked_steps=[str(x).strip().upper() for x in resource.get("linked_steps",[])]
+            if not valid_code(resource_code) or kind not in {"EQUIPMENT","TOOL","PPE","EMERGENCY_EQUIPMENT","CONTROLLED_DOCUMENT","SOFTWARE"} or not description or quantity<1:
+                errors.append(f"resource {index} has invalid identity, type, description or quantity")
+            if owner not in assigned: errors.append(f"{resource_code or index} owner role is not assigned")
+            if readiness not in {"NOT_READY","READY","LIMITED","UNSERVICEABLE"}: errors.append(f"{resource_code or index} has an invalid readiness status")
+            if bool(resource.get("required",True)) and not certification: errors.append(f"{resource_code or index} mandatory resource requires a certification or control reference")
+            if any(x not in steps for x in linked_steps): errors.append(f"{resource_code or index} references an unknown procedure step")
+            normalized_resources.append((resource_code,kind,description,quantity,int(bool(resource.get("required",True))),readiness,certification,owner,str(resource.get("notes","")).strip(),linked_steps))
+        normalized_holds=[]
+        for index, hold in enumerate(holds,1):
+            hold_code=str(hold.get("hold_code","")).strip().upper(); step_code=str(hold.get("step_code","")).strip().upper()
+            trigger=str(hold.get("trigger_condition","")).strip(); safe_state=str(hold.get("safe_state","")).strip(); release=str(hold.get("release_criteria","")).strip()
+            caller=str(hold.get("call_authority","")).strip().upper(); releaser=str(hold.get("release_authority","")).strip().upper(); status=str(hold.get("status","DRAFT")).strip().upper()
+            if not valid_code(hold_code) or step_code not in steps or not trigger or not safe_state or not release: errors.append(f"hold point {index} is incomplete or references an unknown step")
+            if caller not in assigned and caller != "ANY STATION": errors.append(f"{hold_code or index} call authority is not assigned")
+            if releaser not in assigned: errors.append(f"{hold_code or index} release authority must be one assigned role")
+            if status not in {"DRAFT","VERIFIED"}: errors.append(f"{hold_code or index} has an invalid status")
+            normalized_holds.append((hold_code,step_code,trigger,safe_state,release,caller,releaser,int(bool(hold.get("mandatory",True))),status))
+        if errors: return jsonify(error="; ".join(errors)), 400
+        db.execute("""INSERT INTO operation_safety_cases(operation_id,safety_case_code,revision,state,scope,emergency_policy,created_at,updated_at)
+            VALUES(?,?,?,'DRAFT',?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET safety_case_code=excluded.safety_case_code,revision=excluded.revision,
+            state='DRAFT',scope=excluded.scope,emergency_policy=excluded.emergency_policy,canonical_sha256=NULL,approved_by=NULL,approved_at=NULL,updated_at=excluded.updated_at""",
+            (operation_id,code,revision,scope,emergency,stamp,stamp))
+        db.execute("DELETE FROM operational_hold_points WHERE operation_id=?",(operation_id,)); db.execute("DELETE FROM procedure_step_hazards WHERE step_id IN (SELECT id FROM operation_procedure_steps WHERE procedure_id=?)",(procedure["id"],)); db.execute("DELETE FROM procedure_step_resources WHERE step_id IN (SELECT id FROM operation_procedure_steps WHERE procedure_id=?)",(procedure["id"],))
+        db.execute("DELETE FROM hazard_controls WHERE hazard_id IN (SELECT id FROM operation_hazards WHERE operation_id=?)",(operation_id,)); db.execute("DELETE FROM operation_hazards WHERE operation_id=?",(operation_id,)); db.execute("DELETE FROM procedure_resources WHERE procedure_id=?",(procedure["id"],))
+        for row in normalized_hazards:
+            hazard_code,title,category,cause,consequence,likelihood,severity,res_l,res_s,owner,authority,status,notes,linked_steps,controls=row
+            cursor=db.execute("""INSERT INTO operation_hazards(operation_id,hazard_code,title,category,cause,consequence,likelihood,severity,inherent_risk,residual_likelihood,residual_severity,residual_risk,owner_role,acceptance_authority,status,notes,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(operation_id,hazard_code,title,category,cause,consequence,likelihood,severity,likelihood*severity,res_l,res_s,res_l*res_s,owner,authority,status,notes,stamp))
+            for control in controls: db.execute("INSERT INTO hazard_controls(hazard_id,control_code,control_type,description,verification_method,responsible_role,evidence_required,status,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",(cursor.lastrowid,*control,stamp))
+            for step_code in linked_steps: db.execute("INSERT INTO procedure_step_hazards(step_id,hazard_id) VALUES(?,?)",(steps[step_code]["id"],cursor.lastrowid))
+        for row in normalized_resources:
+            resource_code,kind,description,quantity,required,readiness,certification,owner,notes,linked_steps=row
+            cursor=db.execute("INSERT INTO procedure_resources(procedure_id,resource_code,resource_type,description,quantity,required,readiness_status,certification_reference,owner_role,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(procedure["id"],resource_code,kind,description,quantity,required,readiness,certification,owner,notes,stamp))
+            for step_code in linked_steps: db.execute("INSERT INTO procedure_step_resources(step_id,resource_id) VALUES(?,?)",(steps[step_code]["id"],cursor.lastrowid))
+        for hold_code,step_code,trigger,safe_state,release,caller,releaser,mandatory,status in normalized_holds:
+            db.execute("INSERT INTO operational_hold_points(operation_id,step_id,hold_code,trigger_condition,safe_state,release_criteria,call_authority,release_authority,mandatory,status,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(operation_id,steps[step_code]["id"],hold_code,trigger,safe_state,release,caller,releaser,mandatory,status,stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"SAFETY_ASSURANCE_UPDATED","RSO",f"Safety case {code}/{revision} saved with {len(normalized_hazards)} hazards, {len(normalized_resources)} resources and {len(normalized_holds)} hold points"))
+    return jsonify(ok=True,url=url_for("operations.safety_assurance_builder",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/safety/approve")
+def approve_safety_assurance(operation_id:int):
+    actor=str((request.get_json(silent=True) or {}).get("approved_by","RSO")).strip() or "RSO"; stamp=utc_now()
+    with connect() as db:
+        item=operation_view(db,operation_id)
+        if not item:return jsonify(error="operation not found"),404
+        if item["current_stage"]!="PROCEDURE":return jsonify(error="safety assurance is approved during the PROCEDURE stage"),409
+        findings=safety_assurance_findings(item)
+        if findings:return jsonify(error="safety assurance is incomplete",findings=findings),409
+        case=item.get("safety_case")
+        canonical={"schema":"SMTCS-SAFETY-ASSURANCE/1","operation":item["code"],"case":{"code":case["safety_case_code"],"revision":case["revision"],"scope":case["scope"],"emergency_policy":case["emergency_policy"]},
+            "hazards":[{"code":h["hazard_code"],"cause":h["cause"],"consequence":h["consequence"],"inherent":h["inherent_risk"],"residual":h["residual_risk"],"owner":h["owner_role"],"authority":h["acceptance_authority"],"status":h["status"],"steps":[x["step_code"] for x in h["linked_steps"]],"controls":[{k:c[k] for k in ("control_code","control_type","description","verification_method","responsible_role","evidence_required","status")} for c in h["controls"]]} for h in item["hazards"]],
+            "resources":[{k:r[k] for k in ("resource_code","resource_type","description","quantity","required","readiness_status","certification_reference","owner_role")} for r in item["procedure"]["resources"]],
+            "holds":[s["hold_point"] for s in item["procedure"]["steps"] if s.get("hold_point")]}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+        db.execute("UPDATE operation_safety_cases SET state='APPROVED',canonical_sha256=?,approved_by=?,approved_at=?,updated_at=? WHERE operation_id=?",(digest,actor,stamp,stamp,operation_id))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"SAFETY_ASSURANCE_APPROVED",actor,f"Safety assurance approved with SHA-256 {digest}"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.procedure_builder",operation_id=operation_id))
+
+
 @operations.post("/api/ops/<int:operation_id>/procedure")
 def save_procedure(operation_id: int):
     p = request.get_json(silent=True) or {}; steps = p.get("steps", [])
@@ -1919,11 +2212,15 @@ def save_procedure(operation_id: int):
             exit_conditions=excluded.exit_conditions,abort_policy=excluded.abort_policy,updated_at=excluded.updated_at""",
             (operation_id, code, revision, title, entry, exit_conditions, abort_policy, stamp, stamp))
         procedure_id = db.execute("SELECT id FROM operation_procedures WHERE operation_id=?", (operation_id,)).fetchone()["id"]
+        db.execute("DELETE FROM operational_hold_points WHERE step_id IN (SELECT id FROM operation_procedure_steps WHERE procedure_id=?)", (procedure_id,))
+        db.execute("DELETE FROM procedure_step_hazards WHERE step_id IN (SELECT id FROM operation_procedure_steps WHERE procedure_id=?)", (procedure_id,))
+        db.execute("DELETE FROM procedure_step_resources WHERE step_id IN (SELECT id FROM operation_procedure_steps WHERE procedure_id=?)", (procedure_id,))
         db.execute("DELETE FROM operation_procedure_steps WHERE procedure_id=?", (procedure_id,))
         for row in normalized:
             db.execute("""INSERT INTO operation_procedure_steps(procedure_id,sequence,step_code,phase,step_type,instruction,responsible_role,
                 verification_mode,verifier_role,expected_evidence,safety_critical,hold_condition,abort_action,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (procedure_id, *row, stamp))
+        db.execute("UPDATE operation_safety_cases SET state='DRAFT',canonical_sha256=NULL,approved_at=NULL,approved_by=NULL,updated_at=? WHERE operation_id=?", (stamp, operation_id))
         db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
                    (operation_id, stamp, "PROCEDURE_UPDATED", "TEST DIRECTOR", f"Procedure {code}/{revision} saved with {len(normalized)} controlled steps"))
     return jsonify(ok=True)
@@ -1952,8 +2249,14 @@ def approve_procedure(operation_id: int):
         if len(steps) < 5 or missing_phases: return jsonify(error="procedure is incomplete; missing operational phases: " + ", ".join(missing_phases)), 409
         if not any(x["step_type"] == "HOLD_POINT" for x in steps): return jsonify(error="procedure requires at least one controlled hold point"), 409
         if not any(x["step_type"] == "CONTINGENCY" or x["phase"] == "CONTINGENCY" for x in steps): return jsonify(error="procedure requires an explicit contingency or abort step"), 409
+        safety_case = db.execute("SELECT * FROM operation_safety_cases WHERE operation_id=?", (operation_id,)).fetchone()
+        if not safety_case or safety_case["state"] != "APPROVED":
+            return jsonify(error="approved Safety & Procedure Assurance is required before procedure approval", url=url_for("operations.safety_assurance_builder", operation_id=operation_id)), 409
+        current_item = operation_view(db, operation_id)
+        safety_findings = safety_assurance_findings(current_item)
+        if safety_findings: return jsonify(error="safety assurance controls are incomplete", findings=safety_findings), 409
         canonical = {"schema":"SMTCS-PROCEDURE/1","operation":operation["code"],"document":{"code":procedure["document_code"],"revision":procedure["revision"]},
-                     "entry":procedure["entry_conditions"],"exit":procedure["exit_conditions"],"abort":procedure["abort_policy"],
+                     "entry":procedure["entry_conditions"],"exit":procedure["exit_conditions"],"abort":procedure["abort_policy"],"safety_assurance_sha256":safety_case["canonical_sha256"],
                      "steps":[{k:x[k] for k in ("sequence","step_code","phase","step_type","instruction","responsible_role","verification_mode","verifier_role","expected_evidence","safety_critical","hold_condition","abort_action")} for x in steps]}
         digest = hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
         db.execute("UPDATE operation_procedures SET state='APPROVED',canonical_sha256=?,approved_at=?,approved_by=?,updated_at=? WHERE id=?", (digest, stamp, actor, stamp, procedure["id"]))

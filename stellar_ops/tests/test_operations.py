@@ -40,7 +40,7 @@ class OperationWorkflowTests(unittest.TestCase):
         detail = self.client.get(f"/ops/{demo['id']}")
         self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
         for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
-                     "readiness", "rehearsal", "execution", "review", "planning", "documents"):
+                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents"):
             response = self.client.get(f"/ops/{demo['id']}/{page}")
             self.assertEqual(response.status_code, 200, page)
         planning = self.client.get(f"/ops/{demo['id']}/planning")
@@ -71,6 +71,7 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertIn("CFG-010", blocked.get_json()["error"])
 
     def test_blocked_planning_task_requires_reason(self):
+        self.assertEqual(self.client.get("/ops").status_code,200)
         with control_module.connect() as db:
             demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
         response = self.client.post(f"/api/ops/{demo['id']}/planning/tasks/INST-030", json={
@@ -78,6 +79,7 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_training_work_packages_explain_departments_people_raci_and_evidence(self):
+        self.assertEqual(self.client.get("/ops").status_code,200)
         with control_module.connect() as db:
             demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
         center = self.client.get(f"/ops/{demo['id']}/work-packages")
@@ -249,6 +251,7 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertIn("PROCEDURE", blocked.get_json()["error"])
 
     def test_document_export_center_and_draft_package_contract(self):
+        self.assertEqual(self.client.get("/ops").status_code,200)
         with control_module.connect() as db:
             operation_id = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
         page = self.client.get(f"/ops/{operation_id}/documents")
@@ -270,6 +273,7 @@ class OperationWorkflowTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/ops/{operation_id}/documents/files/{document['id']}").status_code, 200)
 
     def test_released_document_package_respects_preflight_controls(self):
+        self.assertEqual(self.client.get("/ops").status_code,200)
         with control_module.connect() as db:
             operation_id = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
         blocked = self.client.post(f"/api/ops/{operation_id}/documents/generate", json={
@@ -349,6 +353,28 @@ class OperationWorkflowTests(unittest.TestCase):
                 "exit_conditions": "Motor safe, data secured, and site released",
                 "abort_policy": "Any safety authority may call HOLD; RSO may terminate the operation", "steps": steps}
 
+    def safety_payload(self):
+        return {"safety_case_code":"STATIC-FIRE-SAFE","revision":"REV-A",
+                "scope":"Static-fire preparation, countdown, execution, contingency and safing",
+                "emergency_policy":"Any station may call HOLD; RSO controls release and ABORT authority.",
+                "hazards":[{"hazard_code":"HZ-IGN-001","title":"Uncommanded ignition","category":"IGNITION",
+                    "cause":"Firing energy reaches the igniter outside the authorised sequence","consequence":"Personnel injury and unintended motor firing",
+                    "likelihood":3,"severity":5,"residual_likelihood":1,"residual_severity":5,"owner_role":"LCO","acceptance_authority":"RSO","status":"ACCEPTED",
+                    "linked_steps":["PROC-03","PROC-04","PROC-06"],"notes":"Controlled firing-energy hazard",
+                    "controls":[{"control_code":"CTL-IGN-01","control_type":"ENGINEERED","description":"Key isolation and removable firing-energy disconnect",
+                        "verification_method":"Two-person isolation test","responsible_role":"LCO","evidence_required":"Signed isolation test","status":"VERIFIED"}]}],
+                "resources":[{"resource_code":"PPE-EYE-01","resource_type":"PPE","description":"Impact-rated eye protection","quantity":4,"required":True,
+                    "readiness_status":"READY","certification_reference":"PPE-ISSUE-LOG","owner_role":"GND","linked_steps":["PROC-01","PROC-02"],"notes":"Site PPE"}],
+                "holds":[{"hold_code":"HOLD-PROC-03","step_code":"PROC-03","trigger_condition":"Any failed station poll or unsafe field condition",
+                    "safe_state":"Countdown stopped and firing energy removed","release_criteria":"Cause corrected and affected stations return GO",
+                    "call_authority":"ANY STATION","release_authority":"RSO","mandatory":True,"status":"VERIFIED"}]}
+
+    def configure_safety_assurance(self, operation_id):
+        saved=self.client.post(f"/api/ops/{operation_id}/safety",json=self.safety_payload())
+        self.assertEqual(saved.status_code,200,saved.get_json())
+        approved=self.client.post(f"/api/ops/{operation_id}/safety/approve",json={"approved_by":"RSO"})
+        self.assertEqual(approved.status_code,200,approved.get_json())
+
     def test_procedure_validation_blocks_unsafe_steps_and_baseline_mismatch(self):
         operation_id = self.prepare_procedure_stage()
         page = self.client.get(f"/ops/{operation_id}/procedure")
@@ -397,6 +423,10 @@ class OperationWorkflowTests(unittest.TestCase):
         operation_id = self.prepare_procedure_stage("QPROC-020")
         payload = self.procedure_payload()
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=payload).status_code, 200)
+        blocked=self.client.post(f"/api/ops/{operation_id}/procedure/approve",json={"approved_by":"Test Director"})
+        self.assertEqual(blocked.status_code,409)
+        self.assertIn("Safety & Procedure Assurance",blocked.get_json()["error"])
+        self.configure_safety_assurance(operation_id)
         approved = self.client.post(f"/api/ops/{operation_id}/procedure/approve", json={"approved_by": "Test Director"})
         self.assertEqual(approved.status_code, 200)
         self.assertEqual(len(approved.get_json()["sha256"]), 64)
@@ -409,10 +439,30 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(instrumentation["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=payload).status_code, 409)
 
+    def test_safety_assurance_requires_verified_controls_resources_and_formal_hold(self):
+        operation_id=self.prepare_procedure_stage("QSAFE-010")
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure",json=self.procedure_payload()).status_code,200)
+        page=self.client.get(f"/ops/{operation_id}/safety")
+        self.assertEqual(page.status_code,200)
+        self.assertIn(b"Safety & Procedure Assurance",page.data)
+        incomplete=self.safety_payload(); incomplete["hazards"][0]["controls"]=[]; incomplete["resources"][0]["readiness_status"]="NOT_READY"; incomplete["holds"]=[]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/safety",json=incomplete).status_code,200)
+        blocked=self.client.post(f"/api/ops/{operation_id}/safety/approve",json={"approved_by":"RSO"})
+        self.assertEqual(blocked.status_code,409)
+        findings=" ".join(blocked.get_json()["findings"])
+        self.assertIn("no preventive or mitigating control",findings)
+        self.assertIn("mandatory resource is not READY",findings)
+        self.assertIn("mandatory operational HOLD",findings)
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/safety",json=self.safety_payload()).status_code,200)
+        approved=self.client.post(f"/api/ops/{operation_id}/safety/approve",json={"approved_by":"RSO"})
+        self.assertEqual(approved.status_code,200)
+        self.assertEqual(len(approved.get_json()["sha256"]),64)
+
     def prepare_instrumentation_stage(self, code="QINST-010"):
         operation_id = self.prepare_procedure_stage(code)
         procedure = self.procedure_payload()
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure", json=procedure).status_code, 200)
+        self.configure_safety_assurance(operation_id)
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/procedure/approve").status_code, 200)
         return operation_id
 

@@ -70,3 +70,11 @@ Each operation includes a Document Export Center at `/ops/<operation-id>/documen
 Every package contains a paginated PDF, a filterable Excel workbook, and a ZIP bundle with a JSON manifest. The register records revision, state, generator, creation time, file size, document SHA-256 values, and a package manifest fingerprint. Draft copies may expose open work for coordination; released copies are blocked until the operation has a planned start, named assignments, independent safety-critical verification, accepted tasks, and evidence records.
 
 Generated packages are stored under `stellar_ops/data/exports/` and are intentionally excluded from source control. Install `reportlab` and `openpyxl` through `requirements.txt` before generating documents.
+
+## Safety and procedure assurance
+
+Procedure Control now has a dedicated Safety & Procedure Assurance workspace at `/ops/<operation-id>/safety`. The workspace manages operation hazards, preventive and mitigating controls, residual risk, control verification, required equipment, tools, PPE, emergency equipment, controlled documents and formal HOLD points.
+
+Hazards and resources are linked to controlled procedure step codes. A safety-critical step cannot pass procedure approval without a linked hazard, verified controls and independent verification. Formal HOLD points identify the trigger, immediate safe state, call authority, release criteria and release authority. Mandatory resources must be READY and carry a certification, calibration or controlled-reference identity.
+
+The safety case is approved separately and protected by SHA-256. Procedure approval pins that approved safety-case fingerprint so later changes cannot silently alter the execution basis. The `DEMO-SF-001` training operation includes representative ignition, pressure, exclusion-zone and evidence-loss hazards with controls, PPE and HOLD logic.
