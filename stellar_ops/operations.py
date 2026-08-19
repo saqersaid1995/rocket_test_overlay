@@ -303,6 +303,30 @@ CREATE TABLE IF NOT EXISTS operation_milestones(
  owner_role TEXT NOT NULL, status TEXT NOT NULL, notes TEXT NOT NULL,
  UNIQUE(operation_id,milestone_code),
  FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS task_evidence(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ task_code TEXT NOT NULL, evidence_code TEXT NOT NULL, evidence_type TEXT NOT NULL,
+ title TEXT NOT NULL, reference TEXT NOT NULL, sha256 TEXT NOT NULL,
+ supplied_by TEXT NOT NULL, supplied_at TEXT NOT NULL, notes TEXT NOT NULL,
+ status TEXT NOT NULL, UNIQUE(operation_id,task_code,evidence_code),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS task_reviews(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ task_code TEXT NOT NULL, review_sequence INTEGER NOT NULL,
+ reviewer_role TEXT NOT NULL, reviewer_name TEXT NOT NULL,
+ decision TEXT NOT NULL, finding TEXT NOT NULL, reviewed_at TEXT NOT NULL,
+ UNIQUE(operation_id,task_code,review_sequence),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS task_status_history(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
+ task_code TEXT NOT NULL, previous_status TEXT NOT NULL, new_status TEXT NOT NULL,
+ actor TEXT NOT NULL, reason TEXT NOT NULL, changed_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS task_stakeholders(
+ operation_id INTEGER NOT NULL, task_code TEXT NOT NULL,
+ role_code TEXT NOT NULL, stakeholder_type TEXT NOT NULL,
+ PRIMARY KEY(operation_id,task_code,role_code,stakeholder_type),
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
 """
 
 
@@ -342,6 +366,19 @@ STATIC_FIRE_DEPENDENCIES = (
     ("OPS-080", "OPS-090"), ("OPS-090", "OPS-100"),
 )
 
+STATIC_FIRE_STAKEHOLDERS = {
+    "CFG-010": {"C": ("PROP", "INST", "DATA"), "I": ("RSO", "GND")},
+    "PROP-020": {"C": ("CFG", "GND"), "I": ("INST", "DATA")},
+    "INST-030": {"C": ("PROP", "DATA"), "I": ("RSO", "GND")},
+    "INST-040": {"C": ("PROP", "DATA"), "I": ("RSO", "LCO")},
+    "DATA-050": {"C": ("INST", "GND"), "I": ("PROP", "RSO")},
+    "GND-060": {"C": ("PROP", "LCO"), "I": ("INST", "DATA")},
+    "SAFE-070": {"C": ("GND", "PROP"), "I": ("INST", "DATA", "LCO")},
+    "OPS-080": {"C": ("PROP", "INST", "GND", "DATA"), "I": ("LCO",)},
+    "OPS-090": {"C": ("RSO", "LCO", "PROP", "INST", "GND", "DATA"), "I": ()},
+    "OPS-100": {"C": ("RSO", "LCO"), "I": ("PROP", "INST", "GND", "DATA")},
+}
+
 
 def seed_planning_catalog(db: sqlite3.Connection) -> None:
     for code, name, purpose, lead in DEPARTMENT_CATALOG:
@@ -379,7 +416,11 @@ def generate_operation_plan(db: sqlite3.Connection, operation_id: int, replace: 
         people = {x["role_code"]: x["person_name"] for x in db.execute(
             "SELECT role_code,person_name FROM operation_role_assignments WHERE staffing_plan_id=?", (staffing["id"],))}
     if replace:
+        db.execute("DELETE FROM task_evidence WHERE operation_id=?", (operation_id,))
+        db.execute("DELETE FROM task_reviews WHERE operation_id=?", (operation_id,))
+        db.execute("DELETE FROM task_status_history WHERE operation_id=?", (operation_id,))
         db.execute("DELETE FROM task_dependencies WHERE operation_id=?", (operation_id,))
+        db.execute("DELETE FROM task_stakeholders WHERE operation_id=?", (operation_id,))
         db.execute("DELETE FROM operation_tasks WHERE operation_id=?", (operation_id,))
         db.execute("DELETE FROM operation_milestones WHERE operation_id=?", (operation_id,))
     stamp = utc_now(); created = 0
@@ -401,6 +442,11 @@ def generate_operation_plan(db: sqlite3.Connection, operation_id: int, replace: 
     if operation["operation_type"] == "STATIC_FIRE":
         for predecessor, successor in STATIC_FIRE_DEPENDENCIES:
             db.execute("INSERT OR IGNORE INTO task_dependencies(operation_id,predecessor_code,successor_code) VALUES(?,?,?)", (operation_id, predecessor, successor))
+        for task_code, groups in STATIC_FIRE_STAKEHOLDERS.items():
+            for stakeholder_type, roles in groups.items():
+                for role in roles:
+                    db.execute("INSERT OR IGNORE INTO task_stakeholders(operation_id,task_code,role_code,stakeholder_type) VALUES(?,?,?,?)",
+                               (operation_id, task_code, role, stakeholder_type))
     for code, name, offset, owner in (("TRR", "Test Readiness Review", -24, "TD"), ("DRYRUN", "Integrated Dry Rehearsal", -12, "TD"), ("T0", "Operation Start", 0, "TD")):
         scheduled = (t0 + timedelta(hours=offset)).isoformat(timespec="minutes")
         db.execute("INSERT OR IGNORE INTO operation_milestones(operation_id,milestone_code,name,scheduled_at,owner_role,status,notes) VALUES(?,?,?,?,?,'PLANNED','Generated from T0')", (operation_id, code, name, scheduled, owner))
@@ -415,6 +461,22 @@ def seed_demo_planning(db: sqlite3.Connection) -> None:
     status_map = {"CFG-010":"ACCEPTED", "PROP-020":"ACCEPTED", "INST-030":"IN_PROGRESS", "INST-040":"NOT_STARTED", "DATA-050":"IN_PROGRESS"}
     for code, status in status_map.items():
         db.execute("UPDATE operation_tasks SET status=?,blocker=? WHERE operation_id=? AND task_code=?", (status, "Awaiting final channel installation" if code=="INST-030" else "", demo["id"], code))
+    stamp = utc_now()
+    demo_evidence = (
+        ("CFG-010", "EVD-CFG-01", "CONTROLLED_DOCUMENT", "Released configuration baseline", "DEMO/BASELINE/DEMO-SF-CB-REV-C", "Configuration Manager", "VERIFIED"),
+        ("PROP-020", "EVD-PROP-01", "INSPECTION_RECORD", "Motor build inspection", "DEMO/PROP/BUILD-INSPECTION-001", "Maha Al Hinai", "VERIFIED"),
+        ("PROP-020", "EVD-PROP-02", "PHOTO_SET", "Article genealogy photographs", "DEMO/PROP/PHOTOSET-001", "Maha Al Hinai", "VERIFIED"),
+        ("INST-030", "EVD-INST-01", "CHECKLIST", "Instrumentation installation checklist", "DEMO/INST/INSTALL-DRAFT-001", "Nasser Al Rawahi", "DRAFT"),
+    )
+    for task_code, evidence_code, evidence_type, title, reference, supplied_by, status in demo_evidence:
+        digest = hashlib.sha256(reference.encode()).hexdigest()
+        db.execute("""INSERT OR IGNORE INTO task_evidence(operation_id,task_code,evidence_code,evidence_type,title,reference,
+            sha256,supplied_by,supplied_at,notes,status) VALUES(?,?,?,?,?,?,?,?,?,'Representative training evidence',?)""",
+            (demo["id"], task_code, evidence_code, evidence_type, title, reference, digest, supplied_by, stamp, status))
+    for task_code, role, reviewer in (("CFG-010", "PROP", "Maha Al Hinai"), ("PROP-020", "RSO", "Omar Al Balushi")):
+        db.execute("""INSERT OR IGNORE INTO task_reviews(operation_id,task_code,review_sequence,reviewer_role,reviewer_name,
+            decision,finding,reviewed_at) VALUES(?,?,1,?,?, 'ACCEPTED','Training evidence satisfies the acceptance criteria',?)""",
+            (demo["id"], task_code, role, reviewer, stamp))
 
 
 def seed_training_operation(db: sqlite3.Connection, mission_id: int, stamp: str) -> None:
@@ -611,6 +673,19 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     item["planning_tasks"] = [dict(x) for x in db.execute("""SELECT t.*,d.name department_name
         FROM operation_tasks t JOIN departments d ON d.code=t.department_code
         WHERE t.operation_id=? ORDER BY t.due_at,t.task_code""", (operation_id,))]
+    for task in item["planning_tasks"]:
+        task["evidence"] = [dict(x) for x in db.execute(
+            "SELECT * FROM task_evidence WHERE operation_id=? AND task_code=? ORDER BY supplied_at,evidence_code",
+            (operation_id, task["task_code"]))]
+        task["reviews"] = [dict(x) for x in db.execute(
+            "SELECT * FROM task_reviews WHERE operation_id=? AND task_code=? ORDER BY review_sequence",
+            (operation_id, task["task_code"]))]
+        task["verified_evidence_count"] = sum(1 for x in task["evidence"] if x["status"] == "VERIFIED")
+        stakeholders = [dict(x) for x in db.execute(
+            "SELECT role_code,stakeholder_type FROM task_stakeholders WHERE operation_id=? AND task_code=? ORDER BY stakeholder_type,role_code",
+            (operation_id, task["task_code"]))]
+        task["consulted_roles"] = [x["role_code"] for x in stakeholders if x["stakeholder_type"] == "C"]
+        task["informed_roles"] = [x["role_code"] for x in stakeholders if x["stakeholder_type"] == "I"]
     item["planning_milestones"] = [dict(x) for x in db.execute(
         "SELECT * FROM operation_milestones WHERE operation_id=? ORDER BY scheduled_at", (operation_id,))]
     task_total = len(item["planning_tasks"])
@@ -755,6 +830,66 @@ def planning_workspace(operation_id: int):
     return render_template("ops_planning.html", operation=item, departments=departments)
 
 
+def package_context(db: sqlite3.Connection, operation_id: int) -> tuple[dict | None, list[dict], list[dict]]:
+    item = operation_view(db, operation_id)
+    if not item:
+        return None, [], []
+    departments = [dict(x) for x in db.execute("SELECT * FROM departments WHERE active=1 ORDER BY name")]
+    assignments = item.get("staffing", {}).get("assignments", []) if item.get("staffing") else []
+    return item, departments, assignments
+
+
+@operations.get("/ops/<int:operation_id>/work-packages")
+def work_package_center(operation_id: int):
+    with connect() as db:
+        item, departments, assignments = package_context(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    department_packages = []
+    for department in departments:
+        tasks = [x for x in item["planning_tasks"] if x["department_code"] == department["code"]]
+        if tasks:
+            department_packages.append({**department, "tasks": tasks, "accepted": sum(x["status"] == "ACCEPTED" for x in tasks),
+                                        "blocked": sum(x["status"] == "BLOCKED" for x in tasks)})
+    people = []
+    for assignment in assignments:
+        tasks = [x for x in item["planning_tasks"] if x["responsible_role"] == assignment["role_code"]]
+        if tasks:
+            people.append({**assignment, "tasks": tasks, "accepted": sum(x["status"] == "ACCEPTED" for x in tasks)})
+    return render_template("ops_work_packages.html", operation=item, scope_kind="OVERVIEW",
+                           department_packages=department_packages, people=people, scoped_tasks=item["planning_tasks"])
+
+
+@operations.get("/ops/<int:operation_id>/work-packages/department/<department_code>")
+def department_work_package(operation_id: int, department_code: str):
+    with connect() as db:
+        item, departments, assignments = package_context(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    department = next((x for x in departments if x["code"] == department_code.upper()), None)
+    if not department:
+        return "Department not found", 404
+    tasks = [x for x in item["planning_tasks"] if x["department_code"] == department["code"]]
+    members = [x for x in assignments if any(t["responsible_role"] == x["role_code"] for t in tasks)]
+    return render_template("ops_work_packages.html", operation=item, scope_kind="DEPARTMENT", scope=department,
+                           scoped_tasks=tasks, members=members, department_packages=[], people=[])
+
+
+@operations.get("/ops/<int:operation_id>/work-packages/person/<role_code>")
+def person_work_package(operation_id: int, role_code: str):
+    with connect() as db:
+        item, departments, assignments = package_context(db, operation_id)
+    if not item:
+        return "Operation not found", 404
+    assignment = next((x for x in assignments if x["role_code"] == role_code.upper()), None)
+    if not assignment:
+        return "Assigned role not found", 404
+    tasks = [x for x in item["planning_tasks"] if x["responsible_role"] == assignment["role_code"]]
+    reviews = [x for x in item["planning_tasks"] if x["verifier_role"] == assignment["role_code"] and x["responsible_role"] != assignment["role_code"]]
+    return render_template("ops_work_packages.html", operation=item, scope_kind="PERSON", scope=assignment,
+                           scoped_tasks=tasks, verification_queue=reviews, department_packages=[], people=[])
+
+
 @operations.post("/api/ops/<int:operation_id>/planning/generate")
 def generate_planning_workspace(operation_id: int):
     p = request.get_json(silent=True) or {}
@@ -784,8 +919,13 @@ def update_planning_task(operation_id: int, task_code: str):
         task = db.execute("SELECT * FROM operation_tasks WHERE operation_id=? AND task_code=?", (operation_id, task_code)).fetchone()
         if not task:
             return jsonify(error="planning task not found"), 404
-        if status == "ACCEPTED" and task["safety_critical"] and task["verifier_role"] == task["responsible_role"]:
-            return jsonify(error="a safety-critical task requires an independent verifier role"), 409
+        assigned_identity = db.execute("""SELECT a.person_name FROM operation_role_assignments a
+            JOIN staffing_plans s ON s.id=a.staffing_plan_id WHERE s.operation_id=? AND a.role_code=?""",
+            (operation_id, task["responsible_role"])).fetchone()
+        if assigned_identity and assigned.casefold() != assigned_identity["person_name"].casefold():
+            return jsonify(error=f"{task['responsible_role']} is assigned to {assigned_identity['person_name']} in Team & Authority"), 409
+        if status == "ACCEPTED":
+            return jsonify(error="ACCEPTED is issued only through the independent task review control"), 409
         dependencies = [x["predecessor_code"] for x in db.execute(
             "SELECT predecessor_code FROM task_dependencies WHERE operation_id=? AND successor_code=?", (operation_id, task_code))]
         if status in {"READY_FOR_REVIEW", "ACCEPTED"} and dependencies:
@@ -794,11 +934,95 @@ def update_planning_task(operation_id: int, task_code: str):
                 f"SELECT task_code FROM operation_tasks WHERE operation_id=? AND task_code IN ({marks}) AND status!='ACCEPTED'", (operation_id, *dependencies))]
             if incomplete:
                 return jsonify(error="predecessor tasks must be accepted first: " + ", ".join(incomplete)), 409
+        evidence = [dict(x) for x in db.execute("SELECT * FROM task_evidence WHERE operation_id=? AND task_code=?", (operation_id, task_code))]
+        if status == "READY_FOR_REVIEW" and not any(x["status"] == "VERIFIED" for x in evidence):
+            return jsonify(error="attach and verify the required task evidence before requesting review"), 409
         db.execute("UPDATE operation_tasks SET assigned_person=?,status=?,blocker=?,updated_at=? WHERE operation_id=? AND task_code=?",
                    (assigned, status, blocker if status == "BLOCKED" else "", stamp, operation_id, task_code))
+        db.execute("INSERT INTO task_status_history(operation_id,task_code,previous_status,new_status,actor,reason,changed_at) VALUES(?,?,?,?,?,?,?)",
+                   (operation_id, task_code, task["status"], status, assigned, blocker, stamp))
         db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
                    (operation_id, stamp, "TASK_UPDATED", assigned, f"{task_code} changed to {status}"))
     return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/planning/tasks/<task_code>/evidence")
+def save_task_evidence(operation_id: int, task_code: str):
+    p = request.get_json(silent=True) or {}
+    code = str(p.get("evidence_code", "")).strip().upper()
+    kind = str(p.get("evidence_type", "")).strip().upper()
+    title = str(p.get("title", "")).strip(); reference = str(p.get("reference", "")).strip()
+    digest = str(p.get("sha256", "")).strip().lower(); supplied_by = str(p.get("supplied_by", "")).strip()
+    notes = str(p.get("notes", "")).strip(); status = str(p.get("status", "DRAFT")).strip().upper()
+    allowed_types = {"CONTROLLED_DOCUMENT", "CHECKLIST", "INSPECTION_RECORD", "PHOTO_SET", "DATA_FILE", "VIDEO", "CERTIFICATE", "EVENT_LOG"}
+    if not valid_code(code) or kind not in allowed_types or not title or not reference or not supplied_by or status not in {"DRAFT", "VERIFIED", "REJECTED"}:
+        return jsonify(error="evidence code, supported type, title, reference, supplier and status are required"), 400
+    if status == "VERIFIED" and not valid_sha256(digest):
+        return jsonify(error="verified evidence requires its complete 64-character SHA-256"), 400
+    stamp = utc_now()
+    with connect() as db:
+        task = db.execute("SELECT * FROM operation_tasks WHERE operation_id=? AND task_code=?", (operation_id, task_code)).fetchone()
+        if not task:
+            return jsonify(error="planning task not found"), 404
+        if task["assigned_person"] != "UNASSIGNED" and supplied_by.casefold() != task["assigned_person"].casefold():
+            return jsonify(error=f"task evidence must be supplied by the assigned performer: {task['assigned_person']}"), 409
+        db.execute("""INSERT INTO task_evidence(operation_id,task_code,evidence_code,evidence_type,title,reference,sha256,
+            supplied_by,supplied_at,notes,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(operation_id,task_code,evidence_code) DO UPDATE SET evidence_type=excluded.evidence_type,
+            title=excluded.title,reference=excluded.reference,sha256=excluded.sha256,supplied_by=excluded.supplied_by,
+            supplied_at=excluded.supplied_at,notes=excluded.notes,status=excluded.status""",
+            (operation_id, task_code, code, kind, title, reference, digest, supplied_by, stamp, notes, status))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "TASK_EVIDENCE_UPDATED", supplied_by, f"{code} attached to {task_code} as {status}"))
+    return jsonify(ok=True)
+
+
+@operations.post("/api/ops/<int:operation_id>/planning/tasks/<task_code>/review")
+def review_task(operation_id: int, task_code: str):
+    p = request.get_json(silent=True) or {}
+    reviewer_role = str(p.get("reviewer_role", "")).strip().upper()
+    reviewer_name = str(p.get("reviewer_name", "")).strip()
+    decision = str(p.get("decision", "")).strip().upper(); finding = str(p.get("finding", "")).strip()
+    if not reviewer_role or not reviewer_name or decision not in {"ACCEPTED", "REJECTED"}:
+        return jsonify(error="reviewer role, reviewer identity and ACCEPTED or REJECTED decision are required"), 400
+    if decision == "REJECTED" and not finding:
+        return jsonify(error="a rejected task requires a specific review finding"), 400
+    stamp = utc_now()
+    with connect() as db:
+        task = db.execute("SELECT * FROM operation_tasks WHERE operation_id=? AND task_code=?", (operation_id, task_code)).fetchone()
+        if not task:
+            return jsonify(error="planning task not found"), 404
+        if reviewer_role != task["verifier_role"]:
+            return jsonify(error=f"{task_code} requires review by role {task['verifier_role']}"), 409
+        approved_reviewer = db.execute("""SELECT a.person_name FROM operation_role_assignments a
+            JOIN staffing_plans s ON s.id=a.staffing_plan_id WHERE s.operation_id=? AND a.role_code=?""",
+            (operation_id, reviewer_role)).fetchone()
+        if approved_reviewer and reviewer_name.casefold() != approved_reviewer["person_name"].casefold():
+            return jsonify(error=f"{reviewer_role} review authority is assigned to {approved_reviewer['person_name']}"), 409
+        if reviewer_name.casefold() == task["assigned_person"].casefold():
+            return jsonify(error="the task performer cannot independently accept their own work"), 409
+        evidence = [dict(x) for x in db.execute("SELECT * FROM task_evidence WHERE operation_id=? AND task_code=?", (operation_id, task_code))]
+        if decision == "ACCEPTED" and not any(x["status"] == "VERIFIED" and valid_sha256(x["sha256"]) for x in evidence):
+            return jsonify(error="acceptance requires at least one VERIFIED evidence item with SHA-256 integrity"), 409
+        dependencies = [x["predecessor_code"] for x in db.execute(
+            "SELECT predecessor_code FROM task_dependencies WHERE operation_id=? AND successor_code=?", (operation_id, task_code))]
+        if decision == "ACCEPTED" and dependencies:
+            marks = ",".join("?" for _ in dependencies)
+            incomplete = [x["task_code"] for x in db.execute(
+                f"SELECT task_code FROM operation_tasks WHERE operation_id=? AND task_code IN ({marks}) AND status!='ACCEPTED'", (operation_id, *dependencies))]
+            if incomplete:
+                return jsonify(error="predecessor tasks must be accepted first: " + ", ".join(incomplete)), 409
+        sequence = db.execute("SELECT COALESCE(MAX(review_sequence),0)+1 n FROM task_reviews WHERE operation_id=? AND task_code=?", (operation_id, task_code)).fetchone()["n"]
+        db.execute("INSERT INTO task_reviews(operation_id,task_code,review_sequence,reviewer_role,reviewer_name,decision,finding,reviewed_at) VALUES(?,?,?,?,?,?,?,?)",
+                   (operation_id, task_code, sequence, reviewer_role, reviewer_name, decision, finding, stamp))
+        new_status = "ACCEPTED" if decision == "ACCEPTED" else "BLOCKED"
+        db.execute("UPDATE operation_tasks SET status=?,blocker=?,updated_at=? WHERE operation_id=? AND task_code=?",
+                   (new_status, finding if decision == "REJECTED" else "", stamp, operation_id, task_code))
+        db.execute("INSERT INTO task_status_history(operation_id,task_code,previous_status,new_status,actor,reason,changed_at) VALUES(?,?,?,?,?,?,?)",
+                   (operation_id, task_code, task["status"], new_status, reviewer_name, finding or "Acceptance criteria and evidence verified", stamp))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",
+                   (operation_id, stamp, "TASK_REVIEWED", reviewer_name, f"{task_code} review decision: {decision}"))
+    return jsonify(ok=True, status=new_status)
 
 
 def valid_code(value: str) -> bool:

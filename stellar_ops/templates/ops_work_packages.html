@@ -1,0 +1,61 @@
+{% extends "ops_base.html" %}{% block title %}SMTCS · Work Packages{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{url_for('static',filename='work_packages.css')}}">{% endblock %}
+{% block content %}
+<main class="packages-shell" data-operation-id="{{operation.id}}">
+  <header class="packages-title">
+    <div><small>CONTROLLED WORK DISTRIBUTION / PHASE 2</small>
+      <h1>{% if scope_kind=='OVERVIEW' %}Department & Employee Work Packages{% elif scope_kind=='DEPARTMENT' %}{{scope.name}} Work Package{% else %}Individual Assignment Package{% endif %}</h1>
+      <p>{{operation.code}} · {{operation.title}}</p>
+    </div>
+    <nav><a href="/ops/{{operation.id}}">OPERATION</a><a href="/ops/{{operation.id}}/planning">MASTER PLAN</a>{% if scope_kind!='OVERVIEW' %}<a href="/ops/{{operation.id}}/work-packages">ALL PACKAGES</a>{% endif %}</nav>
+  </header>
+
+  {% if operation.is_training %}<section class="training-band"><b>TRAINING WORK PACKAGE</b><span>Named personnel and evidence below are representative examples for learning the responsibility and acceptance flow.</span></section>{% endif %}
+
+  {% if scope_kind=='OVERVIEW' %}
+  <section class="package-summary">
+    <div><small>DEPARTMENT PACKAGES</small><b>{{department_packages|length}}</b></div>
+    <div><small>INDIVIDUAL PACKAGES</small><b>{{people|length}}</b></div>
+    <div><small>CONTROLLED TASKS</small><b>{{scoped_tasks|length}}</b></div>
+    <div><small>VERIFIED EVIDENCE</small><b>{{scoped_tasks|sum(attribute='verified_evidence_count')}}</b></div>
+    <div><small>PLAN ACCEPTANCE</small><b>{{operation.planning_progress}}%</b></div>
+  </section>
+
+  <section class="package-grid">
+    <div class="package-column"><header><b>DEPARTMENT WORK PACKAGES</b><small>FUNCTIONAL DELIVERY</small></header>
+      {% for package in department_packages %}<a class="package-card" href="/ops/{{operation.id}}/work-packages/department/{{package.code}}">
+        <span class="code">{{package.code}}</span><div><b>{{package.name}}</b><small>LEAD ROLE {{package.lead_role}}</small><p>{{package.purpose}}</p></div>
+        <aside><b>{{package.accepted}} / {{package.tasks|length}}</b><small>ACCEPTED</small>{% if package.blocked %}<em>{{package.blocked}} BLOCKED</em>{% endif %}</aside>
+      </a>{% endfor %}
+    </div>
+    <div class="package-column"><header><b>INDIVIDUAL ASSIGNMENT PACKAGES</b><small>NAMED OPERATION PERSONNEL</small></header>
+      {% for person in people %}<a class="person-card" href="/ops/{{operation.id}}/work-packages/person/{{person.role_code}}">
+        <span>{{person.role_code}}</span><div><b>{{person.person_name}}</b><small>{{person.call_sign}} · {{person.organization}}</small><p>{{person.contact_method}}</p></div><aside><b>{{person.accepted}} / {{person.tasks|length}}</b><small>ACCEPTED</small></aside>
+      </a>{% endfor %}
+    </div>
+  </section>
+
+  <section class="raci"><header><div><b>RACI / INDEPENDENT VERIFICATION MATRIX</b><small>R = RESPONSIBLE · A = ACCOUNTABLE · C = CONSULTED · I = INFORMED · V = VERIFIER</small></div></header>
+    <table><thead><tr><th>TASK</th><th>DEPARTMENT</th><th>RESPONSIBLE</th><th>ASSIGNED PERSON</th><th>ACCOUNTABLE</th><th>CONSULTED</th><th>INFORMED</th><th>VERIFIER</th><th>EVIDENCE</th><th>STATUS</th></tr></thead><tbody>
+      {% for task in scoped_tasks %}<tr><td><code>{{task.task_code}}</code><b>{{task.title}}</b></td><td>{{task.department_code}}</td><td><span class="r">R</span>{{task.responsible_role}}</td><td>{{task.assigned_person}}</td><td><span class="a">A</span>{{task.accountable_role}}</td><td><span class="c">C</span>{{task.consulted_roles|join(' · ') or '—'}}</td><td><span class="i">I</span>{{task.informed_roles|join(' · ') or '—'}}</td><td><span class="v">V</span>{{task.verifier_role}}</td><td>{{task.verified_evidence_count}} VERIFIED</td><td><em class="state {{task.status.lower()}}">{{task.status.replace('_',' ')}}</em></td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+  {% else %}
+  <section class="scope-identity">
+    {% if scope_kind=='DEPARTMENT' %}<span>{{scope.code}}</span><div><small>DEPARTMENT PURPOSE</small><h2>{{scope.name}}</h2><p>{{scope.purpose}}</p></div><aside><small>LEAD ROLE</small><b>{{scope.lead_role}}</b><small>ASSIGNED MEMBERS</small><b>{{members|length}}</b></aside>
+    {% else %}<span>{{scope.role_code}}</span><div><small>ASSIGNED PERSON</small><h2>{{scope.person_name}}</h2><p>{{scope.organization}} · {{scope.contact_method}}</p></div><aside><small>CALL SIGN</small><b>{{scope.call_sign}}</b><small>QUALIFICATION</small><b>{{scope.qualification_status}}</b></aside>{% endif %}
+  </section>
+
+  {% if scope_kind=='PERSON' %}<section class="personal-brief"><article><small>YOUR RESPONSIBILITY</small><p>Complete assigned work exactly against the controlled inputs and acceptance criteria. Supply traceable evidence before requesting review.</p></article><article><small>YOUR AUTHORITY</small><p>{{'Operational decision authority is assigned to this role.' if scope.decision_authority else 'This role provides technical execution and recommendation; final authority remains with the accountable role.'}}</p></article><article><small>ESCALATION</small><p>Use BLOCKED when work cannot proceed. State the exact cause; do not bypass dependencies or substitute uncontrolled evidence.</p></article></section>{% endif %}
+
+  <section class="scoped-register"><header><div><b>{{'DEPARTMENT DELIVERABLES' if scope_kind=='DEPARTMENT' else 'MY ASSIGNED TASKS'}}</b><small>INSTRUCTIONS · EVIDENCE · INDEPENDENT ACCEPTANCE</small></div><span>{{scoped_tasks|length}} TASKS</span></header>
+    {% for task in scoped_tasks %}{% include 'partials/work_package_task.html' %}{% else %}<div class="empty">No preparation tasks are assigned to this package.</div>{% endfor %}
+  </section>
+
+  {% if scope_kind=='PERSON' %}<section class="verification-queue"><header><div><b>INDEPENDENT VERIFICATION QUEUE</b><small>WORK PERFORMED BY OTHER ROLES REQUIRING YOUR REVIEW</small></div><span>{{verification_queue|length}} REVIEWS</span></header>
+    {% for task in verification_queue %}{% include 'partials/work_package_task.html' %}{% else %}<div class="empty">No tasks currently require this role's independent verification.</div>{% endfor %}
+  </section>{% endif %}
+  {% endif %}
+  <footer class="packages-footer"><span id="package-message"></span><p>All acceptance decisions and evidence changes are appended to the operation activity record.</p></footer>
+</main>
+{% endblock %}{% block scripts %}<script src="{{url_for('static',filename='work_packages.js')}}"></script>{% endblock %}

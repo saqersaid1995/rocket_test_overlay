@@ -77,6 +77,50 @@ class OperationWorkflowTests(unittest.TestCase):
             "assigned_person": "Nasser Al Rawahi", "status": "BLOCKED", "blocker": ""})
         self.assertEqual(response.status_code, 400)
 
+    def test_training_work_packages_explain_departments_people_raci_and_evidence(self):
+        with control_module.connect() as db:
+            demo = db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()
+        center = self.client.get(f"/ops/{demo['id']}/work-packages")
+        self.assertEqual(center.status_code, 200)
+        self.assertIn(b"Department & Employee Work Packages", center.data)
+        self.assertIn(b"RACI / INDEPENDENT VERIFICATION MATRIX", center.data)
+        self.assertIn(b"Nasser Al Rawahi", center.data)
+        department = self.client.get(f"/ops/{demo['id']}/work-packages/department/INST")
+        self.assertEqual(department.status_code, 200)
+        self.assertIn(b"Instrumentation Work Package", department.data)
+        self.assertIn(b"Instrumentation installation checklist", department.data)
+        person = self.client.get(f"/ops/{demo['id']}/work-packages/person/INST")
+        self.assertEqual(person.status_code, 200)
+        self.assertIn(b"Individual Assignment Package", person.data)
+        self.assertIn(b"INDEPENDENT VERIFICATION QUEUE", person.data)
+
+    def test_task_evidence_and_independent_review_issue_acceptance(self):
+        response = self.client.post("/api/ops", json={
+            "mission_id": 1, "code": "QPKG-001", "title": "Work package test",
+            "operation_type": "STATIC_FIRE", "site": "Test Site", "planned_start": "2026-10-01T08:00",
+            "objective": "Verify work package evidence flow", "success_criteria": ["Accepted evidence"], "owner": "TD"})
+        operation_id = response.get_json()["id"]
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/planning/generate", json={}).status_code, 200)
+        weak = self.client.post(f"/api/ops/{operation_id}/planning/tasks/CFG-010/evidence", json={
+            "evidence_code": "EVD-CFG-10", "evidence_type": "CONTROLLED_DOCUMENT", "title": "Baseline",
+            "reference": "CONFIG/BASELINE", "sha256": "short", "supplied_by": "Configuration Manager", "status": "VERIFIED"})
+        self.assertEqual(weak.status_code, 400)
+        evidence = self.client.post(f"/api/ops/{operation_id}/planning/tasks/CFG-010/evidence", json={
+            "evidence_code": "EVD-CFG-10", "evidence_type": "CONTROLLED_DOCUMENT", "title": "Baseline",
+            "reference": "CONFIG/BASELINE", "sha256": "a" * 64, "supplied_by": "Configuration Manager", "status": "VERIFIED"})
+        self.assertEqual(evidence.status_code, 200)
+        self_review = self.client.post(f"/api/ops/{operation_id}/planning/tasks/CFG-010/review", json={
+            "reviewer_role": "PROP", "reviewer_name": "UNASSIGNED", "decision": "ACCEPTED", "finding": ""})
+        self.assertEqual(self_review.status_code, 409)
+        accepted = self.client.post(f"/api/ops/{operation_id}/planning/tasks/CFG-010/review", json={
+            "reviewer_role": "PROP", "reviewer_name": "Independent Propulsion Reviewer", "decision": "ACCEPTED", "finding": ""})
+        self.assertEqual(accepted.status_code, 200)
+        with control_module.connect() as db:
+            task = db.execute("SELECT status FROM operation_tasks WHERE operation_id=? AND task_code='CFG-010'", (operation_id,)).fetchone()
+            reviews = db.execute("SELECT count(*) n FROM task_reviews WHERE operation_id=? AND task_code='CFG-010'", (operation_id,)).fetchone()["n"]
+        self.assertEqual(task["status"], "ACCEPTED")
+        self.assertEqual(reviews, 1)
+
     def test_builder_creates_controlled_operation_and_unlocks_article(self):
         response = self.client.post("/api/ops", json={
             "mission_id": 1, "code": "QSF-002", "title": "Secondary qualification static fire",
