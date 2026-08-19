@@ -40,7 +40,7 @@ class OperationWorkflowTests(unittest.TestCase):
         detail = self.client.get(f"/ops/{demo['id']}")
         self.assertIn(b"TRAINING / DEMONSTRATION RECORD", detail.data)
         for page in ("article", "baseline", "team", "procedure", "instrumentation", "video",
-                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents", "handbook"):
+                     "readiness", "rehearsal", "execution", "review", "planning", "safety", "documents", "handbook", "briefing"):
             response = self.client.get(f"/ops/{demo['id']}/{page}")
             self.assertEqual(response.status_code, 200, page)
         planning = self.client.get(f"/ops/{demo['id']}/planning")
@@ -321,6 +321,34 @@ class OperationWorkflowTests(unittest.TestCase):
         with control_module.connect() as db: issue=db.execute("SELECT * FROM execution_pack_issues WHERE id=?",(issue_id,)).fetchone()
         self.assertEqual(issue["delivery_status"],"ACKNOWLEDGED");self.assertEqual(issue["acknowledged_by"],"Maha Al Hinai");self.assertEqual(len(issue["sha256"]),64)
         self.assertEqual(self.client.get(f"/ops/{operation_id}/execution-packs/files/{issue_id}").status_code,200)
+
+    def test_day_of_operation_briefing_blocks_then_freezes_complete_signoff(self):
+        self.assertEqual(self.client.get("/ops").status_code,200)
+        with control_module.connect() as db: operation_id=db.execute("SELECT id FROM operation_registry WHERE code='DEMO-SF-001'").fetchone()["id"]
+        page=self.client.get(f"/ops/{operation_id}/briefing")
+        self.assertEqual(page.status_code,200);self.assertIn(b"Day-of-Operation Briefing",page.data)
+        blocked=self.client.post(f"/api/ops/{operation_id}/briefing/close",json={"closed_by":"Training Test Director"})
+        self.assertEqual(blocked.status_code,409);self.assertIn("findings",blocked.get_json())
+        with control_module.connect() as db:
+            briefing=db.execute("SELECT id FROM operation_briefings WHERE operation_id=?",(operation_id,)).fetchone()
+            roles=[x["role_code"] for x in db.execute("SELECT role_code FROM briefing_attendance WHERE briefing_id=?",(briefing["id"],))]
+            pack_roles=[x["role_code"] for x in db.execute("SELECT role_code FROM briefing_attendance WHERE briefing_id=? AND pack_required=1",(briefing["id"],))]
+        for role in pack_roles:
+            issued=self.client.post(f"/api/ops/{operation_id}/execution-packs/generate",json={"scope_kind":"PERSON","scope_key":role,"state":"RELEASED","issued_by":"Training Document Control"})
+            self.assertEqual(issued.status_code,200,issued.get_json());issue_id=issued.get_json()["issue_id"]
+            self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution-packs/{issue_id}/delivery",json={"action":"DELIVER","actor":"Training Document Control"}).status_code,200)
+            with control_module.connect() as db: person=db.execute("SELECT person_name FROM briefing_attendance WHERE briefing_id=? AND role_code=?",(briefing["id"],role)).fetchone()["person_name"]
+            self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution-packs/{issue_id}/delivery",json={"action":"ACKNOWLEDGE","actor":person,"note":"Brief reviewed"}).status_code,200)
+        saved=self.client.post(f"/api/ops/{operation_id}/briefing",json={
+            "briefing_code":"DEMO-SF-001-DOB","scheduled_at":"2026-09-15T07:00","location":"Al Buraimi Training Stand","chair_role":"TD","recorder":"Training Recorder",
+            "weather_summary":"Clear, 32 C, wind within training limits","site_status":"VERIFIED CLEAR","change_summary":"No changes since rehearsal","notes":"Training sign-off",
+            "topics":[{"topic_key":key,"status":"BRIEFED","evidence_reference":f"DEMO/BRIEF/{key}","notes":"Reviewed"} for key,_,_ in __import__('stellar_ops.operations',fromlist=['BRIEFING_TOPICS']).BRIEFING_TOPICS],
+            "attendees":[{"role_code":role,"attendance_status":"PRESENT","fit_for_duty":True,"comms_check":"PASS","concern_status":"CLEAR","concern":"","signed":True} for role in roles]})
+        self.assertEqual(saved.status_code,200,saved.get_json())
+        closed=self.client.post(f"/api/ops/{operation_id}/briefing/close",json={"closed_by":"Training Test Director"})
+        self.assertEqual(closed.status_code,200,closed.get_json());self.assertEqual(len(closed.get_json()["sha256"]),64)
+        immutable=self.client.post(f"/api/ops/{operation_id}/briefing",json={"notes":"changed"})
+        self.assertEqual(immutable.status_code,409)
 
     def prepare_team_stage(self, code="QTEAM-010"):
         operation_id = self.prepare_identified_article(code)
@@ -730,6 +758,9 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=rehearsal).status_code, 200)
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal/complete", json={
             "summary": "All mandatory rehearsal paths passed in simulation."}).status_code, 200)
+        self.assertEqual(self.client.get(f"/ops/{operation_id}/briefing").status_code,200)
+        with control_module.connect() as db:
+            db.execute("UPDATE operation_briefings SET state='CLOSED',canonical_sha256=?,closed_at=?,closed_by=? WHERE operation_id=?",("d"*64,"2026-09-03T07:00:00Z","Test Director",operation_id))
         return operation_id
 
     def execution_release_payload(self):
@@ -751,6 +782,10 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertIn(b"Execution Release", page.data)
         payload = self.execution_release_payload()
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=payload).status_code, 200)
+        with control_module.connect() as db: db.execute("UPDATE operation_briefings SET state='DRAFT',canonical_sha256=NULL WHERE operation_id=?",(operation_id,))
+        briefing_blocked=self.client.post(f"/api/ops/{operation_id}/execution/release",json=self.execution_authorizations())
+        self.assertEqual(briefing_blocked.status_code,409);self.assertIn("Day-of-Operation Briefing",briefing_blocked.get_json()["error"])
+        with control_module.connect() as db: db.execute("UPDATE operation_briefings SET state='CLOSED',canonical_sha256=? WHERE operation_id=?",("d"*64,operation_id))
         blocked = self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations())
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("must be LIVE", blocked.get_json()["error"])

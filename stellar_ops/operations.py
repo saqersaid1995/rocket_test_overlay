@@ -376,6 +376,28 @@ CREATE TABLE IF NOT EXISTS execution_pack_issues(
  delivery_status TEXT NOT NULL, delivered_at TEXT, acknowledged_at TEXT,
  acknowledged_by TEXT, acknowledgement_note TEXT NOT NULL,
  UNIQUE(operation_id,pack_code,issue_sequence), FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS operation_briefings(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL UNIQUE,
+ briefing_code TEXT NOT NULL, state TEXT NOT NULL, scheduled_at TEXT NOT NULL,
+ location TEXT NOT NULL, chair_role TEXT NOT NULL, recorder TEXT NOT NULL,
+ weather_summary TEXT NOT NULL, site_status TEXT NOT NULL, change_summary TEXT NOT NULL,
+ notes TEXT NOT NULL, canonical_sha256 TEXT, closed_at TEXT, closed_by TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(operation_id) REFERENCES operation_registry(id));
+CREATE TABLE IF NOT EXISTS briefing_topics(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, briefing_id INTEGER NOT NULL,
+ topic_key TEXT NOT NULL, title TEXT NOT NULL, owner_role TEXT NOT NULL,
+ required INTEGER NOT NULL, status TEXT NOT NULL, evidence_reference TEXT NOT NULL,
+ notes TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(briefing_id,topic_key), FOREIGN KEY(briefing_id) REFERENCES operation_briefings(id));
+CREATE TABLE IF NOT EXISTS briefing_attendance(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, briefing_id INTEGER NOT NULL,
+ role_code TEXT NOT NULL, person_name TEXT NOT NULL, required INTEGER NOT NULL,
+ attendance_status TEXT NOT NULL, fit_for_duty INTEGER NOT NULL,
+ comms_check TEXT NOT NULL, pack_required INTEGER NOT NULL,
+ concern_status TEXT NOT NULL, concern TEXT NOT NULL,
+ signed_at TEXT, signed_by TEXT, updated_at TEXT NOT NULL,
+ UNIQUE(briefing_id,role_code), FOREIGN KEY(briefing_id) REFERENCES operation_briefings(id));
 CREATE TABLE IF NOT EXISTS operation_hazards(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id INTEGER NOT NULL,
  hazard_code TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL,
@@ -1188,6 +1210,112 @@ def download_execution_pack(operation_id:int,issue_id:int):
     return send_file(path,mimetype=row["mime_type"],as_attachment=True,download_name=row["filename"])
 
 
+BRIEFING_TOPICS = (
+    ("MISSION","Mission objectives and success criteria","TD"),("AUTHORITY","Command authority, stop-work and escalation","TD"),
+    ("CONFIGURATION","Released configuration and changes since rehearsal","CM"),("SAFETY","Hazards, controls, HOLD and abort response","RSO"),
+    ("SITE","Site, exclusion zone, weather and emergency access","RSO"),("PROCEDURE","Sequence, hold points and contingency actions","TD"),
+    ("INSTRUMENTATION","DAQ, limits, time source and data-loss response","INST"),("VIDEO","Camera, recording and evidence custody","DATA"),
+    ("COMMUNICATIONS","Primary and backup net communications check","LCO"),("SAFING","Post-operation safing and site release","PROP"),
+)
+
+
+def briefing_context(db:sqlite3.Connection,operation_id:int):
+    item=operation_view(db,operation_id)
+    if not item:return None,None,[],[]
+    row=db.execute("SELECT * FROM operation_briefings WHERE operation_id=?",(operation_id,)).fetchone();stamp=utc_now()
+    if not row:
+        scheduled=item.get("planned_start") or stamp
+        cur=db.execute("""INSERT INTO operation_briefings(operation_id,briefing_code,state,scheduled_at,location,chair_role,recorder,weather_summary,site_status,change_summary,notes,created_at,updated_at)
+            VALUES(?,?,'DRAFT',?,?,?,'UNASSIGNED','NOT RECORDED','NOT VERIFIED','NO CHANGES DECLARED','',?,?)""",(operation_id,f"{item['code']}-DOB",scheduled,item.get("site") or "NOT ASSIGNED","TD",stamp,stamp))
+        bid=cur.lastrowid
+        for key,title,owner in BRIEFING_TOPICS:db.execute("INSERT INTO briefing_topics(briefing_id,topic_key,title,owner_role,required,status,evidence_reference,notes,updated_at) VALUES(?,?,?,?,1,'PENDING','','',?)",(bid,key,title,owner,stamp))
+        row=db.execute("SELECT * FROM operation_briefings WHERE id=?",(bid,)).fetchone()
+    briefing=dict(row);bid=briefing["id"]
+    assignments=(item.get("staffing") or {}).get("assignments",[])
+    task_roles={x.get("responsible_role") for x in item.get("planning_tasks",[])}|{x.get("verifier_role") for x in item.get("planning_tasks",[])}
+    for a in assignments:
+        db.execute("""INSERT INTO briefing_attendance(briefing_id,role_code,person_name,required,attendance_status,fit_for_duty,comms_check,pack_required,concern_status,concern,signed_at,signed_by,updated_at)
+            VALUES(?,?,?,1,'UNCONFIRMED',0,'NOT_TESTED',?,'CLEAR','',NULL,NULL,?) ON CONFLICT(briefing_id,role_code) DO UPDATE SET person_name=excluded.person_name,pack_required=excluded.pack_required""",
+            (bid,a["role_code"],a["person_name"],1 if a["role_code"] in task_roles else 0,stamp))
+    topics=[dict(x) for x in db.execute("SELECT * FROM briefing_topics WHERE briefing_id=? ORDER BY id",(bid,))]
+    attendees=[dict(x) for x in db.execute("SELECT * FROM briefing_attendance WHERE briefing_id=? ORDER BY role_code",(bid,))]
+    for a in attendees:
+        issue=db.execute("""SELECT * FROM execution_pack_issues WHERE operation_id=? AND scope_kind='PERSON' AND scope_key=? AND state='RELEASED' ORDER BY issue_sequence DESC LIMIT 1""",(operation_id,a["role_code"])).fetchone()
+        a["pack_issue"]=dict(issue) if issue else None;a["pack_status"]=(issue["delivery_status"] if issue else "NOT_ISSUED") if a["pack_required"] else "NOT_REQUIRED"
+        assignment=next((x for x in assignments if x["role_code"]==a["role_code"]),{})
+        a["qualification_status"]=assignment.get("qualification_status","UNKNOWN");a["availability_status"]=assignment.get("availability_status","UNKNOWN")
+    return item,briefing,topics,attendees
+
+
+def briefing_findings(item:dict,briefing:dict,topics:list[dict],attendees:list[dict]):
+    findings=[]
+    if (item.get("staffing") or {}).get("state")!="APPROVED":findings.append("Approved staffing plan is required.")
+    if (item.get("readiness") or {}).get("final_decision")!="GO":findings.append("Readiness Review GO decision is required.")
+    if not briefing.get("scheduled_at") or not briefing.get("location") or not briefing.get("recorder"):findings.append("Schedule, location and named recorder are required.")
+    if briefing.get("weather_summary") in {"","NOT RECORDED"}:findings.append("Weather and environmental conditions are not recorded.")
+    if briefing.get("site_status") not in {"VERIFIED CLEAR","CONTROLLED"}:findings.append("Site status is not VERIFIED CLEAR or CONTROLLED.")
+    for t in topics:
+        if t["required"] and t["status"]!="BRIEFED":findings.append(f"{t['topic_key']}: mandatory topic is not briefed.")
+    for a in attendees:
+        prefix=f"{a['role_code']} / {a['person_name']}"
+        if a["required"] and a["attendance_status"] not in {"PRESENT","REMOTE"}:findings.append(f"{prefix}: attendance is not confirmed.")
+        if a["required"] and not a["fit_for_duty"]:findings.append(f"{prefix}: fit-for-duty declaration is missing.")
+        if a["required"] and a["comms_check"]!="PASS":findings.append(f"{prefix}: communications check has not passed.")
+        if a["qualification_status"]!="CURRENT":findings.append(f"{prefix}: qualification is not CURRENT.")
+        if a["availability_status"]!="CONFIRMED":findings.append(f"{prefix}: availability is not CONFIRMED.")
+        if a["pack_required"] and a["pack_status"]!="ACKNOWLEDGED":findings.append(f"{prefix}: released execution pack is not acknowledged.")
+        if a["concern_status"]=="OPEN":findings.append(f"{prefix}: open concern requires disposition.")
+        if a["required"] and not a.get("signed_at"):findings.append(f"{prefix}: briefing sign-off is missing.")
+    return list(dict.fromkeys(findings))
+
+
+@operations.get("/ops/<int:operation_id>/briefing")
+def day_of_operation_briefing(operation_id:int):
+    with connect() as db:item,briefing,topics,attendees=briefing_context(db,operation_id)
+    if not item:return "Operation not found",404
+    findings=briefing_findings(item,briefing,topics,attendees)
+    return render_template("ops_briefing.html",operation=item,briefing=briefing,topics=topics,attendees=attendees,findings=findings)
+
+
+@operations.post("/api/ops/<int:operation_id>/briefing")
+def save_day_of_operation_briefing(operation_id:int):
+    p=request.get_json(silent=True) or {};stamp=utc_now()
+    with connect() as db:
+        item,briefing,topics,attendees=briefing_context(db,operation_id)
+        if not item:return jsonify(error="operation not found"),404
+        if briefing["state"]=="CLOSED":return jsonify(error="closed briefing record is immutable"),409
+        fields=[str(p.get(k,briefing[k])).strip() for k in ("briefing_code","scheduled_at","location","chair_role","recorder","weather_summary","site_status","change_summary","notes")]
+        db.execute("""UPDATE operation_briefings SET briefing_code=?,scheduled_at=?,location=?,chair_role=?,recorder=?,weather_summary=?,site_status=?,change_summary=?,notes=?,updated_at=? WHERE id=?""",(*fields,stamp,briefing["id"]))
+        for t in p.get("topics",[]):
+            status=str(t.get("status","PENDING")).upper()
+            if status not in {"PENDING","BRIEFED","NOT_APPLICABLE"}:return jsonify(error="invalid briefing topic status"),400
+            db.execute("UPDATE briefing_topics SET status=?,evidence_reference=?,notes=?,updated_at=? WHERE briefing_id=? AND topic_key=?",(status,str(t.get("evidence_reference","")).strip(),str(t.get("notes","")).strip(),stamp,briefing["id"],str(t.get("topic_key","")).upper()))
+        for a in p.get("attendees",[]):
+            attendance=str(a.get("attendance_status","UNCONFIRMED")).upper();comms=str(a.get("comms_check","NOT_TESTED")).upper();concern_status=str(a.get("concern_status","CLEAR")).upper();sign=bool(a.get("signed"))
+            if attendance not in {"UNCONFIRMED","PRESENT","REMOTE","ABSENT"} or comms not in {"NOT_TESTED","PASS","FAIL"} or concern_status not in {"CLEAR","OPEN","DISPOSITIONED"}:return jsonify(error="invalid crew sign-off status"),400
+            role=str(a.get("role_code","")).upper();person=next((x["person_name"] for x in attendees if x["role_code"]==role),"")
+            db.execute("""UPDATE briefing_attendance SET attendance_status=?,fit_for_duty=?,comms_check=?,concern_status=?,concern=?,signed_at=?,signed_by=?,updated_at=? WHERE briefing_id=? AND role_code=?""",
+                (attendance,1 if a.get("fit_for_duty") else 0,comms,concern_status,str(a.get("concern","")).strip(),stamp if sign else None,person if sign else None,stamp,briefing["id"],role))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"DAY_BRIEFING_UPDATED",fields[4],f"Day-of-operation briefing {fields[0]} updated"))
+    return jsonify(ok=True,url=url_for("operations.day_of_operation_briefing",operation_id=operation_id))
+
+
+@operations.post("/api/ops/<int:operation_id>/briefing/close")
+def close_day_of_operation_briefing(operation_id:int):
+    p=request.get_json(silent=True) or {};actor=str(p.get("closed_by","")).strip();stamp=utc_now()
+    if not actor:return jsonify(error="named closing authority is required"),400
+    with connect() as db:
+        item,briefing,topics,attendees=briefing_context(db,operation_id)
+        if not item:return jsonify(error="operation not found"),404
+        findings=briefing_findings(item,briefing,topics,attendees)
+        if findings:return jsonify(error="crew briefing cannot close",findings=findings),409
+        canonical={"schema":"SMTCS-DAY-BRIEFING/1","operation":item["code"],"briefing":briefing,"topics":topics,"attendance":[{k:v for k,v in a.items() if k not in {"pack_issue"}} for a in attendees]}
+        digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,default=str).encode()).hexdigest()
+        db.execute("UPDATE operation_briefings SET state='CLOSED',canonical_sha256=?,closed_at=?,closed_by=?,updated_at=? WHERE id=?",(digest,stamp,actor,stamp,briefing["id"]))
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"DAY_BRIEFING_CLOSED",actor,f"Crew briefing closed with SHA-256 {digest}"))
+    return jsonify(ok=True,sha256=digest,url=url_for("operations.day_of_operation_briefing",operation_id=operation_id))
+
+
 @operations.get("/ops/<int:operation_id>/documents")
 def document_export_center(operation_id: int):
     with connect() as db:
@@ -1740,6 +1868,9 @@ def issue_execution_release(operation_id:int):
         if not release:return jsonify(error="save the execution release package first"),409
         if release["state"]!="DRAFT":return jsonify(error="execution release has already been issued"),409
         if release["valid_until"]<stamp[:16]:return jsonify(error="execution release validity window has expired"),409
+        briefing=db.execute("SELECT state,canonical_sha256 FROM operation_briefings WHERE operation_id=?",(operation_id,)).fetchone()
+        if not briefing or briefing["state"]!="CLOSED" or not briefing["canonical_sha256"]:
+            return jsonify(error="a closed Day-of-Operation Briefing and complete crew sign-off are required before LIVE release"),409
         gates=[dict(x) for x in db.execute("SELECT * FROM execution_release_gates WHERE release_id=?",(release["id"],))]
         expected={x["code"] for x in execution_gate_catalog(operation["operation_type"])};present={x["gate_code"] for x in gates}
         missing=sorted(expected-present)
@@ -1763,7 +1894,7 @@ def issue_execution_release(operation_id:int):
             if assigned.get(role)!=person:return jsonify(error=f"{role} authorization does not match approved staffing assignment"),409
             if decision!="GO" or not attestation:return jsonify(error=f"{role} must provide GO and an explicit attestation"),409
         if len({auth[r][0].casefold() for r in required})!=3:return jsonify(error="TD, RSO and LCO authorizations must be from separate people"),409
-        canonical={"schema":"SMTCS-EXECUTION-RELEASE/1","operation":operation["code"],"release":{"code":release["release_code"],"source_mode":release["source_mode"],"valid_until":release["valid_until"],"baseline":release["baseline_sha256"],"procedure":release["procedure_sha256"],"readiness":release["readiness_sha256"],"rehearsal":release["rehearsal_sha256"]},
+        canonical={"schema":"SMTCS-EXECUTION-RELEASE/1","operation":operation["code"],"release":{"code":release["release_code"],"source_mode":release["source_mode"],"valid_until":release["valid_until"],"baseline":release["baseline_sha256"],"procedure":release["procedure_sha256"],"readiness":release["readiness_sha256"],"rehearsal":release["rehearsal_sha256"],"crew_briefing":briefing["canonical_sha256"]},
                    "gates":[{k:x[k] for k in ("gate_code","status","evidence_reference","verified_by")} for x in sorted(gates,key=lambda y:y["gate_code"])],
                    "authorizations":[{"role":r,"person":auth[r][0],"decision":auth[r][1],"attestation":auth[r][2]} for r in sorted(required)]}
         digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
