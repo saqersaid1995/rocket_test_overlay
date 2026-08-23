@@ -10,6 +10,8 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
+from .camera_runtime import (camera_status, has_password, mjpeg_frames,
+                             save_password, test_camera)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
@@ -275,6 +277,8 @@ def snapshot() -> dict:
         data["integrations"] = [dict(x) for x in db.execute("""SELECT i.*,d.name,d.device_type,d.endpoint
             FROM device_integrations i JOIN devices d ON d.operation_id=i.operation_id AND d.id=i.device_id
             WHERE i.operation_id=? ORDER BY d.rowid""", (OPERATION_ID,))]
+        for integration in data["integrations"]:
+            integration["secret_configured"] = has_password(integration["device_id"]) if integration["device_type"] == "IP-CAMERA" else False
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
@@ -297,7 +301,7 @@ def snapshot() -> dict:
                 device["health"] = "DISABLED"
                 device["recording"] = "STOPPED"
             elif device["device_type"] == "IP-CAMERA":
-                device["health"] = "NOT_CONNECTED"
+                device["health"] = camera_status(device["id"])["status"]
                 device["recording"] = "STOPPED"
             elif op_dict["mode"] == "LIVE":
                 qualities = channel_by_source.get(device["id"], [])
@@ -423,6 +427,12 @@ def save_device():
     with connect() as db:
         blocked = configuration_error(db)
         if blocked: return jsonify(error=blocked), 409
+        password = str(payload.get("password", ""))
+        if device_type == "IP-CAMERA" and password:
+            try:
+                save_password(device_id, password)
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 503
         db.execute("""INSERT INTO devices(operation_id,id,name,device_type,protocol,endpoint,health,recording,required)
           VALUES(?,?,?,?,?,?,?,'STOPPED',?)
           ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,device_type=excluded.device_type,
@@ -464,12 +474,33 @@ def test_device(device_id: str):
         if not row: return jsonify(error="device integration not found"), 404
         if not row["enabled"]: return jsonify(error="restore the device before testing its connection"), 409
         config = json.loads(row["config_json"])
-        result = test_adapter(row["adapter_type"], config.get("endpoint", ""))
+        device = db.execute("SELECT device_type FROM devices WHERE operation_id=? AND id=?", (OPERATION_ID, device_id)).fetchone()
+        if device and device["device_type"] == "IP-CAMERA":
+            result = test_camera(device_id, row["adapter_type"], config.get("endpoint", ""), config.get("username", ""))
+        else:
+            result = test_adapter(row["adapter_type"], config.get("endpoint", ""))
         db.execute("UPDATE device_integrations SET last_test_at=?,last_test_status=?,last_test_message=? WHERE operation_id=? AND device_id=?",
                    (utc_now(), result.status, result.message, OPERATION_ID, device_id))
         db.execute("UPDATE devices SET health=? WHERE operation_id=? AND id=?", (result.status, OPERATION_ID, device_id))
         event(db, "CONNECTION_TEST", "INSTRUMENTATION", "INFO" if result.ok else "WARNING", f"{device_id}: {result.message}")
     return jsonify(result.to_dict()), 200 if result.ok else 422
+
+
+@control.get("/api/control/camera/<device_id>/stream.mjpg")
+def camera_stream(device_id: str):
+    with connect() as db:
+        row = db.execute("""SELECT i.adapter_type,i.config_json,i.enabled,d.device_type
+            FROM device_integrations i JOIN devices d ON d.operation_id=i.operation_id AND d.id=i.device_id
+            WHERE i.operation_id=? AND i.device_id=?""", (OPERATION_ID, device_id.upper())).fetchone()
+    if not row or row["device_type"] != "IP-CAMERA":
+        return jsonify(error="camera device not found"), 404
+    if not row["enabled"]:
+        return jsonify(error="camera is archived"), 409
+    config = json.loads(row["config_json"])
+    profile = "main" if request.args.get("profile") == "main" else "preview"
+    frames = mjpeg_frames(device_id.upper(), row["adapter_type"], config.get("endpoint", ""), config.get("username", ""), profile)
+    return Response(frames, mimetype="multipart/x-mixed-replace; boundary=frame",
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"})
 
 
 @control.post("/api/control/channel")
