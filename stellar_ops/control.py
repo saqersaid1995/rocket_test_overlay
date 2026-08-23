@@ -12,7 +12,7 @@ from pathlib import Path
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
 from .camera_runtime import (camera_recording_status, camera_status, delete_password,
-                             has_password, mjpeg_frames, save_password,
+                             drain_runtime_events, has_password, mjpeg_frames, save_password,
                              start_camera_recordings, stop_camera_recordings,
                              test_camera, test_camera_component)
 from .database import add_column, apply_once, connect_database
@@ -267,6 +267,22 @@ def snapshot() -> dict:
         active_run_id=active_run_row["id"] if active_run_row else None
         runtime = runtime_snapshot(db, op_dict, telemetry(op))
         evaluate_alarms(db, OPERATION_ID, runtime)
+        for camera_event in drain_runtime_events():
+            source = camera_event["device_id"]
+            if camera_event["kind"] == "CAMERA_OUTAGE":
+                exists = db.execute("""SELECT 1 FROM alarms WHERE operation_id=? AND source=?
+                    AND state!='CLOSED' AND message LIKE 'Camera video outage%'""",
+                                    (OPERATION_ID, source)).fetchone()
+                if not exists:
+                    db.execute("""INSERT INTO alarms(operation_id,opened_at,priority,source,message,state)
+                        VALUES(?,?,'HIGH',?,'Camera video outage; automatic reconnect in progress','ACTIVE_UNACKNOWLEDGED')""",
+                               (OPERATION_ID, utc_now(), source))
+            elif camera_event["kind"] == "CAMERA_RECOVERED":
+                db.execute("""UPDATE alarms SET state='CLOSED' WHERE operation_id=? AND source=?
+                    AND state!='CLOSED' AND message LIKE 'Camera video outage%'""", (OPERATION_ID, source))
+            event(db, camera_event["kind"], source,
+                  "WARNING" if camera_event["kind"] == "CAMERA_OUTAGE" else "INFO",
+                  camera_event["message"])
         data = {"operation": op_dict, "stations": [dict(x) for x in db.execute("SELECT * FROM stations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))],
                 "devices": [dict(x) for x in db.execute("""SELECT d.*,COALESCE(i.enabled,0) AS enabled
                     FROM devices d LEFT JOIN device_integrations i ON i.operation_id=d.operation_id AND i.device_id=d.id
