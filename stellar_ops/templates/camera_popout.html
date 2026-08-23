@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ camera.id }} · {{ camera.name }}</title>
+  <style>
+    :root{color-scheme:dark;--cyan:#31c6f0;--line:#19313d;--muted:#7b98a5}
+    *{box-sizing:border-box}
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}
+    body{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#d8e9ef}
+    main{position:fixed;inset:0;display:grid;place-items:center;background:#000}
+    img{display:block;width:100vw;height:100vh;object-fit:contain;background:#000}
+    body.fill img{object-fit:cover}
+    header{position:fixed;z-index:2;left:0;right:0;top:0;min-height:44px;padding:7px 10px;display:flex;align-items:center;gap:10px;background:linear-gradient(#06131aee,#06131aaa,transparent);opacity:.15;transition:opacity .18s}
+    body:hover header,header:focus-within{opacity:1}
+    header strong{color:var(--cyan);letter-spacing:.08em}
+    header small{color:var(--muted)}
+    nav{display:flex;gap:5px;margin-left:auto}
+    button{height:30px;padding:0 11px;border:1px solid var(--line);background:#07151c;color:#9eb8c2;font:10px inherit;cursor:pointer}
+    button:hover,button.active{border-color:var(--cyan);color:var(--cyan)}
+    .live{width:6px;height:6px;border-radius:50%;background:#43d69e;box-shadow:0 0 9px #43d69e}
+  </style>
+</head>
+<body>
+  <main><img src="{{ url_for('control.camera_stream', device_id=camera.id, profile='preview') }}" alt="{{ camera.name }} live stream"></main>
+  <header>
+    <i class="live"></i><strong>{{ camera.id }}</strong><small>{{ camera.name }} · LIVE PREVIEW</small>
+    <nav>
+      <button id="fit" class="active" type="button">FIT</button>
+      <button id="fill" type="button">FILL</button>
+      <button id="fullscreen" type="button">FULL SCREEN</button>
+      <button id="close" type="button">CLOSE</button>
+    </nav>
+  </header>
+  <script>
+    const fit=document.querySelector('#fit'),fill=document.querySelector('#fill');
+    fit.onclick=()=>{document.body.classList.remove('fill');fit.classList.add('active');fill.classList.remove('active')};
+    fill.onclick=()=>{document.body.classList.add('fill');fill.classList.add('active');fit.classList.remove('active')};
+    document.querySelector('#fullscreen').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+    document.querySelector('#close').onclick=()=>window.close();
+    document.addEventListener('keydown',event=>{if(event.key.toLowerCase()==='f')document.querySelector('#fullscreen').click();if(event.key==='Escape'&&!document.fullscreenElement)window.close()});
+  </script>
+</body>
+</html>
