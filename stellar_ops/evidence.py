@@ -35,11 +35,13 @@ def video_evidence(directory: Path) -> list[dict]:
                 metadata.update({"width": int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
                                  "height": int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
                                  "fps": round(fps, 3), "frames": frames,
+                                 "codec": "".join(chr((int(capture.get(cv2.CAP_PROP_FOURCC)) >> 8 * i) & 0xFF)
+                                                  for i in range(4)).strip("\x00"),
                                  "duration_seconds": round(frames / fps, 3) if fps else None})
             finally:
                 capture.release()
         except Exception:
-            metadata.update({"width": None, "height": None, "fps": None,
+            metadata.update({"width": None, "height": None, "fps": None, "codec": None,
                              "frames": None, "duration_seconds": None})
         records.append(metadata)
     return records
@@ -90,6 +92,7 @@ def close_package(db, operation_id: str, recording_session_id: int,
         "video":{"file_count":len(videos),"files":videos,
                  "runtime":camera_runtime or [],
                  "total_reconnects":sum(int(item.get("reconnects",0)) for item in (camera_runtime or [])),
+                 "total_dropped_frames":sum(int(item.get("dropped_frames",0)) for item in (camera_runtime or [])),
                  "total_outage_seconds":round(sum(float(item.get("outage_seconds",0)) for item in (camera_runtime or [])),3)},
         "events":db.execute("SELECT count(*) FROM events WHERE run_id=?",(run["id"],)).fetchone()[0],
         "alarms":db.execute("SELECT count(*) FROM alarms WHERE run_id=?",(run["id"],)).fetchone()[0],
