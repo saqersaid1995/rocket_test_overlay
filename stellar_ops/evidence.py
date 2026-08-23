@@ -56,7 +56,8 @@ def open_package(db, operation_id: str, recording_session_id: int, root: Path) -
     return cursor.lastrowid
 
 
-def close_package(db, operation_id: str, recording_session_id: int) -> dict:
+def close_package(db, operation_id: str, recording_session_id: int,
+                  camera_runtime: list[dict] | None = None) -> dict:
     package=db.execute("SELECT * FROM evidence_packages WHERE operation_id=? AND recording_session_id=? AND state='OPEN' ORDER BY id DESC LIMIT 1",(operation_id,recording_session_id)).fetchone()
     if not package:
         raise ValueError("open evidence package was not found")
@@ -86,7 +87,10 @@ def close_package(db, operation_id: str, recording_session_id: int) -> dict:
         "recording_session_id":recording_session_id,
         "telemetry":{"batch_count":batch["batches"],"sample_count":batch["samples"],"sequence_gaps":gaps,
                      "file":"telemetry.jsonl","file_sha256":telemetry_hash.hexdigest()},
-        "video":{"file_count":len(videos),"files":videos},
+        "video":{"file_count":len(videos),"files":videos,
+                 "runtime":camera_runtime or [],
+                 "total_reconnects":sum(int(item.get("reconnects",0)) for item in (camera_runtime or [])),
+                 "total_outage_seconds":round(sum(float(item.get("outage_seconds",0)) for item in (camera_runtime or [])),3)},
         "events":db.execute("SELECT count(*) FROM events WHERE run_id=?",(run["id"],)).fetchone()[0],
         "alarms":db.execute("SELECT count(*) FROM alarms WHERE run_id=?",(run["id"],)).fetchone()[0],
     }
