@@ -80,6 +80,20 @@ def has_password(device_id: str) -> bool:
     return bool(load_password(key))
 
 
+def delete_password(device_id: str) -> None:
+    """Remove a camera secret from the operating-system credential store."""
+    key = device_id.strip().upper()
+    backend = _keyring()
+    if backend is not None:
+        try:
+            backend.delete_password(SERVICE_NAME, key)
+        except Exception:
+            # Keyring backends differ when a credential does not exist.  The
+            # desired end state is still "no secret", so deletion is idempotent.
+            pass
+    _secret_presence[key] = False
+
+
 def _credential_url(url: str, username: str, password: str) -> str:
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -113,8 +127,16 @@ def camera_recording_status(device_id: str) -> dict:
             return {"state": "STOPPED", "file": None, "started_at": None}
         process = item["process"]
         state = "RECORDING" if process.poll() is None else "FAILED"
+        partials = list(item["directory"].glob(item["partial_glob"]))
+        finals = list(item["directory"].glob(item["final_glob"]))
+        size = sum(path.stat().st_size for path in partials + finals if path.exists())
+        elapsed = max(0.0, time.time() - item["started_at"])
         return {"state": state, "file": str(item["final_path"]),
-                "started_at": item["started_at"], "session_id": item["session_id"]}
+                "started_at": item["started_at"], "session_id": item["session_id"],
+                "duration_seconds": round(elapsed, 1), "segments": len(partials) + len(finals),
+                "bytes": size, "reconnects": item.get("reconnects", 0),
+                "dropped_frames": item.get("dropped_frames", 0),
+                "segment_seconds": item.get("segment_seconds", 300)}
 
 
 def _ffmpeg_executable() -> str:
@@ -147,14 +169,18 @@ def start_camera_recordings(cameras: list[dict], directory: Path, session_id: in
                 results.append({"device_id": device_id, "state": "FAILED", "message": tested.message})
                 continue
             main_url = tested.main_url
-        final_path = directory / f"camera-{device_id.lower()}-session-{session_id:06d}.mkv"
-        partial_path = final_path.with_suffix(".partial.mkv")
+        segment_seconds = max(30, min(int(camera.get("segment_seconds", 300)), 3600))
+        stem = f"camera-{device_id.lower()}-session-{session_id:06d}"
+        final_path = directory / f"{stem}-seg-00000.mkv"
+        partial_path = directory / f"{stem}-seg-%05d.partial.mkv"
         log_path = final_path.with_suffix(".ffmpeg.log")
         log_handle = log_path.open("ab")
         command = [
             _ffmpeg_executable(), "-hide_banner", "-loglevel", "warning", "-y",
             "-rtsp_transport", "tcp", "-i", _credential_url(main_url, camera["username"], password),
-            "-map", "0:v:0", "-c:v", "copy", "-an", "-f", "matroska", str(partial_path),
+            "-map", "0:v:0", "-c:v", "copy", "-an",
+            "-f", "segment", "-segment_time", str(segment_seconds),
+            "-reset_timestamps", "1", "-segment_format", "matroska", str(partial_path),
         ]
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=log_handle, start_new_session=True)
@@ -166,7 +192,9 @@ def start_camera_recordings(cameras: list[dict], directory: Path, session_id: in
             continue
         item = {"process": process, "log_handle": log_handle, "partial_path": partial_path,
                 "final_path": final_path, "log_path": log_path, "started_at": time.time(),
-                "session_id": session_id}
+                "session_id": session_id, "directory": directory, "segment_seconds": segment_seconds,
+                "partial_glob": f"{stem}-seg-*.partial.mkv", "final_glob": f"{stem}-seg-*.mkv",
+                "reconnects": 0, "dropped_frames": 0}
         with _recorder_lock:
             previous = _recorders.get(device_id)
             if previous and previous["process"].poll() is None:
@@ -175,7 +203,8 @@ def start_camera_recordings(cameras: list[dict], directory: Path, session_id: in
                 results.append({"device_id": device_id, "state": "FAILED", "message": "camera recorder is already active"})
                 continue
             _recorders[device_id] = item
-        results.append({"device_id": device_id, "state": "RECORDING", "file": str(final_path)})
+        results.append({"device_id": device_id, "state": "RECORDING", "file": str(final_path),
+                        "segment_seconds": segment_seconds})
     return results
 
 
@@ -197,14 +226,29 @@ def stop_camera_recordings(session_id: int) -> list[dict]:
                 except subprocess.TimeoutExpired:
                     process.kill()
         item["log_handle"].close()
-        partial_path, final_path = item["partial_path"], item["final_path"]
-        if partial_path.exists() and partial_path.stat().st_size:
-            partial_path.replace(final_path)
-            state, message = "RECORDED", "video file finalized"
+        partial_paths = sorted(item["directory"].glob(item["partial_glob"]))
+        # Test doubles and older FFmpeg builds can create the literal pattern.
+        if item["partial_path"].exists() and item["partial_path"] not in partial_paths:
+            partial_paths.append(item["partial_path"])
+        finalized = []
+        for index, partial_path in enumerate(partial_paths):
+            if not partial_path.exists() or not partial_path.stat().st_size:
+                continue
+            name = partial_path.name.replace(".partial.mkv", ".mkv")
+            if "%05d" in name:
+                name = name.replace("%05d", f"{index:05d}")
+            target = item["directory"] / name
+            partial_path.replace(target)
+            finalized.append(target)
+        if finalized:
+            state, message = "RECORDED", f"{len(finalized)} video segment(s) finalized"
+            final_path = finalized[0]
         else:
-            state, message = "FAILED", "recorder produced no video data"
+            state, message, final_path = "FAILED", "recorder produced no video data", item["final_path"]
         results.append({"device_id": device_id, "state": state, "message": message,
-                        "file": str(final_path), "bytes": final_path.stat().st_size if final_path.exists() else 0})
+                        "file": str(final_path), "files": [str(path) for path in finalized],
+                        "segments": len(finalized),
+                        "bytes": sum(path.stat().st_size for path in finalized)})
         with _recorder_lock:
             _recorders.pop(device_id, None)
     return results
@@ -254,6 +298,44 @@ def _onvif_discover(endpoint: str, username: str, password: str) -> tuple[str, s
         raise RuntimeError("camera returned no RTSP stream URI")
     return (uris[0], uris[1] if len(uris) > 1 else None,
             str(getattr(information, "Manufacturer", "") or ""), str(getattr(information, "Model", "") or ""))
+
+
+def test_camera_component(device_id: str, adapter: str, endpoint: str, username: str,
+                          component: str) -> CameraResult:
+    """Run a focused camera acceptance test without conflating discovery and video."""
+    component = component.upper().replace("-", "_")
+    password = load_password(device_id)
+    if not username.strip() or not password:
+        return CameraResult(False, "MISSING_CREDENTIALS", "camera username and secure password are required")
+    try:
+        if component == "ONVIF":
+            main, preview, manufacturer, model = _onvif_discover(endpoint, username, password)
+            offset, time_status = _onvif_time_offset(endpoint, username, password)
+            result = CameraResult(True, "ONVIF_OK", "ONVIF discovery and media profiles verified",
+                                  main_url=main, preview_url=preview, manufacturer=manufacturer,
+                                  model=model, time_offset_ms=offset, time_status=time_status)
+            _set_status(device_id, "ONVIF_OK", result.message, main_url=main, preview_url=preview,
+                        manufacturer=manufacturer, model=model, time_offset_ms=offset, time_status=time_status)
+            return result
+        known = camera_status(device_id)
+        if not known.get("main_url"):
+            discovered = test_camera(device_id, adapter, endpoint, username)
+            if not discovered.ok:
+                return discovered
+            known = camera_status(device_id)
+        url = known.get("preview_url") if component in {"RTSP_PREVIEW", "PREVIEW"} else known.get("main_url")
+        if not url:
+            return CameraResult(False, "PROFILE_MISSING", f"{component} profile is not available")
+        ok, message, latency, metrics = _probe_frame(url, username, password)
+        status = "RTSP_OK" if ok else "NO_VIDEO"
+        _set_status(device_id, "STREAMING" if ok else status, message,
+                    main_url=known.get("main_url"), preview_url=known.get("preview_url"),
+                    latency_ms=latency, **metrics)
+        return CameraResult(ok, status, message, latency, known.get("main_url"),
+                            known.get("preview_url"), width=metrics.get("width"),
+                            height=metrics.get("height"), fps=metrics.get("fps"))
+    except Exception as exc:
+        return CameraResult(False, "TEST_FAILED", str(exc).replace(password, "***")[:300])
 
 
 def _onvif_time_offset(endpoint: str, username: str, password: str) -> tuple[float | None, str]:
@@ -323,6 +405,11 @@ def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str, pro
         url = tested.preview_url if profile == "preview" and tested.preview_url else tested.main_url
         known = camera_status(device_id)
     failures = 0
+    reconnects = int(known.get("reconnects", 0) or 0)
+    outage_started = None
+    window_started = time.monotonic()
+    window_frames = 0
+    window_bytes = 0
     while failures < 20:
         capture = cv2.VideoCapture(_credential_url(url, username, password), cv2.CAP_FFMPEG)
         try:
@@ -330,13 +417,26 @@ def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str, pro
                 ok, frame = capture.read()
                 if not ok or frame is None:
                     failures += 1
-                    _set_status(device_id, "RECONNECTING", "video frame lost; reconnecting", main_url=known.get("main_url"), preview_url=known.get("preview_url"))
+                    reconnects += 1
+                    outage_started = outage_started or time.time()
+                    _set_status(device_id, "RECONNECTING", "video frame lost; reconnecting", main_url=known.get("main_url"), preview_url=known.get("preview_url"), reconnects=reconnects, outage_started=outage_started)
                     break
                 failures = 0
                 encoded, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
                 if encoded:
-                    _set_status(device_id, "STREAMING", "browser preview active", main_url=known.get("main_url"), preview_url=known.get("preview_url"))
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + jpeg.tobytes() + b"\r\n"
+                    payload = jpeg.tobytes()
+                    window_frames += 1
+                    window_bytes += len(payload)
+                    elapsed = max(0.001, time.monotonic() - window_started)
+                    metrics = {}
+                    if elapsed >= 2:
+                        metrics = {"preview_fps": round(window_frames / elapsed, 2),
+                                   "preview_bitrate_kbps": round(window_bytes * 8 / elapsed / 1000, 1)}
+                        window_started, window_frames, window_bytes = time.monotonic(), 0, 0
+                    outage_seconds = round(time.time() - outage_started, 3) if outage_started else 0
+                    outage_started = None
+                    _set_status(device_id, "STREAMING", "browser preview active", main_url=known.get("main_url"), preview_url=known.get("preview_url"), reconnects=reconnects, last_outage_seconds=outage_seconds, last_frame_at=time.time(), width=frame.shape[1], height=frame.shape[0], **metrics)
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + payload + b"\r\n"
         finally:
             capture.release()
         time.sleep(min(2.0, 0.2 * max(1, failures)))
