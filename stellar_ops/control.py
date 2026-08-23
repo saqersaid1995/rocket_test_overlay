@@ -314,7 +314,8 @@ def snapshot() -> dict:
                 device["fps"] = camera_health.get("fps")
                 device["latency_ms"] = camera_health.get("latency_ms")
                 for key in ("preview_fps", "preview_bitrate_kbps", "reconnects",
-                            "last_outage_seconds", "last_frame_at", "manufacturer", "model"):
+                            "last_outage_seconds", "last_frame_at", "manufacturer", "model",
+                            "recording_test_status", "recording_test_at"):
                     device[key] = camera_health.get(key)
                 device["recording"] = recorder["state"]
                 device["recording_detail"] = recorder
@@ -338,6 +339,8 @@ def snapshot() -> dict:
             if device["health"]!="STREAMING": blockers.append(f"{device['id']} video is {device['health']}")
             if data["recording"]["state"]=="RECORDING" and device["recording"]!="RECORDING": blockers.append(f"{device['id']} recorder is not active")
             if device.get("time_status")!="VERIFIED": blockers.append(f"{device['id']} time correlation is not verified")
+            if device.get("recording_test_status") == "FAILED":
+                blockers.append(f"{device['id']} recording/playback acceptance test failed")
             if device.get("latency_ms") is not None and device["latency_ms"] > 2000:
                 blockers.append(f"{device['id']} preview latency exceeds 2000 ms")
         free_percent=round(disk.free/disk.total*100,1)
@@ -520,8 +523,8 @@ def test_device(device_id: str):
 def test_camera_part(device_id: str, component: str):
     """Independently accept ONVIF, main RTSP, or preview RTSP."""
     component = component.upper().replace("-", "_")
-    if component not in {"ONVIF", "RTSP_MAIN", "RTSP_PREVIEW"}:
-        return jsonify(error="camera test must be ONVIF, RTSP-MAIN or RTSP-PREVIEW"), 400
+    if component not in {"ONVIF", "RTSP_MAIN", "RTSP_PREVIEW", "RECORDING"}:
+        return jsonify(error="camera test must be ONVIF, RTSP-MAIN, RTSP-PREVIEW or RECORDING"), 400
     with connect() as db:
         row = db.execute("""SELECT i.adapter_type,i.config_json,i.enabled,d.device_type
             FROM device_integrations i JOIN devices d ON d.operation_id=i.operation_id AND d.id=i.device_id
