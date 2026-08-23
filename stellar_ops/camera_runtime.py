@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -325,11 +326,18 @@ def stop_camera_recordings(session_id: int) -> list[dict]:
             final_path = finalized[0]
         else:
             state, message, final_path = "FAILED", "recorder produced no video data", item["final_path"]
+        log_text = item["log_path"].read_text(errors="replace") if item["log_path"].exists() else ""
+        missed_packets = sum(int(value) for value in re.findall(r"RTP: missed (\d+) packets", log_text))
+        decode_errors = len(re.findall(r"(?:corrupt|error while decoding|invalid nal)", log_text, re.IGNORECASE))
+        dropped_frames = missed_packets + decode_errors
         results.append({"device_id": device_id, "state": state, "message": message,
                         "file": str(final_path), "files": [str(path) for path in finalized],
                         "segments": len(finalized),
                         "bytes": sum(path.stat().st_size for path in finalized),
                         "reconnects": item.get("reconnects", 0),
+                        "dropped_frames": dropped_frames,
+                        "started_at": datetime.fromtimestamp(item["started_at"], timezone.utc).isoformat(timespec="milliseconds"),
+                        "stopped_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                         "outage_seconds": round(item.get("outage_seconds", 0.0), 3)})
         with _recorder_lock:
             _recorders.pop(device_id, None)
