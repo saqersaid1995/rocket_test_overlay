@@ -11,9 +11,10 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
-from .camera_runtime import (camera_recording_status, camera_status, has_password,
-                             mjpeg_frames, save_password, start_camera_recordings,
-                             stop_camera_recordings, test_camera)
+from .camera_runtime import (camera_recording_status, camera_status, delete_password,
+                             has_password, mjpeg_frames, save_password,
+                             start_camera_recordings, stop_camera_recordings,
+                             test_camera, test_camera_component)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
@@ -304,6 +305,7 @@ def snapshot() -> dict:
                 device["recording"] = "STOPPED"
             elif device["device_type"] == "IP-CAMERA":
                 camera_health = camera_status(device["id"])
+                recorder = camera_recording_status(device["id"])
                 device["health"] = camera_health["status"]
                 device["time_status"] = camera_health.get("time_status", "UNVERIFIED")
                 device["time_offset_ms"] = camera_health.get("time_offset_ms")
@@ -311,7 +313,11 @@ def snapshot() -> dict:
                 device["height"] = camera_health.get("height")
                 device["fps"] = camera_health.get("fps")
                 device["latency_ms"] = camera_health.get("latency_ms")
-                device["recording"] = camera_recording_status(device["id"])["state"]
+                for key in ("preview_fps", "preview_bitrate_kbps", "reconnects",
+                            "last_outage_seconds", "last_frame_at", "manufacturer", "model"):
+                    device[key] = camera_health.get(key)
+                device["recording"] = recorder["state"]
+                device["recording_detail"] = recorder
             elif op_dict["mode"] == "LIVE":
                 qualities = channel_by_source.get(device["id"], [])
                 if device["id"] == runtime.get("meta", {}).get("device_id"):
@@ -332,6 +338,8 @@ def snapshot() -> dict:
             if device["health"]!="STREAMING": blockers.append(f"{device['id']} video is {device['health']}")
             if data["recording"]["state"]=="RECORDING" and device["recording"]!="RECORDING": blockers.append(f"{device['id']} recorder is not active")
             if device.get("time_status")!="VERIFIED": blockers.append(f"{device['id']} time correlation is not verified")
+            if device.get("latency_ms") is not None and device["latency_ms"] > 2000:
+                blockers.append(f"{device['id']} preview latency exceeds 2000 ms")
         free_percent=round(disk.free/disk.total*100,1)
         if free_percent<5: blockers.append("evidence storage has less than 5% free space")
         data["video_system"]={"required_cameras":len(configured_required),"online":sum(d["health"]=="STREAMING" for d in configured_required),
@@ -508,6 +516,46 @@ def test_device(device_id: str):
     return jsonify(result.to_dict()), 200 if result.ok else 422
 
 
+@control.post("/api/control/camera/<device_id>/test/<component>")
+def test_camera_part(device_id: str, component: str):
+    """Independently accept ONVIF, main RTSP, or preview RTSP."""
+    component = component.upper().replace("-", "_")
+    if component not in {"ONVIF", "RTSP_MAIN", "RTSP_PREVIEW"}:
+        return jsonify(error="camera test must be ONVIF, RTSP-MAIN or RTSP-PREVIEW"), 400
+    with connect() as db:
+        row = db.execute("""SELECT i.adapter_type,i.config_json,i.enabled,d.device_type
+            FROM device_integrations i JOIN devices d ON d.operation_id=i.operation_id AND d.id=i.device_id
+            WHERE i.operation_id=? AND i.device_id=?""", (OPERATION_ID, device_id.upper())).fetchone()
+        if not row or row["device_type"] != "IP-CAMERA":
+            return jsonify(error="camera device not found"), 404
+        if not row["enabled"]:
+            return jsonify(error="restore the camera before testing it"), 409
+        config = json.loads(row["config_json"])
+        result = test_camera_component(device_id.upper(), row["adapter_type"],
+                                       config.get("endpoint", ""), config.get("username", ""), component)
+        event(db, "CAMERA_COMPONENT_TEST", "VIDEO_ENGINEER", "INFO" if result.ok else "WARNING",
+              f"{device_id.upper()} {component}: {result.message}")
+    return jsonify(result.to_dict()), 200 if result.ok else 422
+
+
+@control.delete("/api/control/camera/<device_id>/secret")
+def remove_camera_secret(device_id: str):
+    with connect() as db:
+        row = db.execute("""SELECT 1 FROM devices WHERE operation_id=? AND id=?
+            AND device_type='IP-CAMERA'""", (OPERATION_ID, device_id.upper())).fetchone()
+        if not row:
+            return jsonify(error="camera device not found"), 404
+        if camera_recording_status(device_id).get("state") == "RECORDING":
+            return jsonify(error="stop camera recording before deleting its credential"), 409
+        delete_password(device_id)
+        db.execute("""UPDATE device_integrations SET last_test_status='MISSING_CREDENTIALS',
+            last_test_message='secure camera credential removed' WHERE operation_id=? AND device_id=?""",
+                   (OPERATION_ID, device_id.upper()))
+        event(db, "CAMERA_SECRET_REMOVED", "VIDEO_ENGINEER", "WARNING",
+              f"Secure credential removed for {device_id.upper()}")
+    return jsonify(ok=True, device_id=device_id.upper())
+
+
 @control.get("/api/control/camera/<device_id>/stream.mjpg")
 def camera_stream(device_id: str):
     with connect() as db:
@@ -641,7 +689,8 @@ def set_recording():
                 AND d.device_type='IP-CAMERA' AND i.enabled=1 AND d.endpoint!='UNASSIGNED'""",(OPERATION_ID,)):
                 config=json.loads(row["config_json"])
                 cameras.append({"device_id":row["id"],"adapter":row["adapter_type"],
-                                "endpoint":config.get("endpoint",""),"username":config.get("username","")})
+                                "endpoint":config.get("endpoint",""),"username":config.get("username",""),
+                                "segment_seconds":config.get("segment_seconds",300)})
             camera_result=start_camera_recordings(cameras,Path(package["directory"]),cursor.lastrowid)
             event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode; evidence package {package_id} opened; {sum(x['state']=='RECORDING' for x in camera_result)} camera recorders active")
         elif action=="STOP" and current.get("state")=="RECORDING":
