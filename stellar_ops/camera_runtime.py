@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse, urlunparse
 
 SERVICE_NAME = "stellar-ops-camera"
+TIME_TOLERANCE_MS = float(os.environ.get("STELLAR_CAMERA_TIME_TOLERANCE_MS", "250"))
 _status_lock = threading.Lock()
 _statuses: dict[str, dict] = {}
 _secret_presence: dict[str, bool] = {}
@@ -152,6 +153,7 @@ def camera_recording_status(device_id: str) -> dict:
                 "duration_seconds": round(elapsed, 1), "segments": len(partials) + len(finals),
                 "bytes": size, "reconnects": item.get("reconnects", 0),
                 "dropped_frames": item.get("dropped_frames", 0),
+                "outage_seconds": round(item.get("outage_seconds", 0.0), 3),
                 "segment_seconds": item.get("segment_seconds", 300)}
 
 
@@ -161,6 +163,52 @@ def _ffmpeg_executable() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except (ImportError, RuntimeError) as exc:
         raise RuntimeError("FFmpeg recording engine is unavailable") from exc
+
+
+def _supervise_recorder(device_id: str, item: dict) -> None:
+    """Restart a failed native recorder into a new segment namespace.
+
+    A restart never appends to or overwrites an existing evidence segment.
+    """
+    while not item["stop_event"].wait(1.0):
+        with _recorder_lock:
+            process = item.get("process")
+        if process is None or process.poll() is None:
+            continue
+        failed_at = time.time()
+        item["reconnects"] += 1
+        _runtime_event(device_id, "CAMERA_RECORDER_FAILED",
+                       "native evidence recorder exited; automatic restart started",
+                       return_code=process.poll())
+        try:
+            item["log_handle"].close()
+        except Exception:
+            pass
+        recovery = item["reconnects"]
+        output = item["directory"] / f"{item['stem']}-recovery-{recovery:03d}-seg-%05d.partial.mkv"
+        log_handle = item["log_path"].open("ab")
+        command = list(item["command"])
+        command[-1] = str(output)
+        try:
+            replacement = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=log_handle, start_new_session=True)
+            time.sleep(0.35)
+            if replacement.poll() is not None:
+                log_handle.close()
+                item["outage_seconds"] += time.time() - failed_at
+                continue
+            with _recorder_lock:
+                item["process"] = replacement
+                item["log_handle"] = log_handle
+            outage = time.time() - failed_at
+            item["outage_seconds"] += outage
+            _runtime_event(device_id, "CAMERA_RECORDER_RECOVERED",
+                           f"native evidence recorder restarted after {outage:.3f} seconds",
+                           outage_seconds=round(outage, 3), recovery_segment=recovery)
+        except Exception as exc:
+            log_handle.close()
+            item["outage_seconds"] += time.time() - failed_at
+            _runtime_event(device_id, "CAMERA_RECORDER_RESTART_FAILED", str(exc)[:250])
 
 
 def start_camera_recordings(cameras: list[dict], directory: Path, session_id: int) -> list[dict]:
@@ -209,8 +257,9 @@ def start_camera_recordings(cameras: list[dict], directory: Path, session_id: in
         item = {"process": process, "log_handle": log_handle, "partial_path": partial_path,
                 "final_path": final_path, "log_path": log_path, "started_at": time.time(),
                 "session_id": session_id, "directory": directory, "segment_seconds": segment_seconds,
-                "partial_glob": f"{stem}-seg-*.partial.mkv", "final_glob": f"{stem}-seg-*.mkv",
-                "reconnects": 0, "dropped_frames": 0}
+                "partial_glob": f"{stem}*.partial.mkv", "final_glob": f"{stem}*.mkv", "stem": stem,
+                "reconnects": 0, "dropped_frames": 0, "outage_seconds": 0.0,
+                "stop_event": threading.Event(), "command": command}
         with _recorder_lock:
             previous = _recorders.get(device_id)
             if previous and previous["process"].poll() is None:
@@ -219,6 +268,13 @@ def start_camera_recordings(cameras: list[dict], directory: Path, session_id: in
                 results.append({"device_id": device_id, "state": "FAILED", "message": "camera recorder is already active"})
                 continue
             _recorders[device_id] = item
+        # Unit-test process doubles are intentionally not supervised. Production
+        # Popen objects come from the subprocess module.
+        if type(process).__module__ == "subprocess":
+            monitor = threading.Thread(target=_supervise_recorder, args=(device_id, item),
+                                       name=f"camera-recorder-{device_id}", daemon=True)
+            item["monitor"] = monitor
+            monitor.start()
         results.append({"device_id": device_id, "state": "RECORDING", "file": str(final_path),
                         "segment_seconds": segment_seconds})
     return results
@@ -230,6 +286,7 @@ def stop_camera_recordings(session_id: int) -> list[dict]:
         selected = [(device_id, item) for device_id, item in _recorders.items()
                     if item["session_id"] == session_id]
     for device_id, item in selected:
+        item["stop_event"].set()
         process = item["process"]
         if process.poll() is None:
             process.send_signal(signal.SIGINT)
@@ -242,6 +299,9 @@ def stop_camera_recordings(session_id: int) -> list[dict]:
                 except subprocess.TimeoutExpired:
                     process.kill()
         item["log_handle"].close()
+        monitor = item.get("monitor")
+        if monitor and monitor.is_alive():
+            monitor.join(timeout=2)
         partial_paths = sorted(item["directory"].glob(item["partial_glob"]))
         # Test doubles and older FFmpeg builds can create the literal pattern.
         if item["partial_path"].exists() and item["partial_path"] not in partial_paths:
@@ -264,7 +324,9 @@ def stop_camera_recordings(session_id: int) -> list[dict]:
         results.append({"device_id": device_id, "state": state, "message": message,
                         "file": str(final_path), "files": [str(path) for path in finalized],
                         "segments": len(finalized),
-                        "bytes": sum(path.stat().st_size for path in finalized)})
+                        "bytes": sum(path.stat().st_size for path in finalized),
+                        "reconnects": item.get("reconnects", 0),
+                        "outage_seconds": round(item.get("outage_seconds", 0.0), 3)})
         with _recorder_lock:
             _recorders.pop(device_id, None)
     return results
@@ -389,7 +451,7 @@ def _onvif_time_offset(endpoint: str, username: str, password: str) -> tuple[flo
                                stamp.Time.Hour, stamp.Time.Minute, stamp.Time.Second,
                                tzinfo=timezone.utc).timestamp()
         offset = round((camera_time - time.time()) * 1000, 1)
-        return offset, "VERIFIED" if abs(offset) <= 1500 else "OUT_OF_TOLERANCE"
+        return offset, "VERIFIED" if abs(offset) <= TIME_TOLERANCE_MS else "OUT_OF_TOLERANCE"
     except Exception:
         return None, "UNVERIFIED"
 
