@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SMTCS · Display & Broadcast Control</title><link rel="stylesheet" href="{{url_for('static',filename='media.css')}}"></head>
+<title>SMTCS · Display & Broadcast Control</title><link rel="stylesheet" href="{{url_for('static',filename='media.css')}}"><link rel="stylesheet" href="{{url_for('static',filename='media_runtime.css')}}"></head>
 <body class="{% if display_slug %}output-only{% endif %}">
 <header class="mast"><div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>DISPLAY, VIDEO & BROADCAST SYSTEM</small></span></div><div><small>OPERATION</small><strong id="operation">—</strong></div><div><small>PHASE</small><strong id="phase">—</strong></div><div><small>BROADCAST</small><strong id="broadcast-state">—</strong></div><div><small>UTC</small><strong id="utc">—</strong></div></header>
 <div class="shell"><aside>
