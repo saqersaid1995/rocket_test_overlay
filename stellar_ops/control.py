@@ -331,6 +331,7 @@ def snapshot() -> dict:
                 device["latency_ms"] = camera_health.get("latency_ms")
                 for key in ("preview_fps", "preview_bitrate_kbps", "reconnects",
                             "last_outage_seconds", "last_frame_at", "manufacturer", "model",
+                            "firmware", "serial_number", "hardware_id", "onvif_profiles",
                             "recording_test_status", "recording_test_at"):
                     device[key] = camera_health.get(key)
                 device["recording"] = recorder["state"]
@@ -525,7 +526,8 @@ def test_device(device_id: str):
         config = json.loads(row["config_json"])
         device = db.execute("SELECT device_type FROM devices WHERE operation_id=? AND id=?", (OPERATION_ID, device_id)).fetchone()
         if device and device["device_type"] == "IP-CAMERA":
-            result = test_camera(device_id, row["adapter_type"], config.get("endpoint", ""), config.get("username", ""))
+            result = test_camera(device_id, row["adapter_type"], config.get("endpoint", ""),
+                                 config.get("username", ""), config.get("profile", ""))
         else:
             result = test_adapter(row["adapter_type"], config.get("endpoint", ""))
         db.execute("UPDATE device_integrations SET last_test_at=?,last_test_status=?,last_test_message=? WHERE operation_id=? AND device_id=?",
@@ -551,7 +553,8 @@ def test_camera_part(device_id: str, component: str):
             return jsonify(error="restore the camera before testing it"), 409
         config = json.loads(row["config_json"])
         result = test_camera_component(device_id.upper(), row["adapter_type"],
-                                       config.get("endpoint", ""), config.get("username", ""), component)
+                                       config.get("endpoint", ""), config.get("username", ""),
+                                       component, config.get("profile", ""))
         event(db, "CAMERA_COMPONENT_TEST", "VIDEO_ENGINEER", "INFO" if result.ok else "WARNING",
               f"{device_id.upper()} {component}: {result.message}")
     return jsonify(result.to_dict()), 200 if result.ok else 422
@@ -587,7 +590,8 @@ def camera_stream(device_id: str):
         return jsonify(error="camera is archived"), 409
     config = json.loads(row["config_json"])
     profile = "main" if request.args.get("profile") == "main" else "preview"
-    frames = mjpeg_frames(device_id.upper(), row["adapter_type"], config.get("endpoint", ""), config.get("username", ""), profile)
+    frames = mjpeg_frames(device_id.upper(), row["adapter_type"], config.get("endpoint", ""),
+                          config.get("username", ""), profile, config.get("profile", ""))
     return Response(frames, mimetype="multipart/x-mixed-replace; boundary=frame",
                     headers={"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"})
 
@@ -709,6 +713,7 @@ def set_recording():
                 config=json.loads(row["config_json"])
                 cameras.append({"device_id":row["id"],"adapter":row["adapter_type"],
                                 "endpoint":config.get("endpoint",""),"username":config.get("username",""),
+                                "profile":config.get("profile",""),
                                 "segment_seconds":config.get("segment_seconds",300)})
             camera_result=start_camera_recordings(cameras,Path(package["directory"]),cursor.lastrowid)
             event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode; evidence package {package_id} opened; {sum(x['state']=='RECORDING' for x in camera_result)} camera recorders active")
