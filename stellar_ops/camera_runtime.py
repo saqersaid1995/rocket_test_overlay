@@ -32,6 +32,9 @@ class CameraResult:
     preview_url: str | None = None
     manufacturer: str | None = None
     model: str | None = None
+    firmware: str | None = None
+    serial_number: str | None = None
+    hardware_id: str | None = None
     time_offset_ms: float | None = None
     time_status: str = "UNVERIFIED"
     width: int | None = None
@@ -228,7 +231,8 @@ def start_camera_recordings(cameras: list[dict], directory: Path, session_id: in
         known = camera_status(device_id)
         main_url = known.get("main_url")
         if not main_url:
-            tested = test_camera(device_id, camera["adapter"], camera["endpoint"], camera["username"])
+            tested = test_camera(device_id, camera["adapter"], camera["endpoint"], camera["username"],
+                                 camera.get("profile", ""))
             if not tested.ok or not tested.main_url:
                 results.append({"device_id": device_id, "state": "FAILED", "message": tested.message})
                 continue
@@ -354,7 +358,22 @@ def _probe_frame(url: str, username: str, password: str) -> tuple[bool, str, flo
         capture.release()
 
 
-def _onvif_discover(endpoint: str, username: str, password: str) -> tuple[str, str | None, str | None, str | None]:
+def _profile_indexes(profile_spec: str, count: int) -> tuple[int, int | None]:
+    main, preview = 0, 1 if count > 1 else None
+    for part in (profile_spec or "").split(","):
+        key, separator, value = part.strip().partition("=")
+        if not separator or not value.isdigit():
+            continue
+        index = int(value)
+        if index < 0 or index >= count:
+            raise ValueError(f"ONVIF profile index {index} is outside the available profile range")
+        if key.strip().lower() == "main": main = index
+        if key.strip().lower() == "preview": preview = index
+    return main, preview
+
+
+def _onvif_discover(endpoint: str, username: str, password: str,
+                    profile_spec: str = "") -> tuple[str, str | None, str | None, str | None]:
     try:
         from onvif import ONVIFCamera
     except ImportError as exc:
@@ -369,18 +388,36 @@ def _onvif_discover(endpoint: str, username: str, password: str) -> tuple[str, s
     if not profiles:
         raise RuntimeError("camera returned no ONVIF media profiles")
     uris = []
-    for profile in profiles[:3]:
+    for profile in profiles:
         response = media.GetStreamUri({"StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}, "ProfileToken": profile.token})
         if getattr(response, "Uri", None):
             uris.append(str(response.Uri))
     if not uris:
         raise RuntimeError("camera returned no RTSP stream URI")
-    return (uris[0], uris[1] if len(uris) > 1 else None,
+    main_index, preview_index = _profile_indexes(profile_spec, len(uris))
+    return (uris[main_index], uris[preview_index] if preview_index is not None else None,
             str(getattr(information, "Manufacturer", "") or ""), str(getattr(information, "Model", "") or ""))
 
 
+def _onvif_device_metadata(endpoint: str, username: str, password: str) -> dict:
+    try:
+        from onvif import ONVIFCamera
+        parsed = urlparse(endpoint if "://" in endpoint else f"http://{endpoint}")
+        camera = ONVIFCamera(parsed.hostname, parsed.port or 80, username, password)
+        info = camera.devicemgmt.GetDeviceInformation()
+        profiles = camera.create_media_service().GetProfiles()
+        return {"firmware": str(getattr(info, "FirmwareVersion", "") or ""),
+                "serial_number": str(getattr(info, "SerialNumber", "") or ""),
+                "hardware_id": str(getattr(info, "HardwareId", "") or ""),
+                "onvif_profiles": [{"index": index, "token": str(getattr(profile, "token", "")),
+                                    "name": str(getattr(profile, "Name", "") or f"Profile {index}")}
+                                   for index, profile in enumerate(profiles)]}
+    except Exception:
+        return {}
+
+
 def test_camera_component(device_id: str, adapter: str, endpoint: str, username: str,
-                          component: str) -> CameraResult:
+                          component: str, discovery_profile: str = "") -> CameraResult:
     """Run a focused camera acceptance test without conflating discovery and video."""
     component = component.upper().replace("-", "_")
     password = load_password(device_id)
@@ -388,17 +425,23 @@ def test_camera_component(device_id: str, adapter: str, endpoint: str, username:
         return CameraResult(False, "MISSING_CREDENTIALS", "camera username and secure password are required")
     try:
         if component == "ONVIF":
-            main, preview, manufacturer, model = _onvif_discover(endpoint, username, password)
+            main, preview, manufacturer, model = _onvif_discover(endpoint, username, password,
+                                                                  discovery_profile)
             offset, time_status = _onvif_time_offset(endpoint, username, password)
+            metadata = _onvif_device_metadata(endpoint, username, password)
             result = CameraResult(True, "ONVIF_OK", "ONVIF discovery and media profiles verified",
                                   main_url=main, preview_url=preview, manufacturer=manufacturer,
-                                  model=model, time_offset_ms=offset, time_status=time_status)
+                                  model=model, firmware=metadata.get("firmware"),
+                                  serial_number=metadata.get("serial_number"),
+                                  hardware_id=metadata.get("hardware_id"),
+                                  time_offset_ms=offset, time_status=time_status)
             _set_status(device_id, "ONVIF_OK", result.message, main_url=main, preview_url=preview,
-                        manufacturer=manufacturer, model=model, time_offset_ms=offset, time_status=time_status)
+                        manufacturer=manufacturer, model=model, time_offset_ms=offset,
+                        time_status=time_status, **metadata)
             return result
         known = camera_status(device_id)
         if not known.get("main_url"):
-            discovered = test_camera(device_id, adapter, endpoint, username)
+            discovered = test_camera(device_id, adapter, endpoint, username, discovery_profile)
             if not discovered.ok:
                 return discovered
             known = camera_status(device_id)
@@ -456,7 +499,8 @@ def _onvif_time_offset(endpoint: str, username: str, password: str) -> tuple[flo
         return None, "UNVERIFIED"
 
 
-def test_camera(device_id: str, adapter: str, endpoint: str, username: str) -> CameraResult:
+def test_camera(device_id: str, adapter: str, endpoint: str, username: str,
+                discovery_profile: str = "") -> CameraResult:
     device_id = device_id.upper()
     password = load_password(device_id)
     if not username.strip() or not password:
@@ -466,20 +510,26 @@ def test_camera(device_id: str, adapter: str, endpoint: str, username: str) -> C
     started = time.monotonic()
     try:
         if adapter.upper() == "ONVIF":
-            main_url, preview_url, manufacturer, model = _onvif_discover(endpoint, username, password)
+            main_url, preview_url, manufacturer, model = _onvif_discover(endpoint, username, password, discovery_profile)
             time_offset_ms, time_status = _onvif_time_offset(endpoint, username, password)
+            metadata = _onvif_device_metadata(endpoint, username, password)
         else:
             main_url, preview_url, manufacturer, model = endpoint, None, None, None
             time_offset_ms, time_status = None, "UNVERIFIED"
+            metadata = {}
         candidate = preview_url or main_url
         probe = _probe_frame(candidate, username, password)
         ok, detail, latency, metrics = (*probe, {}) if len(probe) == 3 else probe
-        result = CameraResult(ok, "STREAMING" if ok else "NO_VIDEO", detail, latency,
-                              main_url, preview_url, manufacturer, model, time_offset_ms, time_status,
-                              metrics.get("width"), metrics.get("height"), metrics.get("fps"))
+        result = CameraResult(ok=ok, status="STREAMING" if ok else "NO_VIDEO", message=detail,
+                              latency_ms=latency, main_url=main_url, preview_url=preview_url,
+                              manufacturer=manufacturer, model=model,
+                              firmware=metadata.get("firmware"), serial_number=metadata.get("serial_number"),
+                              hardware_id=metadata.get("hardware_id"), time_offset_ms=time_offset_ms,
+                              time_status=time_status, width=metrics.get("width"),
+                              height=metrics.get("height"), fps=metrics.get("fps"))
         _set_status(device_id, result.status, result.message, main_url=main_url, preview_url=preview_url,
                     manufacturer=manufacturer, model=model, latency_ms=latency,
-                    time_offset_ms=time_offset_ms, time_status=time_status, **metrics)
+                    time_offset_ms=time_offset_ms, time_status=time_status, **metadata, **metrics)
         return result
     except Exception as exc:
         message = str(exc).replace(password, "***")
@@ -488,7 +538,8 @@ def test_camera(device_id: str, adapter: str, endpoint: str, username: str) -> C
         return result
 
 
-def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str, profile: str = "preview"):
+def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str,
+                 profile: str = "preview", discovery_profile: str = ""):
     try:
         import cv2
     except ImportError:
@@ -500,7 +551,7 @@ def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str, pro
     known = camera_status(device_id)
     url = known.get("preview_url") if profile == "preview" else known.get("main_url")
     if not url:
-        tested = test_camera(device_id, adapter, endpoint, username)
+        tested = test_camera(device_id, adapter, endpoint, username, discovery_profile)
         if not tested.ok:
             return
         url = tested.preview_url if profile == "preview" and tested.preview_url else tested.main_url
