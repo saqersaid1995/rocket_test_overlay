@@ -4,13 +4,15 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
-from .broadcast_runtime import (load_stream_key, output_status, save_stream_key,
-                                start_output, stop_outputs)
+from .broadcast_runtime import (load_stream_key, output_metrics, output_status, save_stream_key,
+                                start_output, start_program_recording, stop_outputs,
+                                stop_program_recording)
 
 media = Blueprint("media", __name__)
 
@@ -33,6 +35,10 @@ CREATE TABLE IF NOT EXISTS display_endpoints(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, code TEXT NOT NULL UNIQUE,
  name TEXT NOT NULL, page_slug TEXT, resolution TEXT NOT NULL, status TEXT NOT NULL,
  last_seen TEXT, locked INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS operator_video_preferences(
+ operation_id TEXT NOT NULL, operator_key TEXT NOT NULL, wall_id INTEGER,
+ grid TEXT NOT NULL DEFAULT '2x2', updated_at TEXT NOT NULL,
+ PRIMARY KEY(operation_id,operator_key));
 CREATE TABLE IF NOT EXISTS camera_profiles(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, device_id TEXT NOT NULL UNIQUE,
  name TEXT NOT NULL, mode TEXT NOT NULL, main_url TEXT, preview_url TEXT,
@@ -158,11 +164,22 @@ def media_snapshot() -> dict:
             "video_walls", "published_templates", "broadcast_scenes", "stream_destinations", "broadcast_events")}
         session = db.execute("SELECT * FROM broadcast_sessions WHERE operation_id=?", (OPERATION_ID,)).fetchone()
         result["broadcast"] = dict(session)
+        cutoff = datetime.now(timezone.utc).timestamp() - 30
+        for endpoint in result["display_endpoints"]:
+            try:
+                alive = bool(endpoint.get("last_seen") and datetime.fromisoformat(endpoint["last_seen"]).timestamp() >= cutoff)
+            except (TypeError, ValueError):
+                alive = False
+            endpoint["status"] = "ONLINE" if alive else "OFFLINE"
+        preference = db.execute("SELECT * FROM operator_video_preferences WHERE operation_id=? AND operator_key='LOCAL_ADMIN'",
+                                (OPERATION_ID,)).fetchone()
+        result["operator_video_preference"] = dict(preference) if preference else {"operator_key":"LOCAL_ADMIN","wall_id":None,"grid":"2x2"}
         for destination in result["stream_destinations"]:
             destination["secret_configured"] = bool(load_stream_key(destination["id"]))
             runtime = output_status(destination["id"])
             if runtime != "STOPPED" or destination["status"] == "STREAMING":
                 destination["status"] = runtime
+            destination["runtime"] = output_metrics(destination["id"])
     core = snapshot()
     result["operation"] = core["operation"]
     result["channels"] = core["channels"]
@@ -194,6 +211,37 @@ def display_output(slug: str):
     return render_template("media.html", initial=media_snapshot(), display_slug=slug)
 
 
+@media.post("/api/media/display/<code>/heartbeat")
+def display_heartbeat(code: str):
+    p = body()
+    with connect() as db:
+        endpoint = db.execute("SELECT * FROM display_endpoints WHERE operation_id=? AND code=?",
+                              (OPERATION_ID, code.upper())).fetchone()
+        if not endpoint:
+            return jsonify(error="display endpoint is not registered"), 404
+        db.execute("UPDATE display_endpoints SET status='ONLINE',last_seen=? WHERE id=?",
+                   (now(), endpoint["id"]))
+        routed = endpoint["page_slug"]
+    return jsonify(ok=True, page_slug=routed,
+                   redirect=f"/display/{routed}?endpoint={code.upper()}" if routed else None)
+
+
+@media.post("/api/media/operator-video-preference")
+def save_operator_video_preference():
+    p = body(); grid = str(p.get("grid", "2x2")); wall_id = p.get("wall_id")
+    if grid not in {"1x1", "2x2", "3x3", "hero+4"}:
+        return jsonify(error="unsupported operator video layout"), 400
+    with connect() as db:
+        if wall_id and not db.execute("SELECT 1 FROM video_walls WHERE operation_id=? AND id=?",
+                                      (OPERATION_ID, wall_id)).fetchone():
+            return jsonify(error="video wall not found"), 404
+        db.execute("""INSERT INTO operator_video_preferences(operation_id,operator_key,wall_id,grid,updated_at)
+            VALUES(?,'LOCAL_ADMIN',?,?,?) ON CONFLICT(operation_id,operator_key) DO UPDATE SET
+            wall_id=excluded.wall_id,grid=excluded.grid,updated_at=excluded.updated_at""",
+                   (OPERATION_ID, wall_id, grid, now()))
+    return jsonify(ok=True)
+
+
 @media.get("/api/media/snapshot")
 def api_media_snapshot():
     return jsonify(media_snapshot())
@@ -201,6 +249,25 @@ def api_media_snapshot():
 
 def body() -> dict:
     return request.get_json(silent=True) or {}
+
+
+def _program_cameras(db, scene: dict) -> list[dict]:
+    required = {source.get("source") for source in json.loads(scene.get("sources_json") or "[]")
+                if source.get("kind") == "camera"}
+    result = []
+    for row in db.execute("""SELECT d.id AS device_id,i.config_json FROM devices d JOIN device_integrations i
+        ON i.operation_id=d.operation_id AND i.device_id=d.id WHERE d.operation_id=? AND d.device_type='IP-CAMERA'
+        AND i.enabled=1 AND d.endpoint!='UNASSIGNED' ORDER BY d.required DESC,d.rowid""", (OPERATION_ID,)):
+        if required and row["device_id"] not in required:
+            continue
+        config = json.loads(row["config_json"])
+        result.append({"device_id":row["device_id"],"username":config.get("username","")})
+    return result
+
+
+def _scene_payload(scene) -> dict:
+    return {"id":scene["id"],"name":scene["name"],"scene_type":scene["scene_type"],
+            "sources":json.loads(scene["sources_json"] or "[]")}
 
 
 def clean_slug(value: str) -> str:
@@ -344,6 +411,12 @@ def broadcast_action():
             scene = scene or db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["preview_scene_id"],)).fetchone()
             if not scene: return jsonify(error="preview scene is not available"), 409
             db.execute("UPDATE broadcast_sessions SET program_scene_id=?,emergency=0,updated_at=? WHERE operation_id=?", (scene["id"], now(), OPERATION_ID)); detail = f"Program changed to {scene['name']} via {action}"
+            if session["state"] == "ON_AIR" and not current_app.config.get("TESTING"):
+                destinations = [dict(row) for row in db.execute("SELECT * FROM stream_destinations WHERE operation_id=? AND enabled=1", (OPERATION_ID,))]
+                cameras = _program_cameras(db, dict(scene))
+                stop_outputs()
+                for destination in destinations:
+                    start_output(destination, cameras, _scene_payload(scene))
         elif action == "EMERGENCY":
             emergency = db.execute("SELECT * FROM broadcast_scenes WHERE operation_id=? AND scene_type='EMERGENCY' ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
             db.execute("UPDATE broadcast_sessions SET program_scene_id=?,preview_scene_id=?,emergency=1,updated_at=? WHERE operation_id=?", (emergency["id"], emergency["id"], now(), OPERATION_ID)); detail = "Emergency slate taken to program"
@@ -354,14 +427,11 @@ def broadcast_action():
             if missing: return jsonify(error="secure stream key missing: " + ", ".join(missing)), 409
             started = []
             if not current_app.config.get("TESTING"):
-                source = db.execute("""SELECT d.id AS device_id,i.config_json FROM devices d JOIN device_integrations i
-                    ON i.operation_id=d.operation_id AND i.device_id=d.id WHERE d.operation_id=? AND d.device_type='IP-CAMERA'
-                    AND i.enabled=1 AND d.endpoint!='UNASSIGNED' ORDER BY d.required DESC,d.rowid LIMIT 1""", (OPERATION_ID,)).fetchone()
-                if not source: return jsonify(error="no authenticated camera is available for public program output"), 409
-                config = json.loads(source["config_json"])
-                camera = {"device_id": source["device_id"], "username": config.get("username", "")}
+                program_scene = db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["program_scene_id"],)).fetchone()
+                cameras = _program_cameras(db, dict(program_scene))
+                if not cameras: return jsonify(error="no authenticated camera is available for public program output"), 409
                 try:
-                    started = [start_output(destination, camera) for destination in destinations]
+                    started = [start_output(destination, cameras, _scene_payload(program_scene)) for destination in destinations]
                 except RuntimeError as exc:
                     stop_outputs()
                     return jsonify(error=str(exc)), 409
@@ -373,7 +443,16 @@ def broadcast_action():
             db.execute("UPDATE stream_destinations SET status=CASE WHEN enabled=1 THEN 'READY' ELSE 'DISABLED' END,updated_at=? WHERE operation_id=?", (now(), OPERATION_ID))
             db.execute("UPDATE broadcast_sessions SET state='OFF_AIR',recording=0,updated_at=? WHERE operation_id=?", (now(), OPERATION_ID)); detail = "Broadcast session stopped"
         elif action in {"START_RECORDING", "STOP_RECORDING"}:
-            value = int(action == "START_RECORDING"); db.execute("UPDATE broadcast_sessions SET recording=?,updated_at=? WHERE operation_id=?", (value, now(), OPERATION_ID)); detail = action.replace("_", " ").title()
+            value = int(action == "START_RECORDING")
+            if not current_app.config.get("TESTING"):
+                if value:
+                    program_scene = db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["program_scene_id"],)).fetchone()
+                    cameras = _program_cameras(db, dict(program_scene))
+                    if not cameras: return jsonify(error="no camera is available for Program recording"), 409
+                    start_program_recording(cameras, _scene_payload(program_scene), Path(current_app.instance_path) / "public-program")
+                else:
+                    stop_program_recording()
+            db.execute("UPDATE broadcast_sessions SET recording=?,updated_at=? WHERE operation_id=?", (value, now(), OPERATION_ID)); detail = action.replace("_", " ").title()
         else: return jsonify(error="unsupported broadcast action"), 400
         db.execute("INSERT INTO broadcast_events(operation_id,occurred_at,action,detail) VALUES(?,?,?,?)", (OPERATION_ID, now(), action, detail))
         event(db, "BROADCAST", "BROADCAST_DIRECTOR", "WARNING" if action == "EMERGENCY" else "INFO", detail)
