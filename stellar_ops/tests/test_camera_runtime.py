@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from stellar_ops import camera_runtime
@@ -48,6 +50,36 @@ class CameraRuntimeTests(unittest.TestCase):
         result = camera_runtime.test_camera("CAM-01", "ONVIF", "http://192.168.1.64", "smtcscamera")
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "MISSING_CREDENTIALS")
+
+    def test_native_camera_recording_is_finalized(self):
+        class FakeProcess:
+            def __init__(self, command, **_kwargs):
+                self.output = Path(command[-1])
+                self.return_code = None
+
+            def poll(self):
+                return self.return_code
+
+            def send_signal(self, _signal):
+                self.output.write_bytes(b"matroska-video")
+                self.return_code = 0
+
+            def wait(self, timeout=None):
+                return self.return_code
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("stellar_ops.camera_runtime.load_password", return_value="secret"), \
+                patch("stellar_ops.camera_runtime.camera_status", return_value={"main_url": "rtsp://camera/main"}), \
+                patch("stellar_ops.camera_runtime._ffmpeg_executable", return_value="ffmpeg"), \
+                patch("stellar_ops.camera_runtime.subprocess.Popen", side_effect=FakeProcess), \
+                patch("stellar_ops.camera_runtime.time.sleep"):
+            started = camera_runtime.start_camera_recordings([
+                {"device_id": "CAM-01", "adapter": "ONVIF", "endpoint": "http://camera", "username": "operator"}
+            ], Path(directory), 42)
+            self.assertEqual(started[0]["state"], "RECORDING")
+            stopped = camera_runtime.stop_camera_recordings(42)
+            self.assertEqual(stopped[0]["state"], "RECORDED")
+            self.assertEqual(Path(stopped[0]["file"]).read_bytes(), b"matroska-video")
 
 
 if __name__ == "__main__":
