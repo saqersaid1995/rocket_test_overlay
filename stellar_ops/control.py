@@ -525,6 +525,22 @@ def camera_stream(device_id: str):
                     headers={"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"})
 
 
+@control.get("/control/camera/<device_id>/popout")
+def camera_popout(device_id: str):
+    camera_id = device_id.upper()
+    with connect() as db:
+        row = db.execute("""SELECT d.id,d.name,d.health,i.enabled
+            FROM devices d JOIN device_integrations i
+              ON i.operation_id=d.operation_id AND i.device_id=d.id
+            WHERE d.operation_id=? AND d.id=? AND d.device_type='IP-CAMERA'""",
+                         (OPERATION_ID, camera_id)).fetchone()
+    if not row:
+        return jsonify(error="camera device not found"), 404
+    if not row["enabled"]:
+        return jsonify(error="camera is archived"), 409
+    return render_template("camera_popout.html", camera=dict(row))
+
+
 @control.post("/api/control/channel")
 def save_channel():
     payload = request.get_json(silent=True) or {}
