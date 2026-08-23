@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -261,7 +262,8 @@ def _probe_frame(url: str, username: str, password: str) -> tuple[bool, str, flo
         return False, "OpenCV is not installed", None, {}
     os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|timeout;5000000")
     started = time.monotonic()
-    capture = cv2.VideoCapture(_credential_url(url, username, password), cv2.CAP_FFMPEG)
+    source = _credential_url(url, username, password) if username or password else url
+    capture = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
     try:
         ok, frame = capture.read()
         latency = round((time.monotonic() - started) * 1000, 1)
@@ -326,6 +328,28 @@ def test_camera_component(device_id: str, adapter: str, endpoint: str, username:
         url = known.get("preview_url") if component in {"RTSP_PREVIEW", "PREVIEW"} else known.get("main_url")
         if not url:
             return CameraResult(False, "PROFILE_MISSING", f"{component} profile is not available")
+        if component == "RECORDING":
+            with tempfile.TemporaryDirectory(prefix="stellar-camera-acceptance-") as directory:
+                target = Path(directory) / "acceptance.mkv"
+                command = [_ffmpeg_executable(), "-hide_banner", "-loglevel", "error", "-y",
+                           "-rtsp_transport", "tcp", "-i", _credential_url(url, username, password),
+                           "-t", "2", "-map", "0:v:0", "-c:v", "copy", "-an", str(target)]
+                completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.PIPE, timeout=12)
+                if completed.returncode or not target.exists() or not target.stat().st_size:
+                    message = completed.stderr.decode(errors="replace")[-300:].replace(password, "***")
+                    _set_status(device_id, "RECORDING_TEST_FAILED", message,
+                                recording_test_status="FAILED")
+                    return CameraResult(False, "RECORDING_TEST_FAILED", message or "camera produced no test recording")
+                ok, message, latency, metrics = _probe_frame(str(target), "", "")
+                status = "RECORDING_TEST_OK" if ok else "PLAYBACK_TEST_FAILED"
+                _set_status(device_id, "STREAMING" if ok else status, message,
+                            main_url=known.get("main_url"), preview_url=known.get("preview_url"),
+                            recording_test_status="PASS" if ok else "FAILED",
+                            recording_test_at=time.time(), **metrics)
+                return CameraResult(ok, status, message, latency, known.get("main_url"),
+                                    known.get("preview_url"), width=metrics.get("width"),
+                                    height=metrics.get("height"), fps=metrics.get("fps"))
         ok, message, latency, metrics = _probe_frame(url, username, password)
         status = "RTSP_OK" if ok else "NO_VIDEO"
         _set_status(device_id, "STREAMING" if ok else status, message,
