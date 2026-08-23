@@ -355,8 +355,8 @@ def snapshot() -> dict:
             if device["health"]!="STREAMING": blockers.append(f"{device['id']} video is {device['health']}")
             if data["recording"]["state"]=="RECORDING" and device["recording"]!="RECORDING": blockers.append(f"{device['id']} recorder is not active")
             if device.get("time_status")!="VERIFIED": blockers.append(f"{device['id']} time correlation is not verified")
-            if device.get("recording_test_status") == "FAILED":
-                blockers.append(f"{device['id']} recording/playback acceptance test failed")
+            if device.get("recording_test_status") != "PASS":
+                blockers.append(f"{device['id']} recording/playback acceptance test has not passed")
             if device.get("latency_ms") is not None and device["latency_ms"] > 2000:
                 blockers.append(f"{device['id']} preview latency exceeds 2000 ms")
         free_percent=round(disk.free/disk.total*100,1)
@@ -715,7 +715,7 @@ def set_recording():
         elif action=="STOP" and current.get("state")=="RECORDING":
             total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
             camera_result=stop_camera_recordings(current["id"])
-            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); evidence_result=close_package(db,OPERATION_ID,current["id"]); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped; evidence package {evidence_result['package_id']} sealed; {sum(x['state']=='RECORDED' for x in camera_result)} camera files finalized")
+            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); evidence_result=close_package(db,OPERATION_ID,current["id"],camera_result); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped; evidence package {evidence_result['package_id']} sealed; {sum(x['state']=='RECORDED' for x in camera_result)} camera files finalized")
         else: return jsonify(error="recording command is invalid"),409
     return jsonify(ok=True,evidence=evidence_result,cameras=camera_result)
 
@@ -815,6 +815,7 @@ def command():
                     if health.get("status")!="STREAMING": camera_blockers.append(f"{camera['id']} stream {health.get('status','UNKNOWN')}")
                     if recorder.get("state")!="RECORDING": camera_blockers.append(f"{camera['id']} recorder {recorder.get('state','STOPPED')}")
                     if health.get("time_status")!="VERIFIED": camera_blockers.append(f"{camera['id']} time {health.get('time_status','UNVERIFIED')}")
+                    if health.get("recording_test_status")!="PASS": camera_blockers.append(f"{camera['id']} REC TEST has not passed")
                 if camera_blockers:
                     return jsonify(error="required camera readiness is NO-GO: " + "; ".join(camera_blockers)),409
             db.execute("UPDATE operations SET state='COUNTDOWN',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Terminal countdown authorised")
