@@ -17,6 +17,8 @@ _statuses: dict[str, dict] = {}
 _secret_presence: dict[str, bool] = {}
 _recorders: dict[str, dict] = {}
 _recorder_lock = threading.Lock()
+_runtime_events: list[dict] = []
+_event_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,19 @@ def _set_status(device_id: str, status: str, message: str, **extra) -> None:
         current = dict(_statuses.get(device_id.upper(), {}))
         current.update({"status": status, "message": message, "updated_at": time.time(), **extra})
         _statuses[device_id.upper()] = current
+
+
+def _runtime_event(device_id: str, kind: str, message: str, **detail) -> None:
+    with _event_lock:
+        _runtime_events.append({"device_id": device_id.upper(), "kind": kind,
+                                "message": message, "occurred_at": time.time(), **detail})
+
+
+def drain_runtime_events() -> list[dict]:
+    with _event_lock:
+        items = list(_runtime_events)
+        _runtime_events.clear()
+    return items
 
 
 def camera_status(device_id: str) -> dict:
@@ -443,6 +458,8 @@ def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str, pro
                     failures += 1
                     reconnects += 1
                     outage_started = outage_started or time.time()
+                    if failures == 1:
+                        _runtime_event(device_id, "CAMERA_OUTAGE", "video frame loss detected; automatic reconnect started")
                     _set_status(device_id, "RECONNECTING", "video frame lost; reconnecting", main_url=known.get("main_url"), preview_url=known.get("preview_url"), reconnects=reconnects, outage_started=outage_started)
                     break
                 failures = 0
@@ -458,6 +475,10 @@ def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str, pro
                                    "preview_bitrate_kbps": round(window_bytes * 8 / elapsed / 1000, 1)}
                         window_started, window_frames, window_bytes = time.monotonic(), 0, 0
                     outage_seconds = round(time.time() - outage_started, 3) if outage_started else 0
+                    if outage_started:
+                        _runtime_event(device_id, "CAMERA_RECOVERED",
+                                       f"video stream recovered after {outage_seconds:.3f} seconds",
+                                       outage_seconds=outage_seconds)
                     outage_started = None
                     _set_status(device_id, "STREAMING", "browser preview active", main_url=known.get("main_url"), preview_url=known.get("preview_url"), reconnects=reconnects, last_outage_seconds=outage_seconds, last_frame_at=time.time(), width=frame.shape[1], height=frame.shape[0], **metrics)
                     yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + payload + b"\r\n"
