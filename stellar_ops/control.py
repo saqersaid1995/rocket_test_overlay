@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import json
 import os
+import shutil
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -10,8 +11,9 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
-from .camera_runtime import (camera_status, has_password, mjpeg_frames,
-                             save_password, test_camera)
+from .camera_runtime import (camera_recording_status, camera_status, has_password,
+                             mjpeg_frames, save_password, start_camera_recordings,
+                             stop_camera_recordings, test_camera)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
@@ -301,8 +303,15 @@ def snapshot() -> dict:
                 device["health"] = "DISABLED"
                 device["recording"] = "STOPPED"
             elif device["device_type"] == "IP-CAMERA":
-                device["health"] = camera_status(device["id"])["status"]
-                device["recording"] = "STOPPED"
+                camera_health = camera_status(device["id"])
+                device["health"] = camera_health["status"]
+                device["time_status"] = camera_health.get("time_status", "UNVERIFIED")
+                device["time_offset_ms"] = camera_health.get("time_offset_ms")
+                device["width"] = camera_health.get("width")
+                device["height"] = camera_health.get("height")
+                device["fps"] = camera_health.get("fps")
+                device["latency_ms"] = camera_health.get("latency_ms")
+                device["recording"] = camera_recording_status(device["id"])["state"]
             elif op_dict["mode"] == "LIVE":
                 qualities = channel_by_source.get(device["id"], [])
                 if device["id"] == runtime.get("meta", {}).get("device_id"):
@@ -315,6 +324,19 @@ def snapshot() -> dict:
             elif op_dict["mode"] == "REPLAY":
                 device["health"] = "REPLAY" if device["id"] in channel_by_source or device["id"] == "DAQ-01" else device["health"]
                 device["recording"] = data["recording"]["state"] if device["id"] == "DAQ-01" else device["recording"]
+        disk=shutil.disk_usage(CONTROL_DB.parent)
+        configured_required=[device for device in data["devices"] if device["device_type"]=="IP-CAMERA"
+                             and device["enabled"] and device["required"] and device["endpoint"]!="UNASSIGNED"]
+        blockers=[]
+        for device in configured_required:
+            if device["health"]!="STREAMING": blockers.append(f"{device['id']} video is {device['health']}")
+            if data["recording"]["state"]=="RECORDING" and device["recording"]!="RECORDING": blockers.append(f"{device['id']} recorder is not active")
+            if device.get("time_status")!="VERIFIED": blockers.append(f"{device['id']} time correlation is not verified")
+        free_percent=round(disk.free/disk.total*100,1)
+        if free_percent<5: blockers.append("evidence storage has less than 5% free space")
+        data["video_system"]={"required_cameras":len(configured_required),"online":sum(d["health"]=="STREAMING" for d in configured_required),
+                              "disk_free_bytes":disk.free,"disk_free_percent":free_percent,
+                              "readiness":"GO" if not blockers else "NO_GO","blockers":blockers}
         return data
 
 
@@ -586,6 +608,7 @@ def set_mode():
 def set_recording():
     action=(request.get_json(silent=True) or {}).get("action","").upper()
     evidence_result=None
+    camera_result=[]
     with connect() as db:
         ensure_runtime_schema(db); op=db.execute("SELECT * FROM operations WHERE id=?",(OPERATION_ID,)).fetchone(); current=recording_status(db,OPERATION_ID)
         if action=="START":
@@ -594,12 +617,23 @@ def set_recording():
             if not run: return jsonify(error="activate a test run before recording"),409
             total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
             cursor=db.execute("INSERT INTO recording_sessions(operation_id,run_id,source_mode,started_at,state,started_by,sample_count_start) VALUES(?,?,?,?, 'RECORDING','INSTRUMENTATION',?)",(OPERATION_ID,run["id"],op["mode"],utc_now(),total))
-            package_id=open_package(db,OPERATION_ID,cursor.lastrowid,CONTROL_DB.parent); event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode; evidence package {package_id} opened")
+            package_id=open_package(db,OPERATION_ID,cursor.lastrowid,CONTROL_DB.parent)
+            package=db.execute("SELECT directory FROM evidence_packages WHERE id=?",(package_id,)).fetchone()
+            cameras=[]
+            for row in db.execute("""SELECT d.id,i.adapter_type,i.config_json FROM devices d JOIN device_integrations i
+                ON i.operation_id=d.operation_id AND i.device_id=d.id WHERE d.operation_id=?
+                AND d.device_type='IP-CAMERA' AND i.enabled=1 AND d.endpoint!='UNASSIGNED'""",(OPERATION_ID,)):
+                config=json.loads(row["config_json"])
+                cameras.append({"device_id":row["id"],"adapter":row["adapter_type"],
+                                "endpoint":config.get("endpoint",""),"username":config.get("username","")})
+            camera_result=start_camera_recordings(cameras,Path(package["directory"]),cursor.lastrowid)
+            event(db,"RECORDING","INSTRUMENTATION","INFO",f"Recording session {cursor.lastrowid} started in {op['mode']} mode; evidence package {package_id} opened; {sum(x['state']=='RECORDING' for x in camera_result)} camera recorders active")
         elif action=="STOP" and current.get("state")=="RECORDING":
             total=db.execute("SELECT COALESCE(sum(total_samples),0) FROM edge_sessions").fetchone()[0]
-            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); evidence_result=close_package(db,OPERATION_ID,current["id"]); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped; evidence package {evidence_result['package_id']} sealed")
+            camera_result=stop_camera_recordings(current["id"])
+            db.execute("UPDATE recording_sessions SET stopped_at=?,state='STOPPED',sample_count_stop=? WHERE id=?",(utc_now(),total,current["id"])); evidence_result=close_package(db,OPERATION_ID,current["id"]); event(db,"RECORDING","INSTRUMENTATION","WARNING",f"Recording session {current['id']} stopped; evidence package {evidence_result['package_id']} sealed; {sum(x['state']=='RECORDED' for x in camera_result)} camera files finalized")
         else: return jsonify(error="recording command is invalid"),409
-    return jsonify(ok=True,evidence=evidence_result)
+    return jsonify(ok=True,evidence=evidence_result,cameras=camera_result)
 
 
 @control.post("/api/control/replay/control")
@@ -688,6 +722,17 @@ def command():
                     return jsonify(error="required LIVE channels are not GOOD: " + ", ".join(bad)), 409
                 if live.get("meta", {}).get("sequence_gaps", 0):
                     return jsonify(error="Ethernet stream contains sequence gaps; disposition the data loss before countdown"), 409
+                required_cameras=db.execute("""SELECT d.id FROM devices d JOIN device_integrations i
+                    ON i.operation_id=d.operation_id AND i.device_id=d.id WHERE d.operation_id=?
+                    AND d.device_type='IP-CAMERA' AND d.required=1 AND i.enabled=1 AND d.endpoint!='UNASSIGNED'""",(OPERATION_ID,)).fetchall()
+                camera_blockers=[]
+                for camera in required_cameras:
+                    health=camera_status(camera["id"]); recorder=camera_recording_status(camera["id"])
+                    if health.get("status")!="STREAMING": camera_blockers.append(f"{camera['id']} stream {health.get('status','UNKNOWN')}")
+                    if recorder.get("state")!="RECORDING": camera_blockers.append(f"{camera['id']} recorder {recorder.get('state','STOPPED')}")
+                    if health.get("time_status")!="VERIFIED": camera_blockers.append(f"{camera['id']} time {health.get('time_status','UNVERIFIED')}")
+                if camera_blockers:
+                    return jsonify(error="required camera readiness is NO-GO: " + "; ".join(camera_blockers)),409
             db.execute("UPDATE operations SET state='COUNTDOWN',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Terminal countdown authorised")
         elif action == "FIRE" and op["state"] == "COUNTDOWN":
             db.execute("UPDATE operations SET state='FIRING',firing_started_monotonic=?,updated_at=? WHERE id=?", (time.monotonic(), utc_now(), OPERATION_ID)); event(db, "FIELD_ACK", "FIELD_CONTROLLER_SIM", "CRITICAL", "SIMULATED firing event acknowledged")
