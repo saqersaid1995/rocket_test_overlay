@@ -6,9 +6,11 @@ import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, render_template, request
 
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
+from .broadcast_runtime import (load_stream_key, output_status, save_stream_key,
+                                start_output, stop_outputs)
 
 media = Blueprint("media", __name__)
 
@@ -156,11 +158,25 @@ def media_snapshot() -> dict:
             "video_walls", "published_templates", "broadcast_scenes", "stream_destinations", "broadcast_events")}
         session = db.execute("SELECT * FROM broadcast_sessions WHERE operation_id=?", (OPERATION_ID,)).fetchone()
         result["broadcast"] = dict(session)
+        for destination in result["stream_destinations"]:
+            destination["secret_configured"] = bool(load_stream_key(destination["id"]))
+            runtime = output_status(destination["id"])
+            if runtime != "STOPPED" or destination["status"] == "STREAMING":
+                destination["status"] = runtime
     core = snapshot()
     result["operation"] = core["operation"]
     result["channels"] = core["channels"]
     result["devices"] = core["devices"]
     result["telemetry"] = core["telemetry"]
+    device_map = {item["id"]: item for item in core["devices"]}
+    for profile in result["camera_profiles"]:
+        device = device_map.get(profile["device_id"], {})
+        profile["runtime_status"] = device.get("health", "NOT_CONNECTED")
+        profile["recording"] = device.get("recording", "STOPPED")
+        profile["runtime_live"] = bool(device.get("endpoint") not in {None, "", "UNASSIGNED"}
+                                       and device.get("health") in {"STREAMING", "RECONNECTING"})
+        profile["stream_url"] = f"/api/control/camera/{profile['device_id']}/stream.mjpg?profile=preview"
+        profile["popout_url"] = f"/control/camera/{profile['device_id']}/popout"
     return result
 
 
@@ -303,6 +319,14 @@ def save_destination():
             VALUES(?,?,?,?,?,0,'NOT_TESTED',?) ON CONFLICT(operation_id,name) DO UPDATE SET provider=excluded.provider,
             ingest_url=excluded.ingest_url,stream_key_hint=COALESCE(excluded.stream_key_hint,stream_destinations.stream_key_hint),updated_at=excluded.updated_at""",
             (OPERATION_ID, name, provider, ingest, hint, now()))
+        destination_id = db.execute("SELECT id FROM stream_destinations WHERE operation_id=? AND name=?",
+                                    (OPERATION_ID, name)).fetchone()["id"]
+        if key:
+            try:
+                save_stream_key(destination_id, key)
+            except RuntimeError:
+                if not current_app.config.get("TESTING"):
+                    raise
         event(db, "DESTINATION_CONFIG", "STREAM_ENGINEER", "INFO", f"Stream destination saved: {name}; secret not logged")
     return jsonify(ok=True)
 
@@ -324,10 +348,29 @@ def broadcast_action():
             emergency = db.execute("SELECT * FROM broadcast_scenes WHERE operation_id=? AND scene_type='EMERGENCY' ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
             db.execute("UPDATE broadcast_sessions SET program_scene_id=?,preview_scene_id=?,emergency=1,updated_at=? WHERE operation_id=?", (emergency["id"], emergency["id"], now(), OPERATION_ID)); detail = "Emergency slate taken to program"
         elif action == "START_STREAM":
-            enabled = db.execute("SELECT count(*) FROM stream_destinations WHERE operation_id=? AND enabled=1", (OPERATION_ID,)).fetchone()[0]
-            if not enabled: return jsonify(error="enable and test at least one stream destination before going on air"), 409
+            destinations = [dict(row) for row in db.execute("SELECT * FROM stream_destinations WHERE operation_id=? AND enabled=1", (OPERATION_ID,))]
+            if not destinations: return jsonify(error="enable and test at least one stream destination before going on air"), 409
+            missing = [item["name"] for item in destinations if not load_stream_key(item["id"])]
+            if missing: return jsonify(error="secure stream key missing: " + ", ".join(missing)), 409
+            started = []
+            if not current_app.config.get("TESTING"):
+                source = db.execute("""SELECT d.id AS device_id,i.config_json FROM devices d JOIN device_integrations i
+                    ON i.operation_id=d.operation_id AND i.device_id=d.id WHERE d.operation_id=? AND d.device_type='IP-CAMERA'
+                    AND i.enabled=1 AND d.endpoint!='UNASSIGNED' ORDER BY d.required DESC,d.rowid LIMIT 1""", (OPERATION_ID,)).fetchone()
+                if not source: return jsonify(error="no authenticated camera is available for public program output"), 409
+                config = json.loads(source["config_json"])
+                camera = {"device_id": source["device_id"], "username": config.get("username", "")}
+                try:
+                    started = [start_output(destination, camera) for destination in destinations]
+                except RuntimeError as exc:
+                    stop_outputs()
+                    return jsonify(error=str(exc)), 409
+            for destination in destinations:
+                db.execute("UPDATE stream_destinations SET status='STREAMING',updated_at=? WHERE id=?", (now(), destination["id"]))
             db.execute("UPDATE broadcast_sessions SET state='ON_AIR',started_at=?,updated_at=? WHERE operation_id=?", (now(), now(), OPERATION_ID)); detail = "Broadcast session placed ON AIR"
         elif action == "STOP_STREAM":
+            stop_outputs()
+            db.execute("UPDATE stream_destinations SET status=CASE WHEN enabled=1 THEN 'READY' ELSE 'DISABLED' END,updated_at=? WHERE operation_id=?", (now(), OPERATION_ID))
             db.execute("UPDATE broadcast_sessions SET state='OFF_AIR',recording=0,updated_at=? WHERE operation_id=?", (now(), OPERATION_ID)); detail = "Broadcast session stopped"
         elif action in {"START_RECORDING", "STOP_RECORDING"}:
             value = int(action == "START_RECORDING"); db.execute("UPDATE broadcast_sessions SET recording=?,updated_at=? WHERE operation_id=?", (value, now(), OPERATION_ID)); detail = action.replace("_", " ").title()
