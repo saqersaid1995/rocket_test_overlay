@@ -1,4 +1,5 @@
-opencv-python-headless==4.10.0.84
+opencv-python-headless==4.8.1.78; platform_system == "Darwin"
+opencv-python-headless==4.10.0.84; platform_system != "Darwin"
 pandas>=2.1
 numpy>=1.26
 matplotlib>=3.8
@@ -8,3 +9,5 @@ PyYAML>=6.0
 Flask>=3.0
 imageio-ffmpeg>=0.6
 reportlab>=4.2
+keyring>=25.0
+onvif-zeep>=0.2.12
