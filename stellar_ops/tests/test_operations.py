@@ -922,6 +922,48 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(section["status"], "COMPLETE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 409)
 
+
+    def test_clean_database_full_controlled_journey_reaches_consistent_closure(self):
+        operation_id = self.prepare_review_stage("QACCEPT-001")
+        review_payload = self.post_review_payload()
+        saved = self.client.post(
+            f"/api/ops/{operation_id}/review",
+            json=review_payload,
+        )
+        self.assertEqual(saved.status_code, 200)
+        closed = self.client.post(
+            f"/api/ops/{operation_id}/review/close",
+            json={"closed_by": "Acceptance Test Director"},
+        )
+        self.assertEqual(closed.status_code, 200)
+
+        with control_module.connect() as db:
+            view = operation_view(db, operation_id)
+            registry = db.execute(
+                "SELECT current_stage,status FROM operation_registry WHERE id=?",
+                (operation_id,),
+            ).fetchone()
+            release = db.execute(
+                "SELECT state,outcome FROM execution_releases WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            context = db.execute(
+                "SELECT context_state FROM runtime_context WHERE id=1"
+            ).fetchone()
+            rejected_commands = db.execute(
+                """SELECT count(*) FROM command_journal
+                   WHERE operation_id=? AND outcome='REJECTED'""",
+                (control_module.OPERATION_ID,),
+            ).fetchone()[0]
+
+        self.assertEqual(view["progress"], 100)
+        self.assertIsNone(view["next_section"])
+        self.assertTrue(all(section["complete"] for section in view["sections"]))
+        self.assertEqual(tuple(registry), ("CLOSED", "CLOSED"))
+        self.assertEqual(tuple(release), ("CLOSED", "SUCCESS"))
+        self.assertEqual(context["context_state"], "CLOSED")
+        self.assertGreaterEqual(rejected_commands, 0)
+
     def test_operational_change_controls_approval_invalidation_and_verification(self):
         self.assertEqual(self.client.get("/ops").status_code, 200)
         with control_module.connect() as db:
