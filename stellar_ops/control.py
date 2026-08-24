@@ -17,6 +17,7 @@ from .camera_runtime import (camera_recording_status, camera_status, delete_pass
                              test_camera, test_camera_component)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
+from .runtime_context import ensure_development_context, get_runtime_context
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
                                 recording_status, runtime_snapshot)
 
@@ -188,6 +189,13 @@ def init_control_db() -> None:
             add_column(connection,"alarms","run_id INTEGER")
             add_column(connection,"edge_batches","run_id INTEGER")
         apply_once(db,1,"link operational records to test runs",stamp,run_linkage_migration)
+        def controlled_context_migration(connection):
+            add_column(connection,"test_runs","registry_operation_id INTEGER")
+            add_column(connection,"test_runs","execution_release_id INTEGER")
+            add_column(connection,"test_runs","release_sha256 TEXT")
+            add_column(connection,"test_runs","procedure_code TEXT")
+            add_column(connection,"test_runs","procedure_revision TEXT")
+        apply_once(db,2,"pin Operations release and procedure to each Test Run",stamp,controlled_context_migration)
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -215,6 +223,7 @@ def init_control_db() -> None:
             db.execute("UPDATE events SET run_id=? WHERE operation_id=? AND run_id IS NULL",(active_run["id"],OPERATION_ID))
             db.execute("UPDATE alarms SET run_id=? WHERE operation_id=? AND run_id IS NULL",(active_run["id"],OPERATION_ID))
             db.execute("UPDATE edge_batches SET run_id=? WHERE run_id IS NULL",(active_run["id"],))
+        ensure_development_context(db, OPERATION_ID)
         for role, panels in WORKSPACE_PRESETS.items():
             layout=[{"panel":panel,"order":index,"span":2 if panel in {"telemetry","cameras"} else 1} for index,panel in enumerate(panels)]
             db.execute("INSERT OR IGNORE INTO workspace_layouts(operation_id,name,console_role,layout_json,is_default,updated_at) VALUES(?,?,?,?,1,?)",
@@ -302,6 +311,7 @@ def snapshot() -> dict:
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
+        data["runtime_context"] = get_runtime_context(db)
         data["workspaces"] = [dict(x) for x in db.execute("SELECT * FROM workspace_layouts WHERE operation_id=? ORDER BY console_role,name",(OPERATION_ID,))]
         data["limit_profiles"] = [dict(x) for x in db.execute("SELECT * FROM limit_profiles WHERE operation_id=? ORDER BY name",(OPERATION_ID,))]
         data["evidence_packages"] = [dict(x) for x in db.execute("SELECT * FROM evidence_packages WHERE operation_id=? AND run_id IS ? ORDER BY id DESC",(OPERATION_ID,active_run_id))]
