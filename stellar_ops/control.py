@@ -700,6 +700,11 @@ def set_mode():
     with connect() as db:
         op=db.execute("SELECT * FROM operations WHERE id=?",(OPERATION_ID,)).fetchone()
         if op["state"] not in {"CHECKOUT","HOLD"}: return jsonify(error="source mode may only change during CHECKOUT or HOLD"),409
+        context = get_runtime_context(db)
+        if context and context["context_state"] == "RELEASED":
+            release = db.execute("SELECT source_mode FROM execution_releases WHERE id=?", (context["execution_release_id"],)).fetchone()
+            if not release or mode != release["source_mode"]:
+                return jsonify(error="source mode is pinned by the active execution release; close execution before changing it"),409
         ensure_runtime_schema(db)
         if recording_status(db,OPERATION_ID).get("state")=="RECORDING": return jsonify(error="stop the active recording before changing source mode"),409
         if mode=="REPLAY" and not db.execute("SELECT 1 FROM replay_runtime WHERE operation_id=? AND dataset_id IS NOT NULL",(OPERATION_ID,)).fetchone(): return jsonify(error="load a replay dataset first"),409
@@ -848,6 +853,9 @@ def command():
         elif action == "POST_FIRE" and op["state"] == "FIRING" and runtime_snapshot(db, dict(op), telemetry(op))["elapsed"] >= 8:
             db.execute("UPDATE operations SET state='POST_FIRE',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Post-fire phase entered")
         elif action == "RESET_SIM":
+            context = get_runtime_context(db)
+            if context and context["context_state"] == "RELEASED":
+                return jsonify(error="released execution cannot be reset; close it from the operation record"), 409
             db.execute("UPDATE operations SET state='CHECKOUT',prior_state=NULL,active_hold=NULL,firing_started_monotonic=NULL,updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); db.execute("UPDATE stations SET decision='PENDING',updated_at=? WHERE operation_id=?", (utc_now(), OPERATION_ID)); db.execute("UPDATE procedure_steps SET status='PENDING',completed_by=NULL,completed_at=NULL WHERE operation_id=?", (OPERATION_ID,)); event(db, "RESET", "SYSTEM", "INFO", "Simulation attempt reset")
         else: return jsonify(error=f"command {action} is not valid from {op['state']}"), 409
     return jsonify(ok=True)
