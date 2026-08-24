@@ -77,6 +77,12 @@ python -m stellar_ops.recovery restore \
 
 The restore tool verifies the manifest, checksum, database structure and audit chain before replacement, and preserves the current database as a timestamped rollback copy.
 
+## Operational diagnostics and observability
+
+Every HTTP response carries an `X-Request-ID` correlation identifier and a `Server-Timing` application-duration value. Mission Control includes a controlled self-test panel that checks database integrity, the audit chain, active Test Run, runtime binding, disk capacity, verified recovery backups and schema level.
+
+Self-tests are only permitted during `CHECKOUT` or `HOLD` while recording is stopped, and every result is retained in the operational database and audit event stream. Detailed route, alarm and incident metrics are intentionally not exposed through a public Prometheus endpoint until authentication and monitoring-network controls are implemented in the final security phase.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
