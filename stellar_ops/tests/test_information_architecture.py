@@ -51,6 +51,7 @@ class InformationArchitectureTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for selector in (
             "data-camera-full",
+            "data-run-diagnostics",
             "data-create-backup",
             "data-alarm-detail",
             "data-incident-detail",
