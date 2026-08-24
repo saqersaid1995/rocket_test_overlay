@@ -40,7 +40,7 @@ class BrowserSmokeTests(unittest.TestCase):
 
     def test_operations_configuration_and_workspace_render(self):
         self.page.goto(f"{self.base_url}/ops", wait_until="networkidle")
-        self.page.get_by_text("OPERATIONS CONTROL").first.wait_for()
+        self.page.get_by_role("heading", name="Mission & Operation Control").wait_for()
         self.assert_no_javascript_errors()
 
         self.page.goto(f"{self.base_url}/control", wait_until="networkidle")
