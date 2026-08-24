@@ -25,7 +25,7 @@ class StaticTestControlTests(unittest.TestCase):
     def test_console_and_snapshot_contract(self):
         response = self.client.get("/control")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"STELLAR MISSION & TEST CONTROL", response.data)
+        self.assertIn(b"STELLAR MISSION &amp; TEST CONTROL", response.data)
         snapshot = self.client.get("/api/control/snapshot").get_json()
         self.assertEqual(snapshot["operation"]["state"], "CHECKOUT")
         self.assertEqual(len(snapshot["stations"]), 7)
@@ -33,7 +33,7 @@ class StaticTestControlTests(unittest.TestCase):
         self.assertEqual(len(snapshot["steps"]), 14)
         workspace = self.client.get("/workspace")
         self.assertEqual(workspace.status_code,200)
-        self.assertIn(b"MISSION CONTROL WORKSPACE",workspace.data)
+        self.assertIn(b'MISSION CONTROL</b>',workspace.data)
         self.assertEqual(len(snapshot["workspaces"]),5)
         self.assertTrue(snapshot["runs"][0]["active"])
         health=self.client.get("/health")

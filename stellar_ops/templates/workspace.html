@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>SMTCS · Mission Control Workspace</title>
+  <link rel="stylesheet" href="{{url_for('static',filename='global_nav.css')}}">
   <link rel="stylesheet" href="{{url_for('static',filename='workspace.css')}}">
   <link rel="stylesheet" href="{{url_for('static',filename='workspace_runtime.css')}}">
-  <style>body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}</style>
+  <style>body.kiosk .global-shell-header,body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}body.popout .global-shell-header,body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}</style>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>MISSION CONTROL WORKSPACE</small></span></div>
+{% set active_area = 'mission-control' %}{% set section_label = 'MISSION CONTROL' %}{% include "partials/global_nav.html" %}
+<header class="topbar context-topbar">
   <div class="run-identity"><small>ACTIVE RUN</small><strong id="active-run">—</strong></div>
   <div class="phase"><small>OPERATION PHASE</small><strong id="phase">—</strong></div>
   <div class="source"><small>TELEMETRY SOURCE</small><strong id="source">—</strong></div>
@@ -21,8 +22,7 @@
 <div class="alarm-banner" id="alarm-banner"><span>NO CRITICAL ALARMS</span><button id="open-alarms">OPEN ALARM CENTER</button></div>
 
 <nav class="toolbar">
-  <a href="/ops">OPERATIONS HOME</a>
-  <select id="console-profile" title="Console profile"></select>
+    <select id="console-profile" title="Console profile"></select>
   <select id="saved-workspace" title="Saved workspace"></select>
   <button id="edit-layout">EDIT LAYOUT</button>
   <button id="save-layout">SAVE</button>
@@ -30,9 +30,7 @@
   <button id="phase-aware" class="active">PHASE AUTO</button>
   <button id="add-panel">+ PANEL</button>
   <button id="open-incidents">INCIDENT CENTER</button>
-  <a href="/control">SYSTEM CONFIGURATION</a>
-  <a href="/media">DISPLAY &amp; BROADCAST</a>
-  <div class="time-conductor">
+    <div class="time-conductor">
     <button data-time="LIVE" class="active">LIVE</button>
     <button data-time="PAUSE">PAUSE VIEW</button>
     <button data-time="REPLAY">REPLAY</button>

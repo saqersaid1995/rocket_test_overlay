@@ -288,7 +288,9 @@ class OperationWorkflowTests(unittest.TestCase):
         for document in files:
             self.assertEqual(len(document["sha256"]), 64)
             self.assertGreater(document["byte_size"], 0)
-            self.assertEqual(self.client.get(f"/ops/{operation_id}/documents/files/{document['id']}").status_code, 200)
+            download = self.client.get(f"/ops/{operation_id}/documents/files/{document['id']}")
+            self.assertEqual(download.status_code, 200)
+            download.close()
 
     def test_released_document_package_respects_preflight_controls(self):
         self.assertEqual(self.client.get("/ops").status_code,200)
