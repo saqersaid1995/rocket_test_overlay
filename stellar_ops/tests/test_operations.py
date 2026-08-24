@@ -62,6 +62,10 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertLess(item["progress"], 91)
         gate_keys = {gate["section_key"] for gate in item["sections"]}
         self.assertTrue({"SAFETY", "HANDBOOK", "PACKS", "BRIEFING"} <= gate_keys)
+        continuation = self.client.post(f"/api/ops/{demo['id']}/continue")
+        self.assertEqual(continuation.status_code, 200)
+        self.assertEqual(continuation.get_json()["stage"], "PLANNING")
+        self.assertTrue(continuation.get_json()["url"].endswith("/planning"))
 
     def test_planning_generation_calculates_timeline_and_enforces_dependencies(self):
         response = self.client.post("/api/ops", json={
