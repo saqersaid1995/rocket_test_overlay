@@ -33,10 +33,10 @@ Unknown values fall back to `DEVELOPMENT`. A deployment may also provide `STELLA
 
 - `/ops` — controlled operation lifecycle and preparation records.
 - `/workspace` — Mission Control workspace and synchronized operator panels.
-- `/control` — current engineering setup and diagnostic console.
+- `/control` — System Configuration for devices, channels, cameras and diagnostics.
 - `/media` — display layouts, screen routing and broadcast preparation.
 
-The V2 restructuring will make Mission Control the only execution console and restrict `/control` to system configuration and diagnostics.
+Mission Control is the primary execution workspace. System Configuration exposes engineering setup and diagnostics; legacy execution markup remains temporarily preserved but is no longer presented as an operator workspace.
 
 ## Telemetry modes
 
