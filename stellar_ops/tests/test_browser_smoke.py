@@ -137,14 +137,14 @@ class BrowserSmokeTests(unittest.TestCase):
             "Condition cleared and evidence reviewed."
         )
         self.page.get_by_role("button", name="CONTINUE", exact=True).click()
-        self.page.get_by_text("RESOLVED", exact=True).last.wait_for()
+        self.page.locator("#incident-center").get_by_text("RESOLVED").wait_for()
 
         self.page.get_by_role("button", name="CLOSE", exact=True).last.click()
         self.page.locator("#text-entry-value").fill(
             "Closure approved during browser acceptance."
         )
         self.page.get_by_role("button", name="CONTINUE", exact=True).click()
-        self.page.get_by_text("CLOSED", exact=True).last.wait_for()
+        self.page.locator("#incident-center").get_by_text("CLOSED").wait_for()
         self.assert_no_javascript_errors()
 
     def test_stream_failure_enters_visible_reconnecting_state(self):
