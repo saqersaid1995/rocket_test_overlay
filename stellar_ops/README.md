@@ -128,3 +128,15 @@ SQLite with WAL is the development baseline. PostgreSQL and dedicated telemetry/
 ## Safety boundary
 
 This software currently supports planning, simulation, monitoring, evidence and state-guarded operator workflows. It is not authorized to command physical ignition hardware. Authentication, individual users and final role enforcement are intentionally scheduled for the final development phase; until then the system operates as an explicitly identified single-operator development environment.
+
+## Commercial quality gate
+
+Install development dependencies and Chromium once, then run the same gate used by CI:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
+python -m stellar_ops.quality_gate
+```
+
+The gate compiles Python, validates browser JavaScript syntax, starts a fresh-database server, runs Chromium journey/accessibility/responsive checks, and then runs the complete unit and integration suite.
