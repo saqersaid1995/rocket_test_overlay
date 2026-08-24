@@ -198,3 +198,37 @@ def close_runtime_context(db: sqlite3.Connection, registry_operation_id: int) ->
                     AND registry_operation_id=?)""",
         (stamp, registry_operation_id),
     )
+
+
+def validate_runtime_commit(db: sqlite3.Connection) -> str | None:
+    """Validate that Mission Control still points at the released operation and Run."""
+    context = get_runtime_context(db)
+    if not context:
+        return "Mission Control has no active Operation context"
+    if context["context_state"] == "DEVELOPMENT":
+        return None
+    if context["context_state"] != "RELEASED":
+        return f"Mission Control context is {context['context_state']}, not RELEASED"
+    release = db.execute(
+        "SELECT * FROM execution_releases WHERE id=? AND operation_id=?",
+        (context["execution_release_id"], context["registry_operation_id"]),
+    ).fetchone()
+    if not release or release["state"] != "RELEASED":
+        return "the pinned Execution Release is no longer RELEASED"
+    if release["release_sha256"] != context["release_sha256"]:
+        return "Execution Release fingerprint does not match Mission Control context"
+    if release["valid_until"] < utc_now()[:16]:
+        return "Execution Release validity window has expired"
+    run = db.execute(
+        "SELECT * FROM test_runs WHERE id=? AND active=1",
+        (context["active_run_id"],),
+    ).fetchone()
+    if not run:
+        return "the released Test Run is not active"
+    if (
+        run["registry_operation_id"] != context["registry_operation_id"]
+        or run["execution_release_id"] != context["execution_release_id"]
+        or run["release_sha256"] != context["release_sha256"]
+    ):
+        return "active Test Run identity does not match the released Operation context"
+    return None
