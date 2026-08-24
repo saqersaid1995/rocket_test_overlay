@@ -84,5 +84,46 @@ class BrowserSmokeTests(unittest.TestCase):
         self.assert_no_javascript_errors()
 
 
+    def test_visible_controls_are_programmatically_named(self):
+        audit_script = """() => {
+            const visible = element => element.offsetParent !== null;
+            const labelled = element => {
+                const id = element.id;
+                const explicit = id && document.querySelector(
+                    'label[for="' + CSS.escape(id) + '"]'
+                );
+                const wrapped = element.closest('label');
+                return Boolean(
+                    explicit || wrapped || element.getAttribute('aria-label') ||
+                    element.getAttribute('aria-labelledby') ||
+                    element.getAttribute('title') ||
+                    (element.tagName === 'BUTTON' && element.textContent.trim())
+                );
+            };
+            return [...document.querySelectorAll('button,input,select,textarea')]
+                .filter(visible)
+                .filter(element => !labelled(element))
+                .map(element => element.outerHTML.slice(0, 180));
+        }"""
+        for route in ("/ops", "/control", "/workspace"):
+            with self.subTest(route=route):
+                self.page.goto(f"{self.base_url}{route}", wait_until="domcontentloaded")
+                unnamed = self.page.evaluate(audit_script)
+                self.assertEqual(unnamed, [])
+                self.assert_no_javascript_errors()
+
+    def test_visible_internal_navigation_has_no_broken_routes(self):
+        self.page.goto(f"{self.base_url}/ops", wait_until="domcontentloaded")
+        hrefs = self.page.locator('a[href^="/"]').evaluate_all(
+            "(links) => [...new Set(links.map(link => link.getAttribute('href')))]"
+        )
+        failures = {}
+        for href in hrefs:
+            response = self.page.request.get(f"{self.base_url}{href}")
+            if response.status >= 400:
+                failures[href] = response.status
+        self.assertEqual(failures, {})
+
+
 if __name__ == "__main__":
     unittest.main()
