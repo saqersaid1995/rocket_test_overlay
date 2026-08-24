@@ -66,6 +66,36 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertIn("not valid", journal["reason"])
         self.assertEqual(journal["http_status"], 409)
 
+    def test_live_fire_revalidates_the_pinned_execution_release(self):
+        with control_module.connect() as db:
+            db.execute(
+                "UPDATE operations SET state='COUNTDOWN',mode='LIVE' WHERE id=?",
+                (control_module.OPERATION_ID,),
+            )
+            db.execute(
+                "UPDATE runtime_context SET context_state='CLOSED' WHERE id=1"
+            )
+
+        response = self.client.post(
+            "/api/control/command",
+            json={"action": "FIRE", "command_id": "stale-release-fire-001"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not RELEASED", response.get_json()["error"])
+        with control_module.connect() as db:
+            operation = db.execute(
+                "SELECT state FROM operations WHERE id=?",
+                (control_module.OPERATION_ID,),
+            ).fetchone()
+            journal = db.execute(
+                "SELECT outcome,reason FROM command_journal WHERE command_id=?",
+                ("stale-release-fire-001",),
+            ).fetchone()
+        self.assertEqual(operation["state"], "COUNTDOWN")
+        self.assertEqual(journal["outcome"], "REJECTED")
+        self.assertIn("not RELEASED", journal["reason"])
+
     def test_restart_during_countdown_enters_fail_safe_hold(self):
         with control_module.connect() as db:
             db.execute(
