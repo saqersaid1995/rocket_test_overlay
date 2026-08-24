@@ -84,6 +84,19 @@ class BrowserSmokeTests(unittest.TestCase):
         self.assert_no_javascript_errors()
 
 
+
+    def test_stream_failure_enters_visible_reconnecting_state(self):
+        self.page.route(
+            "**/api/control/stream",
+            lambda route: route.abort("connectionfailed"),
+        )
+        self.page.goto(f"{self.base_url}/workspace", wait_until="domcontentloaded")
+        self.page.get_by_text("STREAM RECONNECTING").wait_for(timeout=10_000)
+        self.assertEqual(
+            self.page.locator("#footer-clock").inner_text(),
+            "STREAM RECONNECTING",
+        )
+
     def test_visible_controls_are_programmatically_named(self):
         audit_script = """() => {
             const visible = element => element.offsetParent !== null;
