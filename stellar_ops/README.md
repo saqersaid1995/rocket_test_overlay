@@ -56,6 +56,12 @@ Active P1 alarms are promoted into controlled operational incidents tied to the 
 
 Terminal countdown is blocked while any P1 alarm remains active. If a new P1 alarm opens during `COUNTDOWN`, Mission Control enters an automatic fail-safe `HOLD` and records the event. Manual incidents and their required action notes are managed from the Mission Control Incident Center.
 
+## Audit integrity
+
+Operational events, Mission Control commands, alarm actions and incident actions are sealed into a SHA-256 hash chain. Every ledger entry includes the previous entry hash, record identity, payload fingerprint, operation, Test Run and UTC timestamp. Reordering, rewriting or deleting a sealed entry breaks verification.
+
+The source event and action tables are protected by SQLite append-only triggers. Mission Control, `/health` and `/api/control/integrity` expose the current verification state and chain head. Readiness degrades when ledger verification fails.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
