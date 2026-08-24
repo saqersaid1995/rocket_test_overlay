@@ -9,6 +9,7 @@ from flask import Flask, redirect, url_for
 from .audit_integrity import verify_audit_ledger
 from .build_info import system_identity
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
+from .observability import begin_request, finish_request, process_metrics
 from .media import media
 from .operations import operations
 from .runtime_context import get_runtime_context
@@ -19,6 +20,8 @@ app.config["SECRET_KEY"] = os.environ.get("STELLAR_OPS_SECRET", "development-onl
 app.register_blueprint(control)
 app.register_blueprint(media)
 app.register_blueprint(operations)
+app.before_request(begin_request)
+app.after_request(finish_request)
 
 
 @app.context_processor
@@ -77,6 +80,10 @@ def health():
         "status": "ready" if ready else "degraded",
         "service": "stellar-ops",
         "build": identity,
+        "process": {
+            "started_at": process_metrics()["started_at"],
+            "uptime_seconds": process_metrics()["uptime_seconds"],
+        },
         "database": {
             "status": "ready",
             "latency_ms": latency,
