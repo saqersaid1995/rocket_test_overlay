@@ -44,7 +44,7 @@ class InformationArchitectureTests(unittest.TestCase):
     def test_mission_control_links_to_system_configuration(self):
         response = self.client.get("/workspace")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"MISSION CONTROL WORKSPACE", response.data)
+        self.assertIn(b'aria-current="page">MISSION CONTROL', response.data)
         self.assertIn(b"SYSTEM CONFIGURATION", response.data)
 
 
