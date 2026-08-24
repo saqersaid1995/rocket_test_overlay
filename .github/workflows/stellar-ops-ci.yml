@@ -29,5 +29,7 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
       - name: Compile application
         run: python -m compileall -q stellar_ops
+      - name: Validate browser JavaScript syntax
+        run: node --check stellar_ops/static/control.js && node --check stellar_ops/static/workspace.js
       - name: Run Stellar Ops tests
         run: python -m unittest discover -s stellar_ops/tests -p "test_*.py" -v
