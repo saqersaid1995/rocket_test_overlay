@@ -17,7 +17,11 @@ from .camera_runtime import (camera_recording_status, camera_status, delete_pass
                              test_camera, test_camera_component)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
-from .runtime_context import (ensure_development_context, get_runtime_context,\n                              validate_runtime_commit)
+from .runtime_context import (
+    ensure_development_context,
+    get_runtime_context,
+    validate_runtime_commit,
+)
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
                                 recording_status, runtime_snapshot)
 
