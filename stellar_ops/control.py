@@ -37,6 +37,7 @@ from .incident_management import (
     ensure_incident_schema,
     synchronize_critical_alarms,
 )
+from .observability import ensure_observability_schema, run_self_test
 from .recovery import (
     backup_root,
     create_backup,
@@ -283,6 +284,13 @@ def init_control_db() -> None:
             stamp,
             ensure_recovery_schema,
         )
+        apply_once(
+            db,
+            7,
+            "add operational diagnostics and self-test history",
+            stamp,
+            ensure_observability_schema,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -418,6 +426,16 @@ def snapshot() -> dict:
         data["runtime_context"] = get_runtime_context(db)
         data["audit_integrity"] = verify_audit_ledger(db)
         data["backups"] = list_backups(CONTROL_DB)
+        diagnostic = db.execute(
+            """SELECT * FROM diagnostic_runs
+               WHERE operation_id=? ORDER BY id DESC LIMIT 1""",
+            (OPERATION_ID,),
+        ).fetchone()
+        data["latest_diagnostic"] = dict(diagnostic) if diagnostic else None
+        if data["latest_diagnostic"]:
+            data["latest_diagnostic"]["checks"] = json.loads(
+                data["latest_diagnostic"].pop("checks_json")
+            )
         data["incidents"] = [dict(x) for x in db.execute(
             """SELECT * FROM incidents
                WHERE operation_id=? AND run_id IS ?
@@ -626,6 +644,41 @@ def alarm_action(alarm_id: int):
             f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}",
         )
     return jsonify(ok=True,id=alarm_id,state=states[action])
+
+
+@control.post("/api/control/diagnostics/self-test")
+def execute_diagnostic_self_test():
+    payload = request.get_json(silent=True) or {}
+    actor = str(payload.get("actor", "CONSOLE OPERATOR")).strip()
+    with connect() as db:
+        operation = db.execute(
+            "SELECT state FROM operations WHERE id=?", (OPERATION_ID,)
+        ).fetchone()
+        if not operation or operation["state"] not in {"CHECKOUT", "HOLD"}:
+            return jsonify(
+                error="diagnostic self-test is only allowed during CHECKOUT or HOLD"
+            ), 409
+        ensure_runtime_schema(db)
+        if recording_status(db, OPERATION_ID).get("state") == "RECORDING":
+            return jsonify(
+                error="stop the active recording before running diagnostics"
+            ), 409
+        result = run_self_test(
+            db,
+            operation_id=OPERATION_ID,
+            database_path=CONTROL_DB,
+            initiated_by=actor,
+        )
+        event(
+            db,
+            "DIAGNOSTIC_SELF_TEST",
+            actor,
+            "INFO" if result["overall_status"] == "PASS" else "WARNING",
+            f"Operational self-test completed: {result['overall_status']}",
+        )
+    return jsonify(ok=True, diagnostic=result), (
+        200 if result["overall_status"] != "FAIL" else 409
+    )
 
 
 @control.get("/api/control/backups")
