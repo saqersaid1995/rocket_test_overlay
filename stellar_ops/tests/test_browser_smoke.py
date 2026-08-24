@@ -85,6 +85,67 @@ class BrowserSmokeTests(unittest.TestCase):
 
 
 
+
+    def test_layout_dialog_popout_and_focus_restoration(self):
+        self.page.goto(f"{self.base_url}/workspace", wait_until="domcontentloaded")
+        self.page.get_by_role("button", name="EDIT LAYOUT", exact=True).click()
+        initial_panels = self.page.locator("#workspace > .panel").count()
+
+        self.page.get_by_role("button", name="+ PANEL", exact=True).click()
+        self.page.locator("#panel-dialog[open]").wait_for()
+        available = self.page.locator("#panel-catalog button:not([disabled])")
+        if available.count():
+            available.first.click()
+            self.assertEqual(
+                self.page.locator("#workspace > .panel").count(),
+                initial_panels + 1,
+            )
+        else:
+            self.page.get_by_role("button", name="Close panel catalog").click()
+
+        popout_button = self.page.locator("[data-popout]").first
+        with self.page.expect_popup() as popup_info:
+            popout_button.click()
+        popup = popup_info.value
+        popup.wait_for_load_state("domcontentloaded")
+        self.assertIn("/workspace?panel=", popup.url)
+        popup.close()
+
+        save = self.page.get_by_role("button", name="SAVE", exact=True)
+        save.click()
+        self.page.locator("#text-entry-dialog[open]").wait_for()
+        self.page.get_by_role("button", name="CANCEL", exact=True).click()
+        self.assertTrue(save.evaluate("element => element === document.activeElement"))
+        self.assert_no_javascript_errors()
+
+    def test_incident_lifecycle_uses_validated_dialogs(self):
+        self.page.goto(f"{self.base_url}/workspace", wait_until="domcontentloaded")
+        self.page.get_by_role("button", name="INCIDENT CENTER", exact=True).click()
+        self.page.get_by_role("textbox", name="Incident title").fill(
+            "Browser acceptance incident"
+        )
+        self.page.get_by_role("textbox", name="Incident description").fill(
+            "Controlled incident created during automated browser acceptance."
+        )
+        self.page.get_by_role("button", name="OPEN INCIDENT", exact=True).click()
+        self.page.get_by_text("Browser acceptance incident").wait_for()
+
+        self.page.get_by_role("button", name="RESOLVE", exact=True).last.click()
+        self.page.locator("#text-entry-dialog[open]").wait_for()
+        self.page.locator("#text-entry-value").fill(
+            "Condition cleared and evidence reviewed."
+        )
+        self.page.get_by_role("button", name="CONTINUE", exact=True).click()
+        self.page.get_by_text("RESOLVED", exact=True).last.wait_for()
+
+        self.page.get_by_role("button", name="CLOSE", exact=True).last.click()
+        self.page.locator("#text-entry-value").fill(
+            "Closure approved during browser acceptance."
+        )
+        self.page.get_by_role("button", name="CONTINUE", exact=True).click()
+        self.page.get_by_text("CLOSED", exact=True).last.wait_for()
+        self.assert_no_javascript_errors()
+
     def test_stream_failure_enters_visible_reconnecting_state(self):
         self.page.route(
             "**/api/control/stream",
