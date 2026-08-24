@@ -1214,6 +1214,11 @@ def command():
                   f"{action or 'EMPTY'} rejected from {from_state}: {reason}")
             return finish({"error": reason}, status, "REJECTED", reason)
 
+        if op["mode"] == "LIVE" and action in {"COUNTDOWN", "FIRE", "RESUME"}:
+            context_error = validate_runtime_commit(db)
+            if context_error:
+                return reject(context_error)
+
         if action == "HOLD" and op["state"] not in {"ABORTED", "POST_FIRE", "CLOSED"}:
             reason = str(body.get("reason") or "Operator hold")
             db.execute(
