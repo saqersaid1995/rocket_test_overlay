@@ -24,6 +24,8 @@ stellar_ops/data/exports/*
 stellar_ops/data/evidence/
 stellar_ops/data/recordings/
 stellar_ops/data/replay/
+stellar_ops/data/backups/
+stellar_ops/data/*.pre-restore-*
 
 # Legacy overlay runtime data
 input/
