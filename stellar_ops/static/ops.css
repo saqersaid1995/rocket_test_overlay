@@ -7,7 +7,7 @@
 .lifecycle-nav a{color:#a9c7d1;text-decoration:none}
 .lifecycle-nav section>div{display:flex;flex-wrap:wrap;gap:6px 10px}
 .lifecycle-nav section a{font-size:9px;white-space:nowrap}
-.lifecycle-nav section a:hover,.lifecycle-nav>a:hover{color:white;background:#09202a}
+.lifecycle-nav section a:hover,.lifecycle-nav>a:hover{color:white;background:#09202a}\n.lifecycle-nav a.active{color:#001017;background:var(--cyan);padding:3px 5px}.lifecycle-nav>a.active b,.lifecycle-nav>a.active small{color:#001017}
 .phase-map{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:0 0 14px}
 .phase-map article{background:var(--surface);border:1px solid var(--line);padding:14px;min-height:120px}
 .phase-map article>small{color:var(--muted);font-size:8px;letter-spacing:1px}
