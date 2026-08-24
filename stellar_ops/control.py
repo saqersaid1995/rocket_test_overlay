@@ -17,6 +17,13 @@ from .camera_runtime import (camera_recording_status, camera_status, delete_pass
                              test_camera, test_camera_component)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
+from .execution_safety import (
+    command_id_from_request,
+    ensure_execution_safety_schema,
+    previous_command,
+    reconcile_runtime_boot,
+    record_command,
+)
 from .runtime_context import (
     ensure_development_context,
     get_runtime_context,
@@ -200,6 +207,13 @@ def init_control_db() -> None:
             add_column(connection,"test_runs","procedure_code TEXT")
             add_column(connection,"test_runs","procedure_revision TEXT")
         apply_once(db,2,"pin Operations release and procedure to each Test Run",stamp,controlled_context_migration)
+        apply_once(
+            db,
+            3,
+            "add idempotent command journal and fail-safe restart recovery",
+            stamp,
+            ensure_execution_safety_schema,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -228,6 +242,7 @@ def init_control_db() -> None:
             db.execute("UPDATE alarms SET run_id=? WHERE operation_id=? AND run_id IS NULL",(active_run["id"],OPERATION_ID))
             db.execute("UPDATE edge_batches SET run_id=? WHERE run_id IS NULL",(active_run["id"],))
         ensure_development_context(db, OPERATION_ID)
+        reconcile_runtime_boot(db, OPERATION_ID)
         for role, panels in WORKSPACE_PRESETS.items():
             layout=[{"panel":panel,"order":index,"span":2 if panel in {"telemetry","cameras"} else 1} for index,panel in enumerate(panels)]
             db.execute("INSERT OR IGNORE INTO workspace_layouts(operation_id,name,console_role,layout_json,is_default,updated_at) VALUES(?,?,?,?,1,?)",
@@ -316,6 +331,11 @@ def snapshot() -> dict:
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
         data["runtime_context"] = get_runtime_context(db)
+        data["command_journal"] = [dict(x) for x in db.execute(
+            """SELECT command_id,requested_at,action,from_state,to_state,outcome,reason,http_status
+               FROM command_journal WHERE operation_id=? ORDER BY id DESC LIMIT 30""",
+            (OPERATION_ID,),
+        )]
         data["workspaces"] = [dict(x) for x in db.execute("SELECT * FROM workspace_layouts WHERE operation_id=? ORDER BY console_role,name",(OPERATION_ID,))]
         data["limit_profiles"] = [dict(x) for x in db.execute("SELECT * FROM limit_profiles WHERE operation_id=? ORDER BY name",(OPERATION_ID,))]
         data["evidence_packages"] = [dict(x) for x in db.execute("SELECT * FROM evidence_packages WHERE operation_id=? AND run_id IS ? ORDER BY id DESC",(OPERATION_ID,active_run_id))]
@@ -804,62 +824,205 @@ def complete_step(sequence: int):
 
 @control.post("/api/control/command")
 def command():
-    action = request.json.get("action", "") if request.is_json else ""
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action", "")).upper()
+    command_id = command_id_from_request(
+        request.headers.get("X-Command-ID"),
+        str(body.get("command_id", "")),
+    )
     with connect() as db:
+        replay = previous_command(db, command_id)
+        if replay:
+            payload, status = replay
+            return jsonify(payload), status
+
         op = db.execute("SELECT * FROM operations WHERE id=?", (OPERATION_ID,)).fetchone()
+        from_state = op["state"]
+
+        def finish(payload: dict, status: int, outcome: str, reason: str | None = None):
+            current = db.execute(
+                "SELECT state FROM operations WHERE id=?", (OPERATION_ID,)
+            ).fetchone()
+            to_state = current["state"] if current else from_state
+            response = dict(payload)
+            response["command_id"] = command_id
+            record_command(
+                db,
+                operation_id=OPERATION_ID,
+                command_id=command_id,
+                action=action or "INVALID",
+                from_state=from_state,
+                to_state=to_state,
+                outcome=outcome,
+                reason=reason,
+                http_status=status,
+                response=response,
+            )
+            return jsonify(response), status
+
+        def reject(reason: str, status: int = 409):
+            event(db, "COMMAND_REJECTED", "CONTROL_SYSTEM", "WARNING",
+                  f"{action or 'EMPTY'} rejected from {from_state}: {reason}")
+            return finish({"error": reason}, status, "REJECTED", reason)
+
         if action == "HOLD" and op["state"] not in {"ABORTED", "POST_FIRE", "CLOSED"}:
-            reason = request.json.get("reason", "Operator hold")
-            db.execute("UPDATE operations SET prior_state=state,state='HOLD',active_hold=?,updated_at=? WHERE id=?", (reason, utc_now(), OPERATION_ID)); event(db, "HOLD", "TEST_DIRECTOR", "WARNING", reason)
+            reason = str(body.get("reason") or "Operator hold")
+            db.execute(
+                "UPDATE operations SET prior_state=state,state='HOLD',active_hold=?,updated_at=? WHERE id=?",
+                (reason, utc_now(), OPERATION_ID),
+            )
+            event(db, "HOLD", "TEST_DIRECTOR", "WARNING", reason)
         elif action == "RESUME" and op["state"] == "HOLD":
-            db.execute("UPDATE operations SET state=COALESCE(prior_state,'CHECKOUT'),prior_state=NULL,active_hold=NULL,updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "HOLD_RELEASE", "TEST_DIRECTOR", "INFO", "Hold released")
+            db.execute(
+                """UPDATE operations SET state=COALESCE(prior_state,'CHECKOUT'),
+                   prior_state=NULL,active_hold=NULL,updated_at=? WHERE id=?""",
+                (utc_now(), OPERATION_ID),
+            )
+            event(db, "HOLD_RELEASE", "TEST_DIRECTOR", "INFO", "Hold released")
         elif action == "ABORT" and op["state"] not in {"ABORTED", "CLOSED"}:
-            db.execute("UPDATE operations SET prior_state=state,state='ABORTED',active_hold='Abort declared',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "ABORT", "TEST_DIRECTOR", "CRITICAL", "Abort declared; execute safing branch")
+            db.execute(
+                """UPDATE operations SET prior_state=state,state='ABORTED',
+                   active_hold='Abort declared',firing_started_monotonic=NULL,
+                   updated_at=? WHERE id=?""",
+                (utc_now(), OPERATION_ID),
+            )
+            event(db, "ABORT", "TEST_DIRECTOR", "CRITICAL",
+                  "Abort declared; execute safing branch")
         elif action == "COUNTDOWN" and op["state"] == "CHECKOUT":
-            no_go = db.execute("SELECT count(*) FROM stations WHERE operation_id=? AND decision!='GO'", (OPERATION_ID,)).fetchone()[0]
-            if no_go: return jsonify(error="all required stations must be GO"), 409
-            incomplete = db.execute("SELECT count(*) FROM procedure_steps WHERE operation_id=? AND sequence<=90 AND status!='COMPLETE'", (OPERATION_ID,)).fetchone()[0]
-            if incomplete: return jsonify(error="pre-countdown procedure is incomplete"), 409
+            no_go = db.execute(
+                "SELECT count(*) FROM stations WHERE operation_id=? AND decision!='GO'",
+                (OPERATION_ID,),
+            ).fetchone()[0]
+            if no_go:
+                return reject("all required stations must be GO")
+            incomplete = db.execute(
+                """SELECT count(*) FROM procedure_steps
+                   WHERE operation_id=? AND sequence<=90 AND status!='COMPLETE'""",
+                (OPERATION_ID,),
+            ).fetchone()[0]
+            if incomplete:
+                return reject("pre-countdown procedure is incomplete")
             if op["mode"] == "LIVE":
-                context_error=validate_runtime_commit(db)
+                context_error = validate_runtime_commit(db)
                 if context_error:
-                    return jsonify(error=context_error),409
+                    return reject(context_error)
                 ensure_runtime_schema(db)
                 live = runtime_snapshot(db, dict(op), telemetry(op))
                 recording = recording_status(db, OPERATION_ID)
-                if recording.get("state") != "RECORDING" or recording.get("source_mode") != "LIVE":
-                    return jsonify(error="LIVE telemetry recording must be active before countdown"), 409
-                required = {row["channel_id"] for row in db.execute(
-                    """SELECT i.channel_id FROM channel_integrations i LEFT JOIN channel_lifecycle l
-                    ON l.operation_id=i.operation_id AND l.channel_id=i.channel_id
-                    WHERE i.operation_id=? AND i.required_for_commit=1 AND COALESCE(l.enabled,1)=1""",
-                    (OPERATION_ID,))}
-                bad = sorted(channel_id for channel_id in required
-                             if live.get("channels", {}).get(channel_id, {}).get("quality") != "GOOD")
+                if (
+                    recording.get("state") != "RECORDING"
+                    or recording.get("source_mode") != "LIVE"
+                ):
+                    return reject("LIVE telemetry recording must be active before countdown")
+                required = {
+                    row["channel_id"]
+                    for row in db.execute(
+                        """SELECT i.channel_id FROM channel_integrations i
+                           LEFT JOIN channel_lifecycle l
+                             ON l.operation_id=i.operation_id
+                            AND l.channel_id=i.channel_id
+                           WHERE i.operation_id=? AND i.required_for_commit=1
+                             AND COALESCE(l.enabled,1)=1""",
+                        (OPERATION_ID,),
+                    )
+                }
+                bad = sorted(
+                    channel_id
+                    for channel_id in required
+                    if live.get("channels", {}).get(channel_id, {}).get("quality")
+                    != "GOOD"
+                )
                 if bad:
-                    return jsonify(error="required LIVE channels are not GOOD: " + ", ".join(bad)), 409
+                    return reject(
+                        "required LIVE channels are not GOOD: " + ", ".join(bad)
+                    )
                 if live.get("meta", {}).get("sequence_gaps", 0):
-                    return jsonify(error="Ethernet stream contains sequence gaps; disposition the data loss before countdown"), 409
-                required_cameras=db.execute("""SELECT d.id FROM devices d JOIN device_integrations i
-                    ON i.operation_id=d.operation_id AND i.device_id=d.id WHERE d.operation_id=?
-                    AND d.device_type='IP-CAMERA' AND d.required=1 AND i.enabled=1 AND d.endpoint!='UNASSIGNED'""",(OPERATION_ID,)).fetchall()
-                camera_blockers=[]
+                    return reject(
+                        "Ethernet stream contains sequence gaps; "
+                        "disposition the data loss before countdown"
+                    )
+                required_cameras = db.execute(
+                    """SELECT d.id FROM devices d JOIN device_integrations i
+                         ON i.operation_id=d.operation_id AND i.device_id=d.id
+                       WHERE d.operation_id=? AND d.device_type='IP-CAMERA'
+                         AND d.required=1 AND i.enabled=1
+                         AND d.endpoint!='UNASSIGNED'""",
+                    (OPERATION_ID,),
+                ).fetchall()
+                camera_blockers = []
                 for camera in required_cameras:
-                    health=camera_status(camera["id"]); recorder=camera_recording_status(camera["id"])
-                    if health.get("status")!="STREAMING": camera_blockers.append(f"{camera['id']} stream {health.get('status','UNKNOWN')}")
-                    if recorder.get("state")!="RECORDING": camera_blockers.append(f"{camera['id']} recorder {recorder.get('state','STOPPED')}")
-                    if health.get("time_status")!="VERIFIED": camera_blockers.append(f"{camera['id']} time {health.get('time_status','UNVERIFIED')}")
-                    if health.get("recording_test_status")!="PASS": camera_blockers.append(f"{camera['id']} REC TEST has not passed")
+                    health = camera_status(camera["id"])
+                    recorder = camera_recording_status(camera["id"])
+                    if health.get("status") != "STREAMING":
+                        camera_blockers.append(
+                            f"{camera['id']} stream {health.get('status','UNKNOWN')}"
+                        )
+                    if recorder.get("state") != "RECORDING":
+                        camera_blockers.append(
+                            f"{camera['id']} recorder {recorder.get('state','STOPPED')}"
+                        )
+                    if health.get("time_status") != "VERIFIED":
+                        camera_blockers.append(
+                            f"{camera['id']} time {health.get('time_status','UNVERIFIED')}"
+                        )
+                    if health.get("recording_test_status") != "PASS":
+                        camera_blockers.append(
+                            f"{camera['id']} REC TEST has not passed"
+                        )
                 if camera_blockers:
-                    return jsonify(error="required camera readiness is NO-GO: " + "; ".join(camera_blockers)),409
-            db.execute("UPDATE operations SET state='COUNTDOWN',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Terminal countdown authorised")
+                    return reject(
+                        "required camera readiness is NO-GO: "
+                        + "; ".join(camera_blockers)
+                    )
+            db.execute(
+                "UPDATE operations SET state='COUNTDOWN',updated_at=? WHERE id=?",
+                (utc_now(), OPERATION_ID),
+            )
+            event(db, "STATE", "TEST_DIRECTOR", "INFO",
+                  "Terminal countdown authorised")
         elif action == "FIRE" and op["state"] == "COUNTDOWN":
-            db.execute("UPDATE operations SET state='FIRING',firing_started_monotonic=?,updated_at=? WHERE id=?", (time.monotonic(), utc_now(), OPERATION_ID)); event(db, "FIELD_ACK", "FIELD_CONTROLLER_SIM", "CRITICAL", "SIMULATED firing event acknowledged")
-        elif action == "POST_FIRE" and op["state"] == "FIRING" and runtime_snapshot(db, dict(op), telemetry(op))["elapsed"] >= 8:
-            db.execute("UPDATE operations SET state='POST_FIRE',updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); event(db, "STATE", "TEST_DIRECTOR", "INFO", "Post-fire phase entered")
+            db.execute(
+                """UPDATE operations SET state='FIRING',
+                   firing_started_monotonic=?,updated_at=? WHERE id=?""",
+                (time.monotonic(), utc_now(), OPERATION_ID),
+            )
+            event(db, "FIELD_ACK", "FIELD_CONTROLLER_SIM", "CRITICAL",
+                  "SIMULATED firing event acknowledged")
+        elif (
+            action == "POST_FIRE"
+            and op["state"] == "FIRING"
+            and runtime_snapshot(db, dict(op), telemetry(op))["elapsed"] >= 8
+        ):
+            db.execute(
+                "UPDATE operations SET state='POST_FIRE',updated_at=? WHERE id=?",
+                (utc_now(), OPERATION_ID),
+            )
+            event(db, "STATE", "TEST_DIRECTOR", "INFO",
+                  "Post-fire phase entered")
         elif action == "RESET_SIM":
             context = get_runtime_context(db)
             if context and context["context_state"] == "RELEASED":
-                return jsonify(error="released execution cannot be reset; close it from the operation record"), 409
-            db.execute("UPDATE operations SET state='CHECKOUT',prior_state=NULL,active_hold=NULL,firing_started_monotonic=NULL,updated_at=? WHERE id=?", (utc_now(), OPERATION_ID)); db.execute("UPDATE stations SET decision='PENDING',updated_at=? WHERE operation_id=?", (utc_now(), OPERATION_ID)); db.execute("UPDATE procedure_steps SET status='PENDING',completed_by=NULL,completed_at=NULL WHERE operation_id=?", (OPERATION_ID,)); event(db, "RESET", "SYSTEM", "INFO", "Simulation attempt reset")
-        else: return jsonify(error=f"command {action} is not valid from {op['state']}"), 409
-    return jsonify(ok=True)
+                return reject(
+                    "released execution cannot be reset; "
+                    "close it from the operation record"
+                )
+            db.execute(
+                """UPDATE operations SET state='CHECKOUT',prior_state=NULL,
+                   active_hold=NULL,firing_started_monotonic=NULL,updated_at=?
+                   WHERE id=?""",
+                (utc_now(), OPERATION_ID),
+            )
+            db.execute(
+                "UPDATE stations SET decision='PENDING',updated_at=? WHERE operation_id=?",
+                (utc_now(), OPERATION_ID),
+            )
+            db.execute(
+                """UPDATE procedure_steps SET status='PENDING',
+                   completed_by=NULL,completed_at=NULL WHERE operation_id=?""",
+                (OPERATION_ID,),
+            )
+            event(db, "RESET", "SYSTEM", "INFO", "Simulation attempt reset")
+        else:
+            return reject(f"command {action} is not valid from {op['state']}")
+
+        return finish({"ok": True}, 200, "ACCEPTED")
