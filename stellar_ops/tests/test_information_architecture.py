@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,7 +64,14 @@ class InformationArchitectureTests(unittest.TestCase):
             "data-close",
         ):
             self.assertIn(f"$('[{selector}]').forEach", script)
-            self.assertNotIn(f"$('[{selector}]').forEach", script)
+
+        single_selector_iteration = re.search(
+            r"(?<!\$)\$\([^;\n]+?\)\.forEach", script
+        )
+        self.assertIsNone(
+            single_selector_iteration,
+            f"Use querySelectorAll for collection binding: {single_selector_iteration}",
+        )
 
 
     def test_lifecycle_navigation_matches_operational_dependency_order(self):
