@@ -45,12 +45,19 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertIn(b"SYSTEM CONFIGURATION", response.data)
 
 
-    def test_workspace_camera_fullscreen_binding_uses_multi_selector(self):
+    def test_workspace_multi_element_bindings_use_query_selector_all(self):
         script = (
             Path(__file__).resolve().parents[1] / "static" / "workspace.js"
         ).read_text(encoding="utf-8")
-        self.assertIn("$('[data-camera-full]').forEach", script)
-        self.assertNotIn(";$('[data-camera-full]').forEach", script)
+        for selector in (
+            "data-camera-full",
+            "data-create-backup",
+            "data-alarm-detail",
+            "data-incident-detail",
+            "data-close",
+        ):
+            self.assertIn("$$('[{"+"selector}]').forEach", script)
+            self.assertNotIn("$('[{"+"selector}]').forEach", script)
 
 
     def test_workspace_uses_accessible_dialogs_instead_of_native_prompts(self):
