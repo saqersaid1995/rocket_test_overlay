@@ -39,8 +39,9 @@ def health():
         db.execute("SELECT 1").fetchone()
         latency = round((time.monotonic() - db_started) * 1000, 2)
         operation = db.execute(
-            "SELECT mode,state FROM operations WHERE id=?", (OPERATION_ID,)
+            "SELECT mode,state,active_hold FROM operations WHERE id=?", (OPERATION_ID,)
         ).fetchone()
+        db_hold_reason = operation["active_hold"] if operation else None
         edge = db.execute(
             "SELECT status,last_seen,total_samples,sequence_gaps "
             "FROM edge_sessions ORDER BY last_seen DESC LIMIT 1"
@@ -52,6 +53,14 @@ def health():
         ).fetchone()
         recording = recording_status(db, OPERATION_ID)
         runtime_context = get_runtime_context(db)
+        runtime_boot = db.execute(
+            "SELECT boot_id,started_at,reconciled_state FROM runtime_boot WHERE id=1"
+        ).fetchone()
+        rejected_commands = db.execute(
+            """SELECT count(*) FROM command_journal
+               WHERE operation_id=? AND outcome='REJECTED'""",
+            (OPERATION_ID,),
+        ).fetchone()[0]
 
     CONTROL_DB.parent.mkdir(parents=True, exist_ok=True)
     disk = shutil.disk_usage(CONTROL_DB.parent)
@@ -75,6 +84,15 @@ def health():
         "operation": dict(operation) if operation else None,
         "active_run": dict(run) if run else None,
         "runtime_context": runtime_context,
+        "execution_safety": {
+            "runtime_boot": dict(runtime_boot) if runtime_boot else None,
+            "rejected_commands": rejected_commands,
+            "fail_safe_hold": bool(
+                operation
+                and operation["state"] == "HOLD"
+                and "restart detected" in (db_hold_reason or "")
+            ),
+        },
         "recording": recording,
         "edge": dict(edge) if edge else {"status": "NO_DEVICE"},
         "security": {
