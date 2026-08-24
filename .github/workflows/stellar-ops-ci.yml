@@ -37,8 +37,6 @@ jobs:
         run: python -m compileall -q stellar_ops
       - name: Validate browser JavaScript syntax
         run: node --check stellar_ops/static/control.js && node --check stellar_ops/static/workspace.js
-      - name: Run Stellar Ops tests
-        run: python -m unittest discover -s stellar_ops/tests -p "test_*.py" -v
       - name: Browser smoke and accessibility acceptance
         run: |
           export STELLAR_OPS_DATA="$(mktemp -d)"
@@ -58,3 +56,5 @@ jobs:
             exit 1
           fi
           RUN_BROWSER_E2E=1 STELLAR_OPS_BASE_URL=http://127.0.0.1:5011 python -m unittest stellar_ops.tests.test_browser_smoke -v
+      - name: Run Stellar Ops tests
+        run: python -m unittest discover -s stellar_ops/tests -p "test_*.py" -v
