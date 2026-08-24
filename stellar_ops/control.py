@@ -17,7 +17,7 @@ from .camera_runtime import (camera_recording_status, camera_status, delete_pass
                              test_camera, test_camera_component)
 from .database import add_column, apply_once, connect_database
 from .evidence import close_package, open_package
-from .runtime_context import ensure_development_context, get_runtime_context
+from .runtime_context import (ensure_development_context, get_runtime_context,\n                              validate_runtime_commit)
 from .telemetry_runtime import (ensure_schema as ensure_runtime_schema, evaluate_alarms,
                                 recording_status, runtime_snapshot)
 
@@ -811,6 +811,9 @@ def command():
             incomplete = db.execute("SELECT count(*) FROM procedure_steps WHERE operation_id=? AND sequence<=90 AND status!='COMPLETE'", (OPERATION_ID,)).fetchone()[0]
             if incomplete: return jsonify(error="pre-countdown procedure is incomplete"), 409
             if op["mode"] == "LIVE":
+                context_error=validate_runtime_commit(db)
+                if context_error:
+                    return jsonify(error=context_error),409
                 ensure_runtime_schema(db)
                 live = runtime_snapshot(db, dict(op), telemetry(op))
                 recording = recording_status(db, OPERATION_ID)
