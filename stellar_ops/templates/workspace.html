@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="{{url_for('static',filename='global_nav.css')}}">
   <link rel="stylesheet" href="{{url_for('static',filename='workspace.css')}}">
   <link rel="stylesheet" href="{{url_for('static',filename='workspace_runtime.css')}}">
-  <style>body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}</style>
+  <style>body.kiosk .global-shell-header,body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}body.popout .global-shell-header,body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}</style>
 </head>
 <body>
 {% set active_area = 'mission-control' %}{% set section_label = 'MISSION CONTROL' %}{% include "partials/global_nav.html" %}
