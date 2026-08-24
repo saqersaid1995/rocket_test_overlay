@@ -14,7 +14,8 @@
   <div class="run-identity"><small>ACTIVE RUN</small><strong id="active-run">—</strong></div>
   <div class="phase"><small>OPERATION PHASE</small><strong id="phase">—</strong></div>
   <div class="source"><small>TELEMETRY SOURCE</small><strong id="source">—</strong></div>
-  <div class="utc"><small>UTC</small><strong id="utc">—</strong></div>\n  <div class="source"><small>{{system_identity.environment}}</small><strong>V{{system_identity.version}}</strong></div>
+  <div class="utc"><small>UTC</small><strong id="utc">—</strong></div>
+  <div class="source"><small>{{system_identity.environment}}</small><strong>V{{system_identity.version}}</strong></div>
 </header>
 
 <div class="alarm-banner" id="alarm-banner"><span>NO CRITICAL ALARMS</span><button id="open-alarms">OPEN ALARM CENTER</button></div>
@@ -28,7 +29,7 @@
   <button id="lock-layout">LOCKED</button>
   <button id="phase-aware" class="active">PHASE AUTO</button>
   <button id="add-panel">+ PANEL</button>
-  <button id="run-builder">+ RUN</button>
+  <button id="open-incidents">INCIDENT CENTER</button>
   <a href="/control">SYSTEM CONFIGURATION</a>
   <a href="/media">DISPLAY &amp; BROADCAST</a>
   <div class="time-conductor">
@@ -55,6 +56,7 @@
 
 
 <dialog id="alarm-dialog"><div class="dialog-shell"><header>ALARM & LIMITS CENTER<button data-close="alarm-dialog">×</button></header><div id="alarm-center"></div></div></dialog>
+<dialog id="incident-dialog"><div class="dialog-shell"><header>OPERATIONAL INCIDENT CENTER<button data-close="incident-dialog">×</button></header><form id="incident-form" class="incident-form"><select name="severity" required><option value="P2">P2 — HIGH</option><option value="P1">P1 — CRITICAL</option><option value="P3">P3 — MEDIUM</option><option value="P4">P4 — LOW</option></select><select name="category" required><option>SAFETY</option><option>PROPULSION</option><option>INSTRUMENTATION</option><option>VIDEO</option><option>NETWORK</option><option>PROCEDURE</option><option>FACILITY</option><option>OTHER</option></select><input name="title" placeholder="Incident title" required><input name="owner" value="TEST DIRECTOR" placeholder="Owner" required><textarea name="description" placeholder="What happened, current impact and immediate facts" required></textarea><button type="submit">OPEN INCIDENT</button></form><div id="incident-center"></div></div></dialog>
 <div id="toast"></div>
 <script>window.__INITIAL__={{initial|tojson}};</script>
 <script src="{{url_for('static',filename='workspace.js')}}"></script>
