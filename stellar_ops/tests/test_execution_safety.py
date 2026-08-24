@@ -1,4 +1,6 @@
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import unittest
 from pathlib import Path
 
@@ -47,6 +49,43 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(operation["state"], "HOLD")
         self.assertEqual(operation["active_hold"], "Range verification")
+
+
+    def test_concurrent_duplicate_command_is_applied_once(self):
+        barrier = Barrier(2)
+
+        def issue_duplicate():
+            client = app.test_client()
+            barrier.wait()
+            response = client.post(
+                "/api/control/command",
+                json={
+                    "action": "HOLD",
+                    "reason": "Concurrent command acceptance",
+                    "command_id": "concurrent-hold-001",
+                },
+                headers={"X-Command-ID": "concurrent-hold-001"},
+            )
+            return response.status_code, response.get_json()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: issue_duplicate(), range(2)))
+
+        self.assertEqual([status for status, _ in results], [200, 200])
+        self.assertEqual(sum(bool(body.get("replayed")) for _, body in results), 1)
+        with control_module.connect() as db:
+            journal_count = db.execute(
+                "SELECT count(*) FROM command_journal WHERE command_id=?",
+                ("concurrent-hold-001",),
+            ).fetchone()[0]
+            hold_events = db.execute(
+                """SELECT count(*) FROM events
+                   WHERE operation_id=? AND event_type='HOLD'
+                     AND message='Concurrent command acceptance'""",
+                (control_module.OPERATION_ID,),
+            ).fetchone()[0]
+        self.assertEqual(journal_count, 1)
+        self.assertEqual(hold_events, 1)
 
     def test_rejected_command_is_recorded_with_reason(self):
         response = self.client.post(
