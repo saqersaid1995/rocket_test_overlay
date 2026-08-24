@@ -918,7 +918,7 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     item["runtime_context"] = None
     if context and context.get("registry_operation_id") == operation_id:
         active_run = db.execute(
-            "SELECT id,code,title,status,started_at,closed_at FROM test_runs WHERE id=?",
+            "SELECT id,code,title,status,activated_at,closed_at FROM test_runs WHERE id=?",
             (context["active_run_id"],),
         ).fetchone()
         context["active_run"] = dict(active_run) if active_run else None
