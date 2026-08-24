@@ -5,6 +5,8 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
+from .audit_integrity import append_audit_record
+
 BOOT_ID = str(uuid.uuid4())
 
 
@@ -128,7 +130,7 @@ def record_command(
     stamp = utc_now()
     payload = dict(response)
     payload["command_id"] = command_id
-    db.execute(
+    cursor = db.execute(
         """INSERT INTO command_journal(
                operation_id,command_id,requested_at,completed_at,action,
                from_state,to_state,outcome,reason,http_status,response_json)
@@ -146,4 +148,26 @@ def record_command(
             http_status,
             json.dumps(payload, separators=(",", ":"), sort_keys=True),
         ),
+    )
+    run = db.execute(
+        "SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",
+        (operation_id,),
+    ).fetchone()
+    append_audit_record(
+        db,
+        operation_id=operation_id,
+        run_id=run["id"] if run else None,
+        record_type="COMMAND",
+        record_id=command_id,
+        payload={
+            "journal_id": cursor.lastrowid,
+            "action": action,
+            "from_state": from_state,
+            "to_state": to_state,
+            "outcome": outcome,
+            "reason": reason,
+            "http_status": http_status,
+            "response": payload,
+        },
+        occurred_at=stamp,
     )
