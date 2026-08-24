@@ -44,6 +44,12 @@ An approved Operations record is the authority for Mission Control. Issuing an E
 
 While a context is `RELEASED`, operators cannot create or activate an unrelated run, change away from the released telemetry source, or reset the execution as a simulation. Closing execution from the Operations record closes the pinned context and run. A clearly labeled `DEVELOPMENT` context remains available only for the seeded local workflow before an operation is released.
 
+## Execution command safety
+
+Every Mission Control command now receives a command ID and is written to an append-only command journal with its original state, resulting state, outcome, rejection reason and HTTP status. Repeating the same command ID returns the original result without executing the transition twice.
+
+A server process restart during `COUNTDOWN` or `FIRING` is treated as an interrupted execution. On startup the runtime enters a fail-safe `HOLD`, clears the process-local firing clock and records a critical recovery event. Resuming from that recovery hold returns to `CHECKOUT`; it never resumes firing automatically. The health response exposes boot reconciliation and command-rejection status.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
