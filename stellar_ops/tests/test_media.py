@@ -21,7 +21,7 @@ class MediaControlTests(unittest.TestCase):
     def test_media_console_and_independent_display_outputs(self):
         console = self.client.get("/media")
         self.assertEqual(console.status_code, 200)
-        self.assertIn(b"DISPLAY, VIDEO & BROADCAST SYSTEM", console.data)
+        self.assertIn(b"DISPLAY, VIDEO &amp; BROADCAST SYSTEM", console.data)
         state = self.client.get("/api/media/snapshot").get_json()
         self.assertGreaterEqual(len(state["graph_definitions"]), 3)
         self.assertGreaterEqual(len(state["display_pages"]), 3)
