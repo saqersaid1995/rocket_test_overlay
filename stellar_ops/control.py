@@ -24,6 +24,14 @@ from .execution_safety import (
     reconcile_runtime_boot,
     record_command,
 )
+from .incident_management import (
+    CATEGORIES,
+    SEVERITIES,
+    apply_incident_action,
+    create_incident,
+    ensure_incident_schema,
+    synchronize_critical_alarms,
+)
 from .runtime_context import (
     ensure_development_context,
     get_runtime_context,
@@ -214,6 +222,13 @@ def init_control_db() -> None:
             stamp,
             ensure_execution_safety_schema,
         )
+        apply_once(
+            db,
+            4,
+            "add operational incident lifecycle and action history",
+            stamp,
+            ensure_incident_schema,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -295,6 +310,22 @@ def snapshot() -> dict:
         active_run_id=active_run_row["id"] if active_run_row else None
         runtime = runtime_snapshot(db, op_dict, telemetry(op))
         evaluate_alarms(db, OPERATION_ID, runtime)
+        created_incidents = synchronize_critical_alarms(db, OPERATION_ID)
+        if created_incidents and op["state"] == "COUNTDOWN":
+            reason = (
+                "Automatic fail-safe HOLD: a P1 alarm opened during terminal countdown"
+            )
+            db.execute(
+                """UPDATE operations SET state='HOLD',prior_state='CHECKOUT',
+                   active_hold=?,updated_at=? WHERE id=?""",
+                (reason, utc_now(), OPERATION_ID),
+            )
+            event(db, "AUTO_HOLD", "ALARM_SYSTEM", "CRITICAL", reason)
+            op = db.execute(
+                "SELECT * FROM operations WHERE id=?", (OPERATION_ID,)
+            ).fetchone()
+            op_dict = dict(op)
+            runtime = runtime_snapshot(db, op_dict, telemetry(op))
         for camera_event in drain_runtime_events():
             source = camera_event["device_id"]
             if camera_event["kind"] == "CAMERA_OUTAGE":
@@ -331,6 +362,15 @@ def snapshot() -> dict:
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
         data["runtime_context"] = get_runtime_context(db)
+        data["incidents"] = [dict(x) for x in db.execute(
+            """SELECT * FROM incidents
+               WHERE operation_id=? AND run_id IS ?
+               ORDER BY CASE status
+                 WHEN 'OPEN' THEN 0 WHEN 'REOPENED' THEN 1
+                 WHEN 'CONTAINED' THEN 2 WHEN 'RESOLVED' THEN 3 ELSE 4 END,
+                 id DESC""",
+            (OPERATION_ID, active_run_id),
+        )]
         data["command_journal"] = [dict(x) for x in db.execute(
             """SELECT command_id,requested_at,action,from_state,to_state,outcome,reason,http_status
                FROM command_journal WHERE operation_id=? ORDER BY id DESC LIMIT 30""",
@@ -494,6 +534,70 @@ def alarm_action(alarm_id: int):
         db.execute("UPDATE alarms SET state=? WHERE id=?",(states[action],alarm_id)); db.execute("INSERT INTO alarm_actions(operation_id,alarm_id,action,actor,reason,occurred_at) VALUES(?,?,?,?,?,?)",(OPERATION_ID,alarm_id,action,"CONSOLE OPERATOR",reason,utc_now()))
         event(db,"ALARM_ACTION","CONSOLE OPERATOR","WARNING",f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}")
     return jsonify(ok=True,id=alarm_id,state=states[action])
+
+
+@control.post("/api/control/incident")
+def open_incident():
+    payload = request.get_json(silent=True) or {}
+    severity = str(payload.get("severity", "")).upper()
+    category = str(payload.get("category", "")).upper()
+    title = str(payload.get("title", "")).strip()
+    description = str(payload.get("description", "")).strip()
+    owner = str(payload.get("owner", "TEST DIRECTOR")).strip()
+    if severity not in SEVERITIES:
+        return jsonify(error="invalid incident severity"), 400
+    if category not in CATEGORIES:
+        return jsonify(error="invalid incident category"), 400
+    if not title or not description or not owner:
+        return jsonify(error="title, description and owner are required"), 400
+    with connect() as db:
+        incident = create_incident(
+            db,
+            operation_id=OPERATION_ID,
+            severity=severity,
+            category=category,
+            title=title,
+            description=description,
+            owner=owner,
+        )
+        event(
+            db,
+            "INCIDENT_OPENED",
+            owner,
+            "CRITICAL" if severity == "P1" else "WARNING",
+            f"{incident['incident_code']} opened: {title}",
+        )
+    return jsonify(ok=True, incident=incident), 201
+
+
+@control.post("/api/control/incident/<int:incident_id>/action")
+def incident_action(incident_id: int):
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action", "")).upper()
+    notes = str(payload.get("notes", "")).strip()
+    actor = str(payload.get("actor", "CONSOLE OPERATOR")).strip()
+    try:
+        with connect() as db:
+            incident = apply_incident_action(
+                db,
+                operation_id=OPERATION_ID,
+                incident_id=incident_id,
+                action=action,
+                actor=actor,
+                notes=notes,
+            )
+            event(
+                db,
+                "INCIDENT_ACTION",
+                actor,
+                "INFO",
+                f"{incident['incident_code']} {action.lower()}: {notes}",
+            )
+    except LookupError as exc:
+        return jsonify(error=str(exc)), 404
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 409
+    return jsonify(ok=True, incident=incident)
 
 
 @control.post("/api/control/device")
@@ -889,6 +993,13 @@ def command():
             event(db, "ABORT", "TEST_DIRECTOR", "CRITICAL",
                   "Abort declared; execute safing branch")
         elif action == "COUNTDOWN" and op["state"] == "CHECKOUT":
+            active_p1 = db.execute(
+                """SELECT count(*) FROM alarms
+                   WHERE operation_id=? AND priority='P1' AND state!='CLOSED'""",
+                (OPERATION_ID,),
+            ).fetchone()[0]
+            if active_p1:
+                return reject("active P1 alarms must be cleared before countdown")
             no_go = db.execute(
                 "SELECT count(*) FROM stations WHERE operation_id=? AND decision!='GO'",
                 (OPERATION_ID,),
