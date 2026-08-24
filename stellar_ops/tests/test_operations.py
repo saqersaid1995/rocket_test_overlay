@@ -4,6 +4,7 @@ from pathlib import Path
 
 from stellar_ops.app import app
 import stellar_ops.control as control_module
+from stellar_ops.operations import operation_view
 
 
 class OperationWorkflowTests(unittest.TestCase):
@@ -48,6 +49,19 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertIn(b"TRAINING EXAMPLE", planning.data)
         self.assertIn(b"INST-040", planning.data)
         self.assertIn(b"Nasser Al Rawahi", planning.data)
+
+    def test_progress_uses_all_mandatory_operational_gates(self):
+        self.client.get("/ops")
+        with control_module.connect() as db:
+            demo = db.execute(
+                "SELECT id FROM operation_registry WHERE code='DEMO-SF-001'"
+            ).fetchone()
+            item = operation_view(db, demo["id"])
+        self.assertEqual(item["planning_progress"], 20)
+        self.assertEqual(item["next_section"]["section_key"], "PLANNING")
+        self.assertLess(item["progress"], 91)
+        gate_keys = {gate["section_key"] for gate in item["sections"]}
+        self.assertTrue({"SAFETY", "HANDBOOK", "PACKS", "BRIEFING"} <= gate_keys)
 
     def test_planning_generation_calculates_timeline_and_enforces_dependencies(self):
         response = self.client.post("/api/ops", json={
