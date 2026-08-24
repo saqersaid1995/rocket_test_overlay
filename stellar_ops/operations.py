@@ -13,7 +13,7 @@ from .control import OPERATION_ID, connect, init_control_db
 from .documents import ALLOWED_SCOPES, EXPORT_ROOT, create_package_files, safe_token, scoped_tasks, validate_export
 from .handbook import create_handbook_file, default_chapters, validate_handbook
 from .execution_packs import create_execution_pack, validate_execution_pack
-from .runtime_context import activate_released_operation, close_runtime_context
+from .runtime_context import activate_released_operation, close_runtime_context, get_runtime_context
 
 operations = Blueprint("operations", __name__)
 
@@ -914,6 +914,15 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     task_total = len(item["planning_tasks"])
     task_accepted = sum(1 for x in item["planning_tasks"] if x["status"] == "ACCEPTED")
     item["planning_progress"] = round(task_accepted / task_total * 100) if task_total else 0
+    context = get_runtime_context(db)
+    item["runtime_context"] = None
+    if context and context.get("registry_operation_id") == operation_id:
+        active_run = db.execute(
+            "SELECT id,code,title,status,started_at,closed_at FROM test_runs WHERE id=?",
+            (context["active_run_id"],),
+        ).fetchone()
+        context["active_run"] = dict(active_run) if active_run else None
+        item["runtime_context"] = context
     return item
 
 
