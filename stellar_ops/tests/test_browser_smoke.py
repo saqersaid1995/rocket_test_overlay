@@ -188,6 +188,33 @@ class BrowserSmokeTests(unittest.TestCase):
                 self.assert_no_javascript_errors()
 
 
+    def test_primary_navigation_is_consistent_and_marks_current_area(self):
+        expected = ["/ops", "/workspace", "/media", "/control"]
+        areas = {
+            "/ops": "/ops",
+            "/workspace": "/workspace",
+            "/media": "/media",
+            "/control": "/control",
+        }
+        for route, current in areas.items():
+            with self.subTest(route=route):
+                self.page.goto(f"{self.base_url}{route}", wait_until="domcontentloaded")
+                nav = self.page.locator(".global-shell-nav")
+                self.assertEqual(
+                    nav.locator("a").evaluate_all(
+                        "(links) => links.map(link => link.getAttribute('href'))"
+                    ),
+                    expected,
+                )
+                self.assertEqual(
+                    nav.locator('a[aria-current="page"]').get_attribute("href"),
+                    current,
+                )
+                header_box = self.page.locator(".global-shell-header").bounding_box()
+                self.assertIsNotNone(header_box)
+                self.assertEqual(round(header_box["y"]), 0)
+                self.assert_no_javascript_errors()
+
     def test_primary_layouts_have_no_page_level_overflow_and_capture_evidence(self):
         artifact_root = Path(
             os.environ.get("BROWSER_ARTIFACT_DIR", "/tmp/stellar-browser-artifacts")
@@ -202,6 +229,7 @@ class BrowserSmokeTests(unittest.TestCase):
                 ("/ops", "operations"),
                 ("/control", "configuration"),
                 ("/workspace", "mission-control"),
+                ("/media", "displays"),
             ):
                 with self.subTest(viewport=label, route=route):
                     self.page.goto(
