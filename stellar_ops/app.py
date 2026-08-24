@@ -10,6 +10,7 @@ from .build_info import system_identity
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
 from .media import media
 from .operations import operations
+from .runtime_context import get_runtime_context
 from .telemetry_runtime import recording_status
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -50,6 +51,7 @@ def health():
             (OPERATION_ID,),
         ).fetchone()
         recording = recording_status(db, OPERATION_ID)
+        runtime_context = get_runtime_context(db)
 
     CONTROL_DB.parent.mkdir(parents=True, exist_ok=True)
     disk = shutil.disk_usage(CONTROL_DB.parent)
@@ -72,6 +74,7 @@ def health():
         },
         "operation": dict(operation) if operation else None,
         "active_run": dict(run) if run else None,
+        "runtime_context": runtime_context,
         "recording": recording,
         "edge": dict(edge) if edge else {"status": "NO_DEVICE"},
         "security": {
