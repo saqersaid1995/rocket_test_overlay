@@ -319,7 +319,9 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(revision["state"],"DRAFT")
         self.assertEqual(len(revision["sha256"]),64)
         self.assertGreater(revision["byte_size"],1000)
-        self.assertEqual(self.client.get(f"/ops/{operation_id}/handbook/files/{revision['id']}").status_code,200)
+        download = self.client.get(f"/ops/{operation_id}/handbook/files/{revision['id']}")
+        self.assertEqual(download.status_code, 200)
+        download.close()
 
     def test_targeted_execution_pack_issue_delivery_and_acknowledgement(self):
         self.assertEqual(self.client.get("/ops").status_code,200)
@@ -338,7 +340,9 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(acknowledged.status_code,200,acknowledged.get_json())
         with control_module.connect() as db: issue=db.execute("SELECT * FROM execution_pack_issues WHERE id=?",(issue_id,)).fetchone()
         self.assertEqual(issue["delivery_status"],"ACKNOWLEDGED");self.assertEqual(issue["acknowledged_by"],"Maha Al Hinai");self.assertEqual(len(issue["sha256"]),64)
-        self.assertEqual(self.client.get(f"/ops/{operation_id}/execution-packs/files/{issue_id}").status_code,200)
+        download = self.client.get(f"/ops/{operation_id}/execution-packs/files/{issue_id}")
+        self.assertEqual(download.status_code, 200)
+        download.close()
 
     def test_day_of_operation_briefing_blocks_then_freezes_complete_signoff(self):
         self.assertEqual(self.client.get("/ops").status_code,200)
@@ -867,7 +871,7 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=payload).status_code, 200)
         with control_module.connect() as db: db.execute("UPDATE operation_briefings SET state='DRAFT',canonical_sha256=NULL WHERE operation_id=?",(operation_id,))
         briefing_blocked=self.client.post(f"/api/ops/{operation_id}/execution/release",json=self.execution_authorizations())
-        self.assertEqual(briefing_blocked.status_code,409);self.assertIn("Day-of-Operation Briefing",briefing_blocked.get_json()["error"])
+        self.assertEqual(briefing_blocked.status_code,409);self.assertIn("Crew Briefing", briefing_blocked.get_json()["incomplete_gates"])
         with control_module.connect() as db: db.execute("UPDATE operation_briefings SET state='CLOSED',canonical_sha256=? WHERE operation_id=?",("d"*64,operation_id))
         blocked = self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations())
         self.assertEqual(blocked.status_code, 409)
@@ -1040,7 +1044,7 @@ class OperationWorkflowTests(unittest.TestCase):
 
         self.assertEqual(view["progress"], 100)
         self.assertIsNone(view["next_section"])
-        self.assertTrue(all(section["complete"] for section in view["sections"]))
+        self.assertTrue(all(section["status"] == "COMPLETE" for section in view["sections"]))
         self.assertEqual(tuple(registry), ("CLOSED", "CLOSED"))
         self.assertEqual(tuple(release), ("CLOSED", "SUCCESS"))
         self.assertEqual(context["context_state"], "CLOSED")
