@@ -82,6 +82,7 @@ $('#lock-layout').onclick=()=>{locked=!locked;$('#lock-layout').textContent=lock
 $('#phase-aware').onclick=()=>{phaseAware=!phaseAware;$('#phase-aware').classList.toggle('active',phaseAware);$('#phase-aware').textContent=phaseAware?'PHASE AUTO':'PHASE MANUAL';toast(`Phase-aware layouts ${phaseAware?'enabled':'disabled'}`)};
 $('#add-panel').onclick=showPanelCatalog;
 $('#save-layout').onclick=async()=>{const name=prompt('Workspace name:',activeWorkspace()?.name||'Custom Console');if(!name)return;try{await send('/api/control/workspace',{name,console_role:$('#console-profile').value,layout});toast('Workspace saved');await refresh()}catch(e){toast(e.message,true)}};
+$('#open-alarms').onclick=()=>$('#alarm-dialog').showModal();$$('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
 $$('[data-time]').forEach(b=>b.onclick=()=>setTimeMode(b.dataset.time));$('#jump-ignition').onclick=()=>{timeMode='PAUSE';frozenHistory=plotHistory.slice(Math.max(0,plotHistory.findIndex(p=>p.pressure>1)));renderWorkspace();toast('View positioned at detected pressure rise')};
 $('#kiosk').onclick=()=>{document.body.classList.toggle('kiosk');if(document.body.requestFullscreen&&!document.fullscreenElement)document.body.requestFullscreen().catch(()=>{})};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.body.classList.contains('kiosk'))document.body.classList.remove('kiosk')});
