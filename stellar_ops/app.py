@@ -6,6 +6,7 @@ import time
 
 from flask import Flask, redirect, url_for
 
+from .audit_integrity import verify_audit_ledger
 from .build_info import system_identity
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
 from .media import media
@@ -56,6 +57,7 @@ def health():
         runtime_boot = db.execute(
             "SELECT boot_id,started_at,reconciled_state FROM runtime_boot WHERE id=1"
         ).fetchone()
+        audit_integrity = verify_audit_ledger(db)
         rejected_commands = db.execute(
             """SELECT count(*) FROM command_journal
                WHERE operation_id=? AND outcome='REJECTED'""",
@@ -84,6 +86,7 @@ def health():
         "operation": dict(operation) if operation else None,
         "active_run": dict(run) if run else None,
         "runtime_context": runtime_context,
+        "audit_integrity": audit_integrity,
         "execution_safety": {
             "runtime_boot": dict(runtime_boot) if runtime_boot else None,
             "rejected_commands": rejected_commands,
