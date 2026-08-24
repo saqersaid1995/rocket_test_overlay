@@ -53,5 +53,18 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertNotIn(";$('[data-camera-full]').forEach", script)
 
 
+    def test_workspace_uses_accessible_dialogs_instead_of_native_prompts(self):
+        static_root = Path(__file__).resolve().parents[1] / "static"
+        script = (static_root / "workspace.js").read_text(encoding="utf-8")
+        self.assertNotIn("prompt(", script)
+        self.assertIn("requestText({", script)
+
+        response = self.client.get("/workspace")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="text-entry-dialog"', response.data)
+        self.assertIn(b'aria-label="Incident severity"', response.data)
+        self.assertIn(b'aria-label="Incident description"', response.data)
+
+
 if __name__ == "__main__":
     unittest.main()
