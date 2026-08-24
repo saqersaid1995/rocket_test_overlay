@@ -2138,6 +2138,15 @@ def issue_execution_release(operation_id:int):
         operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
         if not operation:return jsonify(error="operation not found"),404
         if operation["current_stage"]!="EXECUTION":return jsonify(error="EXECUTION is not the active workflow stage"),409
+        incomplete_upstream = [
+            gate["name"] for gate in canonical_gate_view(db, operation_id)
+            if gate["section_key"] not in {"EXECUTION", "REVIEW"} and gate["status"] != "COMPLETE"
+        ]
+        if incomplete_upstream:
+            return jsonify(
+                error="mandatory lifecycle gates are incomplete: " + ", ".join(incomplete_upstream),
+                incomplete_gates=incomplete_upstream,
+            ), 409
         release=db.execute("SELECT * FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()
         if not release:return jsonify(error="save the execution release package first"),409
         if release["state"]!="DRAFT":return jsonify(error="execution release has already been issued"),409
