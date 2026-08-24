@@ -52,6 +52,9 @@ class InformationArchitectureTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "static" / "workspace.js"
         ).read_text(encoding="utf-8")
         for selector in (
+            "data-command",
+            "data-mode",
+            "data-recording",
             "data-camera-full",
             "data-run-diagnostics",
             "data-create-backup",
