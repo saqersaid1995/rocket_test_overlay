@@ -50,6 +50,12 @@ Every Mission Control command now receives a command ID and is written to an app
 
 A server process restart during `COUNTDOWN` or `FIRING` is treated as an interrupted execution. On startup the runtime enters a fail-safe `HOLD`, clears the process-local firing clock and records a critical recovery event. Resuming from that recovery hold returns to `CHECKOUT`; it never resumes firing automatically. The health response exposes boot reconciliation and command-rejection status.
 
+## Alarm and incident governance
+
+Active P1 alarms are promoted into controlled operational incidents tied to the active Test Run. Each incident has a unique code, severity, category, owner, description and an audited lifecycle: `OPEN` → `CONTAINED` → `RESOLVED` → `CLOSED`, with controlled reopening when required.
+
+Terminal countdown is blocked while any P1 alarm remains active. If a new P1 alarm opens during `COUNTDOWN`, Mission Control enters an automatic fail-safe `HOLD` and records the event. Manual incidents and their required action notes are managed from the Mission Control Incident Center.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
