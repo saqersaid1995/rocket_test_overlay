@@ -1,3 +1,6 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}SMTCS · Operations{% endblock %}</title><link rel="stylesheet" href="{{url_for('static',filename='ops.css')}}">{% block head %}{% endblock %}</head><body>
-<header><div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>OPERATIONS LIFECYCLE</small></span></div><nav><a href="/ops">OPERATIONS</a><a href="/workspace">MISSION CONTROL</a><a href="/media">DISPLAYS & BROADCAST</a><a href="/control">ENGINEERING SETUP</a></nav><div class="identity"><small>{{system_identity.environment}} · V{{system_identity.version}}</small><b>LOCAL ADMIN</b></div></header>
+<header><div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>OPERATIONS LIFECYCLE</small></span></div><nav><a href="/ops">OPERATIONS</a><a href="/workspace">MISSION CONTROL</a><a href="/media">DISPLAYS & BROADCAST</a><a href="/control">SYSTEM CONFIGURATION</a></nav><div class="identity"><small>{{system_identity.environment}} · V{{system_identity.version}}</small><b>LOCAL ADMIN</b></div></header>
+{% if operation is defined %}
+{% include "partials/ops_lifecycle_nav.html" %}
+{% endif %}
 {% block content %}{% endblock %}<div id="toast"></div>{% block scripts %}{% endblock %}</body></html>
