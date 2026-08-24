@@ -67,7 +67,12 @@ def health():
     CONTROL_DB.parent.mkdir(parents=True, exist_ok=True)
     disk = shutil.disk_usage(CONTROL_DB.parent)
     free_percent = round(disk.free / disk.total * 100, 1)
-    ready = (\n        latency < 1000\n        and free_percent >= 5\n        and run is not None\n        and audit_integrity[\"valid\"]\n    )
+    ready = (
+        latency < 1000
+        and free_percent >= 5
+        and run is not None
+        and audit_integrity["valid"]
+    )
     return {
         "status": "ready" if ready else "degraded",
         "service": "stellar-ops",
