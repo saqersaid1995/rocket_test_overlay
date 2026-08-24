@@ -1973,15 +1973,12 @@ def continue_operation(operation_id: int):
     with connect() as db:
         item = operation_view(db, operation_id)
     if not item: return jsonify(error="operation not found"), 404
-    routes = {"ARTICLE": f"/ops/{operation_id}/article", "BASELINE": f"/ops/{operation_id}/baseline",
-              "TEAM": f"/ops/{operation_id}/team",
-              "PROCEDURE": f"/ops/{operation_id}/procedure",
-              "INSTRUMENTATION": f"/ops/{operation_id}/instrumentation",
-              "VIDEO": f"/ops/{operation_id}/video",
-              "READINESS": f"/ops/{operation_id}/readiness",
-              "REHEARSAL": f"/ops/{operation_id}/rehearsal",
-              "EXECUTION": f"/ops/{operation_id}/execution", "REVIEW": f"/ops/{operation_id}/review"}
-    return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
+    next_gate = item["next_section"]
+    return jsonify(
+        ok=True,
+        stage=next_gate["section_key"] if next_gate else "CLOSED",
+        url=next_gate["url"] if next_gate else f"/ops/{operation_id}",
+    )
 
 
 def article_requirements(operation_type: str) -> set[str]:
