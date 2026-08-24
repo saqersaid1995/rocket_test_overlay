@@ -804,8 +804,19 @@ class OperationWorkflowTests(unittest.TestCase):
             db.execute("UPDATE operations SET mode='LIVE',state='CHECKOUT' WHERE id=?", (control_module.OPERATION_ID,))
         released = self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations())
         self.assertEqual(released.status_code, 200)
-        self.assertEqual(len(released.get_json()["sha256"]), 64)
-        self.assertEqual(released.get_json()["url"], "/workspace")
+        release_body = released.get_json()
+        self.assertEqual(len(release_body["sha256"]), 64)
+        self.assertEqual(release_body["url"], "/workspace")
+        self.assertEqual(release_body["runtime_context"]["registry_operation_id"], operation_id)
+        self.assertEqual(release_body["runtime_context"]["context_state"], "RELEASED")
+        with control_module.connect() as db:
+            context = db.execute("SELECT * FROM runtime_context WHERE id=1").fetchone()
+            run = db.execute("SELECT * FROM test_runs WHERE id=?", (context["active_run_id"],)).fetchone()
+        self.assertEqual(run["registry_operation_id"], operation_id)
+        self.assertEqual(run["execution_release_id"], release_body["runtime_context"]["execution_release_id"])
+        self.assertEqual(run["release_sha256"], release_body["sha256"])
+        self.assertEqual(self.client.post("/api/control/mode", json={"mode": "SIMULATION"}).status_code, 409)
+        self.assertEqual(self.client.post("/api/control/command", json={"action": "RESET_SIM"}).status_code, 409)
         premature = self.client.post(f"/api/ops/{operation_id}/execution/close", json={"outcome": "SUCCESS", "summary": "Test complete"})
         self.assertEqual(premature.status_code, 409)
         with control_module.connect() as db:
@@ -821,6 +832,9 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(release["state"], "CLOSED")
         self.assertEqual(release["outcome"], "SUCCESS")
         self.assertEqual(review["status"], "ACTIVE")
+        with control_module.connect() as db:
+            context = db.execute("SELECT context_state FROM runtime_context WHERE id=1").fetchone()
+        self.assertEqual(context["context_state"], "CLOSED")
 
     def prepare_review_stage(self, code="QREVIEW-010"):
         operation_id = self.prepare_execution_stage(code)
