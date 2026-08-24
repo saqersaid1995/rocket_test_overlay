@@ -60,6 +60,14 @@ class InformationArchitectureTests(unittest.TestCase):
             self.assertNotIn(f"$('[{selector}]').forEach", script)
 
 
+    def test_workspace_diagnostics_control_is_wired(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "static" / "workspace.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("[data-run-diagnostics]", script)
+        self.assertIn("/api/control/diagnostics/self-test", script)
+
+
     def test_workspace_uses_accessible_dialogs_instead_of_native_prompts(self):
         static_root = Path(__file__).resolve().parents[1] / "static"
         script = (static_root / "workspace.js").read_text(encoding="utf-8")
