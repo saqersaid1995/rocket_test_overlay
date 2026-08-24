@@ -9,6 +9,11 @@ from flask import Flask, redirect, url_for
 from .audit_integrity import verify_audit_ledger
 from .build_info import system_identity
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
+from .deployment_guard import (
+    apply_security_headers,
+    deployment_assessment,
+    mutation_guard,
+)
 from .observability import begin_request, finish_request, process_metrics
 from .media import media
 from .operations import operations
@@ -21,7 +26,9 @@ app.register_blueprint(control)
 app.register_blueprint(media)
 app.register_blueprint(operations)
 app.before_request(begin_request)
+app.before_request(lambda: mutation_guard(app, CONTROL_DB))
 app.after_request(finish_request)
+app.after_request(apply_security_headers)
 
 
 @app.context_processor
@@ -70,11 +77,20 @@ def health():
     CONTROL_DB.parent.mkdir(parents=True, exist_ok=True)
     disk = shutil.disk_usage(CONTROL_DB.parent)
     free_percent = round(disk.free / disk.total * 100, 1)
+    deployment = deployment_assessment(
+        secret_key=app.config["SECRET_KEY"],
+        database_path=CONTROL_DB,
+    )
+    production_blocked = (
+        deployment["environment"] == "PRODUCTION"
+        and deployment["status"] == "BLOCKED"
+    )
     ready = (
         latency < 1000
         and free_percent >= 5
         and run is not None
         and audit_integrity["valid"]
+        and not production_blocked
     )
     return {
         "status": "ready" if ready else "degraded",
@@ -98,6 +114,7 @@ def health():
         "operation": dict(operation) if operation else None,
         "active_run": dict(run) if run else None,
         "runtime_context": runtime_context,
+        "deployment": deployment,
         "audit_integrity": audit_integrity,
         "execution_safety": {
             "runtime_boot": dict(runtime_boot) if runtime_boot else None,
