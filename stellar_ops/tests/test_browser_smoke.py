@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
@@ -185,6 +186,44 @@ class BrowserSmokeTests(unittest.TestCase):
                 unnamed = self.page.evaluate(audit_script)
                 self.assertEqual(unnamed, [])
                 self.assert_no_javascript_errors()
+
+
+    def test_primary_layouts_have_no_page_level_overflow_and_capture_evidence(self):
+        artifact_root = Path(
+            os.environ.get("BROWSER_ARTIFACT_DIR", "/tmp/stellar-browser-artifacts")
+        )
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        for width, height, label in (
+            (1440, 1000, "desktop"),
+            (390, 844, "mobile"),
+        ):
+            self.page.set_viewport_size({"width": width, "height": height})
+            for route, name in (
+                ("/ops", "operations"),
+                ("/control", "configuration"),
+                ("/workspace", "mission-control"),
+            ):
+                with self.subTest(viewport=label, route=route):
+                    self.page.goto(
+                        f"{self.base_url}{route}",
+                        wait_until="domcontentloaded",
+                    )
+                    dimensions = self.page.evaluate(
+                        """() => ({
+                            client: document.documentElement.clientWidth,
+                            scroll: document.documentElement.scrollWidth
+                        })"""
+                    )
+                    self.assertLessEqual(
+                        dimensions["scroll"],
+                        dimensions["client"] + 2,
+                        f"page-level horizontal overflow at {route} / {label}",
+                    )
+                    self.page.screenshot(
+                        path=str(artifact_root / f"{name}-{label}.png"),
+                        full_page=True,
+                    )
+                    self.assert_no_javascript_errors()
 
     def test_visible_internal_navigation_has_no_broken_routes(self):
         self.page.goto(f"{self.base_url}/ops", wait_until="domcontentloaded")
