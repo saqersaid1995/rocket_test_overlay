@@ -60,7 +60,7 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.goto(f"{self.base_url}/workspace", wait_until="domcontentloaded")
         self.page.get_by_text("MISSION CONTROL WORKSPACE").wait_for()
         self.page.get_by_role("button", name="PAUSE VIEW").click()
-        self.page.get_by_role("button", name="REPLAY").click()
+        self.page.get_by_role("button", name="REPLAY", exact=True).click()
         self.page.get_by_role("button", name="LIVE", exact=True).click()
         self.page.get_by_role("button", name="OPEN ALARM CENTER").click()
         self.page.locator("#alarm-dialog[open]").wait_for()
