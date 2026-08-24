@@ -7,3 +7,23 @@
 .shell{min-height:calc(100vh - 130px)}
 .output-only .shell{min-height:100vh}
 @media(max-width:1100px){.context-mast{grid-template-columns:1fr 130px 130px}.shell{min-height:calc(100vh - 120px)}}
+
+@media(max-width:700px){
+html,body{max-width:100%;overflow-x:hidden}
+.context-mast{height:auto;min-height:48px;grid-template-columns:1fr 1fr}
+.context-mast>div{min-width:0;padding:9px 10px}
+.context-mast>div:nth-child(n+3){display:none}
+.shell{display:block;min-height:calc(100vh - 150px);max-width:100%}
+aside{display:flex;width:100%;max-width:100%;padding:6px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}
+aside section{display:flex;flex:0 0 auto;margin:0}
+aside section>small{display:none}
+aside button,aside a{width:auto;min-height:38px;padding:8px 12px;white-space:nowrap}
+main{width:100%;max-width:100%;min-width:0;padding:8px;overflow:hidden}
+.page-title{align-items:flex-start;flex-direction:column;gap:10px}
+.metrics,.quick-links,.form-grid,.form-grid.four,.channel-picker,.production-grid,.destination-form{grid-template-columns:1fr}
+.panel,.panel.span-6,.panel.span-8,.panel.full,.switcher,.scene-bank,.event-log{grid-column:1/-1;min-width:0}
+.flow{align-items:stretch;flex-direction:column}
+.flow span{min-width:0}
+.scene-bank>div{grid-template-columns:1fr 1fr}
+table{display:block;max-width:100%;overflow-x:auto}
+}
