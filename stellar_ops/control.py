@@ -571,8 +571,44 @@ def alarm_action(alarm_id: int):
         if not alarm: return jsonify(error="alarm not found"),404
         if action=="CLOSE" and db.execute("SELECT 1 FROM alarm_keys WHERE operation_id=? AND alarm_id=?",(OPERATION_ID,alarm_id)).fetchone():
             return jsonify(error="the alarm condition is still active; acknowledge or shelve it until the source recovers"),409
-        db.execute("UPDATE alarms SET state=? WHERE id=?",(states[action],alarm_id)); db.execute("INSERT INTO alarm_actions(operation_id,alarm_id,action,actor,reason,occurred_at) VALUES(?,?,?,?,?,?)",(OPERATION_ID,alarm_id,action,"CONSOLE OPERATOR",reason,utc_now()))
-        event(db,"ALARM_ACTION","CONSOLE OPERATOR","WARNING",f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}")
+        stamp = utc_now()
+        db.execute("UPDATE alarms SET state=? WHERE id=?", (states[action], alarm_id))
+        cursor = db.execute(
+            """INSERT INTO alarm_actions(
+                   operation_id,alarm_id,action,actor,reason,occurred_at)
+               VALUES(?,?,?,?,?,?)""",
+            (
+                OPERATION_ID,
+                alarm_id,
+                action,
+                "CONSOLE OPERATOR",
+                reason,
+                stamp,
+            ),
+        )
+        append_audit_record(
+            db,
+            operation_id=OPERATION_ID,
+            run_id=alarm["run_id"],
+            record_type="ALARM_ACTION",
+            record_id=str(cursor.lastrowid),
+            payload={
+                "alarm_id": alarm_id,
+                "action": action,
+                "from_state": alarm["state"],
+                "to_state": states[action],
+                "actor": "CONSOLE OPERATOR",
+                "reason": reason,
+            },
+            occurred_at=stamp,
+        )
+        event(
+            db,
+            "ALARM_ACTION",
+            "CONSOLE OPERATOR",
+            "WARNING",
+            f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}",
+        )
     return jsonify(ok=True,id=alarm_id,state=states[action])
 
 
