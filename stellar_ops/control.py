@@ -37,6 +37,14 @@ from .incident_management import (
     ensure_incident_schema,
     synchronize_critical_alarms,
 )
+from .recovery import (
+    backup_root,
+    create_backup,
+    ensure_recovery_schema,
+    list_backups,
+    safe_name,
+    verify_backup,
+)
 from .runtime_context import (
     ensure_development_context,
     get_runtime_context,
@@ -268,6 +276,13 @@ def init_control_db() -> None:
             stamp,
             initialize_audit_integrity,
         )
+        apply_once(
+            db,
+            6,
+            "add verified backup and recovery catalog",
+            stamp,
+            ensure_recovery_schema,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -402,6 +417,7 @@ def snapshot() -> dict:
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
         data["runtime_context"] = get_runtime_context(db)
         data["audit_integrity"] = verify_audit_ledger(db)
+        data["backups"] = list_backups(CONTROL_DB)
         data["incidents"] = [dict(x) for x in db.execute(
             """SELECT * FROM incidents
                WHERE operation_id=? AND run_id IS ?
@@ -610,6 +626,79 @@ def alarm_action(alarm_id: int):
             f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}",
         )
     return jsonify(ok=True,id=alarm_id,state=states[action])
+
+
+@control.get("/api/control/backups")
+def backup_catalog():
+    return jsonify(backups=list_backups(CONTROL_DB))
+
+
+@control.post("/api/control/backups")
+def create_database_backup():
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason", "")).strip()
+    actor = str(payload.get("actor", "CONSOLE OPERATOR")).strip()
+    if not reason:
+        return jsonify(error="a backup reason is required"), 400
+    with connect() as db:
+        operation = db.execute(
+            "SELECT state FROM operations WHERE id=?", (OPERATION_ID,)
+        ).fetchone()
+        if not operation or operation["state"] not in {"CHECKOUT", "HOLD"}:
+            return jsonify(
+                error="database backups are only allowed during CHECKOUT or HOLD"
+            ), 409
+        ensure_runtime_schema(db)
+        if recording_status(db, OPERATION_ID).get("state") == "RECORDING":
+            return jsonify(
+                error="stop the active recording before creating a database backup"
+            ), 409
+        retention = max(
+            1,
+            min(100, int(os.environ.get("STELLAR_OPS_BACKUP_RETENTION", "20"))),
+        )
+        result = create_backup(
+            db,
+            database_path=CONTROL_DB,
+            created_by=actor,
+            reason=reason,
+            retention=retention,
+        )
+        event(
+            db,
+            "BACKUP_CREATED",
+            actor,
+            "INFO",
+            f"Verified database backup created: {result['backup_name']}",
+        )
+    return jsonify(ok=True, backup=result), 201
+
+
+@control.post("/api/control/backups/<path:backup_name>/verify")
+def verify_database_backup(backup_name: str):
+    try:
+        name = safe_name(backup_name)
+        path = backup_root(CONTROL_DB) / name
+        manifest_path = path.with_suffix(path.suffix + ".json")
+        expected = None
+        if manifest_path.is_file():
+            expected = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            ).get("sha256")
+        result = verify_backup(path, expected)
+    except (FileNotFoundError, ValueError, sqlite3.DatabaseError) as exc:
+        return jsonify(error=str(exc)), 404
+    with connect() as db:
+        event(
+            db,
+            "BACKUP_VERIFIED",
+            "CONTROL_SYSTEM",
+            "INFO" if result["valid"] else "CRITICAL",
+            f"Backup {name} verification {result['status']}",
+        )
+    return jsonify(backup_name=name, verification=result), (
+        200 if result["valid"] else 409
+    )
 
 
 @control.get("/api/control/integrity")
