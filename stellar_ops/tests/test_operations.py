@@ -771,6 +771,11 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=payload).status_code, 409)
 
     def complete_canonical_preparation_gates(self, operation_id):
+        with control_module.connect() as db:
+            db.execute(
+                "UPDATE operation_registry SET planned_start=COALESCE(planned_start, ?) WHERE id=?",
+                ("2026-09-03T08:00", operation_id),
+            )
         generated = self.client.post(f"/api/ops/{operation_id}/planning/generate", json={})
         self.assertEqual(generated.status_code, 200, generated.get_json())
         with control_module.connect() as db:
