@@ -56,8 +56,8 @@ class InformationArchitectureTests(unittest.TestCase):
             "data-incident-detail",
             "data-close",
         ):
-            self.assertIn("$$('[{"+"selector}]').forEach", script)
-            self.assertNotIn("$('[{"+"selector}]').forEach", script)
+            self.assertIn(f"$('[{selector}]').forEach", script)
+            self.assertNotIn(f"$('[{selector}]').forEach", script)
 
 
     def test_workspace_uses_accessible_dialogs_instead_of_native_prompts(self):
