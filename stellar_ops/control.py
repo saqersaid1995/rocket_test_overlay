@@ -11,6 +11,11 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
+from .audit_integrity import (
+    append_audit_record,
+    initialize_audit_integrity,
+    verify_audit_ledger,
+)
 from .camera_runtime import (camera_recording_status, camera_status, delete_password,
                              drain_runtime_events, has_password, mjpeg_frames, save_password,
                              start_camera_recordings, stop_camera_recordings,
@@ -195,8 +200,35 @@ STEPS = [
 
 def event(db: sqlite3.Connection, kind: str, source: str, severity: str, message: str) -> None:
     run=db.execute("SELECT id FROM test_runs WHERE operation_id=? AND active=1 ORDER BY id DESC LIMIT 1",(OPERATION_ID,)).fetchone()
-    db.execute("INSERT INTO events(operation_id,occurred_at,event_type,source,severity,message,run_id) VALUES(?,?,?,?,?,?,?)",
-               (OPERATION_ID, utc_now(), kind, source, severity, message,run["id"] if run else None))
+    stamp = utc_now()
+    cursor = db.execute(
+        """INSERT INTO events(
+               operation_id,occurred_at,event_type,source,severity,message,run_id)
+           VALUES(?,?,?,?,?,?,?)""",
+        (
+            OPERATION_ID,
+            stamp,
+            kind,
+            source,
+            severity,
+            message,
+            run["id"] if run else None,
+        ),
+    )
+    append_audit_record(
+        db,
+        operation_id=OPERATION_ID,
+        run_id=run["id"] if run else None,
+        record_type="EVENT",
+        record_id=str(cursor.lastrowid),
+        payload={
+            "event_type": kind,
+            "source": source,
+            "severity": severity,
+            "message": message,
+        },
+        occurred_at=stamp,
+    )
 
 
 def init_control_db() -> None:
@@ -228,6 +260,13 @@ def init_control_db() -> None:
             "add operational incident lifecycle and action history",
             stamp,
             ensure_incident_schema,
+        )
+        apply_once(
+            db,
+            5,
+            "add cryptographic append-only operational audit ledger",
+            stamp,
+            initialize_audit_integrity,
         )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
@@ -362,6 +401,7 @@ def snapshot() -> dict:
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
         data["runtime_context"] = get_runtime_context(db)
+        data["audit_integrity"] = verify_audit_ledger(db)
         data["incidents"] = [dict(x) for x in db.execute(
             """SELECT * FROM incidents
                WHERE operation_id=? AND run_id IS ?
@@ -534,6 +574,33 @@ def alarm_action(alarm_id: int):
         db.execute("UPDATE alarms SET state=? WHERE id=?",(states[action],alarm_id)); db.execute("INSERT INTO alarm_actions(operation_id,alarm_id,action,actor,reason,occurred_at) VALUES(?,?,?,?,?,?)",(OPERATION_ID,alarm_id,action,"CONSOLE OPERATOR",reason,utc_now()))
         event(db,"ALARM_ACTION","CONSOLE OPERATOR","WARNING",f"Alarm {alarm_id} {action.lower()}: {reason or 'acknowledged'}")
     return jsonify(ok=True,id=alarm_id,state=states[action])
+
+
+@control.get("/api/control/integrity")
+def audit_integrity_status():
+    with connect() as db:
+        result = verify_audit_ledger(db)
+        latest = db.execute(
+            """SELECT sequence,occurred_at,record_type,record_id,entry_hash
+               FROM audit_ledger ORDER BY sequence DESC LIMIT 20"""
+        ).fetchall()
+    return jsonify(integrity=result, latest=[dict(row) for row in latest]), (
+        200 if result["valid"] else 409
+    )
+
+
+@control.post("/api/control/integrity/verify")
+def verify_integrity():
+    with connect() as db:
+        result = verify_audit_ledger(db)
+        event(
+            db,
+            "INTEGRITY_VERIFICATION",
+            "CONTROL_SYSTEM",
+            "INFO" if result["valid"] else "CRITICAL",
+            f"Audit ledger {result['status']}: {result['checked_entries']} entries checked",
+        )
+    return jsonify(result), (200 if result["valid"] else 409)
 
 
 @control.post("/api/control/incident")
