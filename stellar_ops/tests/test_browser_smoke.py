@@ -129,7 +129,7 @@ class BrowserSmokeTests(unittest.TestCase):
             "Controlled incident created during automated browser acceptance."
         )
         self.page.get_by_role("button", name="OPEN INCIDENT", exact=True).click()
-        self.page.get_by_text("Browser acceptance incident").wait_for()
+        self.page.locator("#incident-center").get_by_text("Browser acceptance incident").wait_for()
 
         self.page.get_by_role("button", name="RESOLVE", exact=True).last.click()
         self.page.locator("#text-entry-dialog[open]").wait_for()
