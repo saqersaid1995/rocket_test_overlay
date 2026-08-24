@@ -6,9 +6,9 @@ let data=window.__INITIAL__,layout=[],locked=true,phaseAware=true,lastPhase=data
 const popoutPanel=new URLSearchParams(location.search).get('panel');
 const channel=new BroadcastChannel('smtcs-workspace');
 function toast(message,error=false){const t=$('#toast');t.textContent=message;t.className=error?'show error':'show';setTimeout(()=>t.className='',2800)}
-let textRequestResolve=null;
-function requestText({title='REQUIRED INPUT',label='Reason',value='',placeholder=''}){const dialog=$('#text-entry-dialog'),form=$('#text-entry-form'),field=$('#text-entry-value');$('#text-entry-title').textContent=title;$('#text-entry-label').textContent=label;field.value=value;field.placeholder=placeholder;dialog.showModal();field.focus();return new Promise(resolve=>{textRequestResolve=resolve})}
-function finishTextRequest(value){const resolve=textRequestResolve;textRequestResolve=null;$('#text-entry-dialog').close();if(resolve)resolve(value)}
+let textRequestResolve=null,textRequestTrigger=null;
+function requestText({title='REQUIRED INPUT',label='Reason',value='',placeholder=''}){textRequestTrigger=document.activeElement;const dialog=$('#text-entry-dialog'),form=$('#text-entry-form'),field=$('#text-entry-value');$('#text-entry-title').textContent=title;$('#text-entry-label').textContent=label;field.value=value;field.placeholder=placeholder;dialog.showModal();field.focus();return new Promise(resolve=>{textRequestResolve=resolve})}
+function finishTextRequest(value){const resolve=textRequestResolve,trigger=textRequestTrigger;textRequestResolve=null;textRequestTrigger=null;$('#text-entry-dialog').close();if(trigger?.isConnected)trigger.focus();if(resolve)resolve(value)}
 async function send(url,body={}){const payload={...body},headers={'Content-Type':'application/json'};if(url==='/api/control/command'){const id=crypto.randomUUID();payload.command_id=id;headers['X-Command-ID']=id}const r=await fetch(url,{method:'POST',headers,body:JSON.stringify(payload)}),v=await r.json();if(!r.ok)throw new Error(v.error||'Request failed');return v}
 function parseLayout(workspace){try{return JSON.parse(workspace.layout_json)}catch{return[]}}
 function activeRun(){return data.runs?.find(r=>r.active)||data.runs?.[0]||{code:'NO RUN',title:'No active run',status:'PLANNING'}}
