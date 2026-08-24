@@ -37,6 +37,8 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertIn(b'DEVICE REGISTRY', response.data)
         self.assertIn(b'id="device-setup" class="panel-view active"', response.data)
         self.assertNotIn(b'data-panel="conduct"', response.data)
+        self.assertNotIn(b'id="conduct"', response.data)
+        self.assertNotIn(b'data-command=', response.data)
 
     def test_mission_control_links_to_system_configuration(self):
         response = self.client.get("/workspace")
@@ -95,6 +97,16 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertIn(b"MISSION CONTROL LOCKED", response.data)
         self.assertNotIn(b'>OPEN MISSION CONTROL</a>', response.data)
 
+
+    def test_hazardous_commands_exist_only_in_mission_control(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "static" / "workspace.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("function commandPanel", script)
+        self.assertIn('data-command="FIRE"', script)
+        self.assertIn('data-command="ABORT"', script)
+        self.assertIn("confirmation!==action", script)
+        self.assertIn("context_state==='RELEASED'", script)
 
     def test_workspace_diagnostics_control_is_wired(self):
         script = (
