@@ -57,8 +57,6 @@ class InformationArchitectureTests(unittest.TestCase):
             "data-mode",
             "data-recording",
             "data-camera-full",
-            "data-run-diagnostics",
-            "data-create-backup",
             "data-alarm-detail",
             "data-incident-detail",
             "data-close",
@@ -119,12 +117,26 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertIn("confirmation!==action", script)
         self.assertIn("context_state==='RELEASED'", script)
 
-    def test_workspace_diagnostics_control_is_wired(self):
-        script = (
+    def test_system_health_and_recovery_are_configuration_functions(self):
+        response = self.client.get("/control")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'data-panel="system-health"', response.data)
+        self.assertIn(b'id="run-diagnostics"', response.data)
+        self.assertIn(b'id="backup-form"', response.data)
+
+        workspace = (
             Path(__file__).resolve().parents[1] / "static" / "workspace.js"
         ).read_text(encoding="utf-8")
-        self.assertIn("[data-run-diagnostics]", script)
-        self.assertIn("/api/control/diagnostics/self-test", script)
+        self.assertNotIn("SYSTEM DIAGNOSTICS", workspace)
+        self.assertNotIn("data-create-backup", workspace)
+        self.assertNotIn("data-run-diagnostics", workspace)
+
+        configuration = (
+            Path(__file__).resolve().parents[1] / "static" / "control.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("/api/control/diagnostics/self-test", configuration)
+        self.assertIn("/api/control/backups", configuration)
+        self.assertNotRegex(configuration, r"\b(?:prompt|confirm)\s*\(")
 
 
     def test_workspace_uses_accessible_dialogs_instead_of_native_prompts(self):
