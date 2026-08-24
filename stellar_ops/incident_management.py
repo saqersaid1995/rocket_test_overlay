@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+from .audit_integrity import append_audit_record
+
 
 SEVERITIES = {"P1", "P2", "P3", "P4"}
 CATEGORIES = {
@@ -114,12 +116,21 @@ def create_incident(
         ),
     )
     incident_id = cursor.lastrowid
-    db.execute(
+    action_cursor = db.execute(
         """INSERT INTO incident_actions(
                operation_id,incident_id,occurred_at,action,actor,
                from_status,to_status,notes)
            VALUES(?,?,?,'OPEN',?,'NEW','OPEN',?)""",
         (operation_id, incident_id, stamp, owner, description),
+    )
+    append_audit_record(
+        db,
+        operation_id=operation_id,
+        run_id=run["id"] if run else None,
+        record_type="INCIDENT_ACTION",
+        record_id=str(action_cursor.lastrowid),
+        payload={"incident_id": incident_id, "incident_code": code, "action": "OPEN", "from_status": "NEW", "to_status": "OPEN", "actor": owner, "notes": description},
+        occurred_at=stamp,
     )
     row = db.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
     return dict(row)
@@ -210,7 +221,7 @@ def apply_incident_action(
         f"UPDATE incidents SET {','.join(fields)} WHERE operation_id=? AND id=?",
         values,
     )
-    db.execute(
+    action_cursor = db.execute(
         """INSERT INTO incident_actions(
                operation_id,incident_id,occurred_at,action,actor,
                from_status,to_status,notes)
@@ -225,6 +236,15 @@ def apply_incident_action(
             target,
             notes.strip(),
         ),
+    )
+    append_audit_record(
+        db,
+        operation_id=operation_id,
+        run_id=incident["run_id"],
+        record_type="INCIDENT_ACTION",
+        record_id=str(action_cursor.lastrowid),
+        payload={"incident_id": incident_id, "incident_code": incident["incident_code"], "action": action, "from_status": incident["status"], "to_status": target, "actor": actor, "notes": notes.strip()},
+        occurred_at=stamp,
     )
     row = db.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
     return dict(row)
