@@ -17,7 +17,7 @@ function initialiseSelectors(){
  const roles=[...new Set(data.workspaces.map(w=>w.console_role))],profile=$('#console-profile'),saved=$('#saved-workspace');
  profile.innerHTML=roles.map(r=>`<option>${esc(r)}</option>`).join('');
  saved.innerHTML=data.workspaces.map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('');
- const target=data.workspaces.find(w=>w.console_role==='TEST DIRECTOR')||data.workspaces[0];if(target){profile.value=target.console_role;saved.value=target.id;layout=parseLayout(target)}
+ const target=data.workspaces.find(w=>w.console_role==='TEST DIRECTOR')||data.workspaces[0];if(target){profile.value=target.console_role;saved.value=target.id;layout=parseLayout(target)}if(!layout.some(item=>item.panel==='command')){layout.splice(Math.min(1,layout.length),0,{panel:'command',span:3,order:1});layout.forEach((item,index)=>item.order=index)}
  if(popoutPanel){document.body.classList.add('popout');layout=[{panel:popoutPanel,span:3,order:0}]}
 }
 function refreshWorkspaceSelectors(){if(popoutPanel)return;const profile=$('#console-profile'),saved=$('#saved-workspace'),role=profile.value,id=saved.value,roles=[...new Set(data.workspaces.map(w=>w.console_role))];profile.innerHTML=roles.map(r=>`<option>${esc(r)}</option>`).join('');if(roles.includes(role))profile.value=role;saved.innerHTML=data.workspaces.filter(w=>w.console_role===profile.value).map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('');if([...saved.options].some(o=>o.value===id))saved.value=id}
