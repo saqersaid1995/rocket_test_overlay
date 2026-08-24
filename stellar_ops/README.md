@@ -38,6 +38,12 @@ Unknown values fall back to `DEVELOPMENT`. A deployment may also provide `STELLA
 
 Mission Control is the primary execution workspace. System Configuration exposes engineering setup and diagnostics; legacy execution markup remains temporarily preserved but is no longer presented as an operator workspace.
 
+## Execution runtime binding
+
+An approved Operations record is the authority for Mission Control. Issuing an Execution Release now creates and activates a pinned Test Run carrying the registry operation ID, release ID, release SHA-256, and approved procedure revision. Mission Control exposes that context in its synchronized snapshot and health response.
+
+While a context is `RELEASED`, operators cannot create or activate an unrelated run, change away from the released telemetry source, or reset the execution as a simulation. Closing execution from the Operations record closes the pinned context and run. A clearly labeled `DEVELOPMENT` context remains available only for the seeded local workflow before an operation is released.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
