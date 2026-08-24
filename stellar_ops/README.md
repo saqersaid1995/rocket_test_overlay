@@ -62,6 +62,21 @@ Operational events, Mission Control commands, alarm actions and incident actions
 
 The source event and action tables are protected by SQLite append-only triggers. Mission Control, `/health` and `/api/control/integrity` expose the current verification state and chain head. Readiness degrades when ledger verification fails.
 
+## Backup and disaster recovery
+
+Mission Control can create transactionally consistent SQLite backups only during `CHECKOUT` or `HOLD` and only while recording is stopped. Every backup is immediately checked with SQLite `quick_check`, SHA-256, and a complete audit-ledger verification. The default retention is 20 verified backups and may be configured with `STELLAR_OPS_BACKUP_RETENTION`. A separate storage path may be set with `STELLAR_OPS_BACKUPS`.
+
+Restore is intentionally unavailable from the live web interface. Stop Stellar Ops first, then run the offline command with the exact confirmation string:
+
+```bash
+python -m stellar_ops.recovery restore \
+  --database stellar_ops/data/control.db \
+  --backup stellar-ops-YYYYMMDDTHHMMSS.sqlite3 \
+  --confirm "RESTORE stellar-ops-YYYYMMDDTHHMMSS.sqlite3"
+```
+
+The restore tool verifies the manifest, checksum, database structure and audit chain before replacement, and preserves the current database as a timestamped rollback copy.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
