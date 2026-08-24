@@ -13,6 +13,7 @@ from .control import OPERATION_ID, connect, init_control_db
 from .documents import ALLOWED_SCOPES, EXPORT_ROOT, create_package_files, safe_token, scoped_tasks, validate_export
 from .handbook import create_handbook_file, default_chapters, validate_handbook
 from .execution_packs import create_execution_pack, validate_execution_pack
+from .runtime_context import activate_released_operation, close_runtime_context
 
 operations = Blueprint("operations", __name__)
 
@@ -2104,9 +2105,16 @@ def issue_execution_release(operation_id:int):
         digest=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
         for role in required:db.execute("INSERT INTO execution_authorizations(release_id,role_code,person_name,decision,attestation,authorised_at) VALUES(?,?,?,?,?,?)",(release["id"],role,*auth[role],stamp))
         db.execute("UPDATE execution_releases SET state='RELEASED',release_sha256=?,released_at=?,updated_at=? WHERE id=?",(digest,stamp,stamp,release["id"]))
-        db.execute("UPDATE operation_registry SET status='LIVE RELEASED',updated_at=? WHERE id=?",(stamp,operation_id))
-        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_RELEASED","TEST DIRECTOR",f"LIVE execution released with SHA-256 {digest}; Mission Control handoff enabled"))
-    return jsonify(ok=True,sha256=digest,url="/workspace")
+        db.execute("UPDATE operation_registry SET status='LIVE RELEASED',runtime_operation_id=?,updated_at=? WHERE id=?",(runtime_id,stamp,operation_id))
+        context=activate_released_operation(
+            db,
+            runtime_operation_id=runtime_id,
+            registry_operation=operation,
+            execution_release=release,
+            release_sha256=digest,
+        )
+        db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_RELEASED","TEST DIRECTOR",f"LIVE execution released with SHA-256 {digest}; Mission Control run {context['run_code']} activated"))
+    return jsonify(ok=True,sha256=digest,url="/workspace",runtime_context=context)
 
 
 @operations.post("/api/ops/<int:operation_id>/execution/close")
@@ -2123,6 +2131,7 @@ def close_execution(operation_id:int):
         db.execute("UPDATE operation_workflow_sections SET status='COMPLETE',owner=?,updated_at=? WHERE operation_id=? AND section_key='EXECUTION'",(actor,stamp,operation_id))
         db.execute("UPDATE operation_workflow_sections SET status='ACTIVE',updated_at=? WHERE operation_id=? AND section_key='REVIEW'",(stamp,operation_id))
         db.execute("UPDATE operation_registry SET current_stage='REVIEW',status='POST OPERATION',updated_at=? WHERE id=?",(stamp,operation_id))
+        close_runtime_context(db, operation_id)
         db.execute("INSERT INTO operation_activity(operation_id,occurred_at,activity_type,actor,message) VALUES(?,?,?,?,?)",(operation_id,stamp,"EXECUTION_CLOSED",actor,f"Execution closed as {outcome}; Review & Closure unlocked"))
     return jsonify(ok=True,url=url_for("operations.operation_detail",operation_id=operation_id))
 
