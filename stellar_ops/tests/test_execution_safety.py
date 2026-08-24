@@ -1,4 +1,6 @@
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import unittest
 from pathlib import Path
 
@@ -48,6 +50,43 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(operation["state"], "HOLD")
         self.assertEqual(operation["active_hold"], "Range verification")
 
+
+    def test_concurrent_duplicate_command_is_applied_once(self):
+        barrier = Barrier(2)
+
+        def issue_duplicate():
+            client = app.test_client()
+            barrier.wait()
+            response = client.post(
+                "/api/control/command",
+                json={
+                    "action": "HOLD",
+                    "reason": "Concurrent command acceptance",
+                    "command_id": "concurrent-hold-001",
+                },
+                headers={"X-Command-ID": "concurrent-hold-001"},
+            )
+            return response.status_code, response.get_json()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: issue_duplicate(), range(2)))
+
+        self.assertEqual([status for status, _ in results], [200, 200])
+        self.assertEqual(sum(bool(body.get("replayed")) for _, body in results), 1)
+        with control_module.connect() as db:
+            journal_count = db.execute(
+                "SELECT count(*) FROM command_journal WHERE command_id=?",
+                ("concurrent-hold-001",),
+            ).fetchone()[0]
+            hold_events = db.execute(
+                """SELECT count(*) FROM events
+                   WHERE operation_id=? AND event_type='HOLD'
+                     AND message='Concurrent command acceptance'""",
+                (control_module.OPERATION_ID,),
+            ).fetchone()[0]
+        self.assertEqual(journal_count, 1)
+        self.assertEqual(hold_events, 1)
+
     def test_rejected_command_is_recorded_with_reason(self):
         response = self.client.post(
             "/api/control/command",
@@ -65,6 +104,36 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(journal["to_state"], "CHECKOUT")
         self.assertIn("not valid", journal["reason"])
         self.assertEqual(journal["http_status"], 409)
+
+    def test_live_fire_revalidates_the_pinned_execution_release(self):
+        with control_module.connect() as db:
+            db.execute(
+                "UPDATE operations SET state='COUNTDOWN',mode='LIVE' WHERE id=?",
+                (control_module.OPERATION_ID,),
+            )
+            db.execute(
+                "UPDATE runtime_context SET context_state='CLOSED' WHERE id=1"
+            )
+
+        response = self.client.post(
+            "/api/control/command",
+            json={"action": "FIRE", "command_id": "stale-release-fire-001"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not RELEASED", response.get_json()["error"])
+        with control_module.connect() as db:
+            operation = db.execute(
+                "SELECT state FROM operations WHERE id=?",
+                (control_module.OPERATION_ID,),
+            ).fetchone()
+            journal = db.execute(
+                "SELECT outcome,reason FROM command_journal WHERE command_id=?",
+                ("stale-release-fire-001",),
+            ).fetchone()
+        self.assertEqual(operation["state"], "COUNTDOWN")
+        self.assertEqual(journal["outcome"], "REJECTED")
+        self.assertIn("not RELEASED", journal["reason"])
 
     def test_restart_during_countdown_enters_fail_safe_hold(self):
         with control_module.connect() as db:

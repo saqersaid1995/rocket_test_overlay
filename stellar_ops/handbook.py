@@ -71,7 +71,7 @@ def validate_handbook(operation: dict, config: dict, chapters: list[dict], relea
         if record.get("state") != expected:
             warnings.append(f"{label} is not {expected}.")
     readiness = operation.get("readiness") or {}
-    if readiness.get("decision") != "GO": warnings.append("Readiness review does not hold a GO decision.")
+    if readiness.get("final_decision") != "GO": warnings.append("Readiness review does not hold a GO decision.")
     if release: blockers.extend(warnings)
     return {"release_ready": not blockers, "blockers": list(dict.fromkeys(blockers)), "warnings": list(dict.fromkeys(warnings)),
             "summary": {"chapters": sum(bool(x["included"]) for x in chapters),

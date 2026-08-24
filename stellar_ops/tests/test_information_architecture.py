@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,12 +38,118 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertIn(b'DEVICE REGISTRY', response.data)
         self.assertIn(b'id="device-setup" class="panel-view active"', response.data)
         self.assertNotIn(b'data-panel="conduct"', response.data)
+        self.assertNotIn(b'id="conduct"', response.data)
+        self.assertNotIn(b'data-command=', response.data)
 
     def test_mission_control_links_to_system_configuration(self):
         response = self.client.get("/workspace")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"MISSION CONTROL WORKSPACE", response.data)
         self.assertIn(b"SYSTEM CONFIGURATION", response.data)
+
+
+    def test_workspace_multi_element_bindings_use_query_selector_all(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "static" / "workspace.js"
+        ).read_text(encoding="utf-8")
+        for selector in (
+            "data-command",
+            "data-mode",
+            "data-recording",
+            "data-camera-full",
+            "data-alarm-detail",
+            "data-incident-detail",
+            "data-close",
+        ):
+            self.assertIn(f"$('[{selector}]').forEach", script)
+
+        single_selector_iteration = re.search(
+            r"(?<!\$)\$\([^;\n]+?\)\.forEach", script
+        )
+        self.assertIsNone(
+            single_selector_iteration,
+            f"Use querySelectorAll for collection binding: {single_selector_iteration}",
+        )
+
+
+    def test_lifecycle_navigation_matches_operational_dependency_order(self):
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "partials"
+            / "ops_lifecycle_nav.html"
+        ).read_text(encoding="utf-8")
+        expected = [
+            "/planning",
+            "/article",
+            "/baseline",
+            "/team",
+            "/procedure",
+            "/safety",
+            "/instrumentation",
+            "/video",
+            "/handbook",
+            "/work-packages",
+            "/readiness",
+            "/briefing",
+            "/rehearsal",
+            "/execution",
+            "/review",
+        ]
+        positions = [template.index(route) for route in expected]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("CROSS-LIFECYCLE CONTROL", template)
+
+    def test_mission_control_entry_requires_released_runtime_context(self):
+        response = self.client.get("/ops/1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"MISSION CONTROL LOCKED", response.data)
+        self.assertNotIn(b'>OPEN MISSION CONTROL</a>', response.data)
+
+
+    def test_hazardous_commands_exist_only_in_mission_control(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "static" / "workspace.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("function commandPanel", script)
+        self.assertIn('data-command="FIRE"', script)
+        self.assertIn('data-command="ABORT"', script)
+        self.assertIn("confirmation!==action", script)
+        self.assertIn("context_state==='RELEASED'", script)
+
+    def test_system_health_and_recovery_are_configuration_functions(self):
+        response = self.client.get("/control")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'data-panel="system-health"', response.data)
+        self.assertIn(b'id="run-diagnostics"', response.data)
+        self.assertIn(b'id="backup-form"', response.data)
+
+        workspace = (
+            Path(__file__).resolve().parents[1] / "static" / "workspace.js"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("SYSTEM DIAGNOSTICS", workspace)
+        self.assertNotIn("data-create-backup", workspace)
+        self.assertNotIn("data-run-diagnostics", workspace)
+
+        configuration = (
+            Path(__file__).resolve().parents[1] / "static" / "control.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("/api/control/diagnostics/self-test", configuration)
+        self.assertIn("/api/control/backups", configuration)
+        self.assertNotRegex(configuration, r"\b(?:prompt|confirm)\s*\(")
+
+
+    def test_workspace_uses_accessible_dialogs_instead_of_native_prompts(self):
+        static_root = Path(__file__).resolve().parents[1] / "static"
+        script = (static_root / "workspace.js").read_text(encoding="utf-8")
+        self.assertNotIn("prompt(", script)
+        self.assertIn("requestText({", script)
+
+        response = self.client.get("/workspace")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="text-entry-dialog"', response.data)
+        self.assertIn(b'aria-label="Incident severity"', response.data)
+        self.assertIn(b'aria-label="Incident description"', response.data)
 
 
 if __name__ == "__main__":

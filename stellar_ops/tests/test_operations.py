@@ -4,6 +4,7 @@ from pathlib import Path
 
 from stellar_ops.app import app
 import stellar_ops.control as control_module
+from stellar_ops.operations import operation_view
 
 
 class OperationWorkflowTests(unittest.TestCase):
@@ -48,6 +49,23 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertIn(b"TRAINING EXAMPLE", planning.data)
         self.assertIn(b"INST-040", planning.data)
         self.assertIn(b"Nasser Al Rawahi", planning.data)
+
+    def test_progress_uses_all_mandatory_operational_gates(self):
+        self.client.get("/ops")
+        with control_module.connect() as db:
+            demo = db.execute(
+                "SELECT id FROM operation_registry WHERE code='DEMO-SF-001'"
+            ).fetchone()
+            item = operation_view(db, demo["id"])
+        self.assertEqual(item["planning_progress"], 20)
+        self.assertEqual(item["next_section"]["section_key"], "PLANNING")
+        self.assertLess(item["progress"], 91)
+        gate_keys = {gate["section_key"] for gate in item["sections"]}
+        self.assertTrue({"SAFETY", "HANDBOOK", "PACKS", "BRIEFING"} <= gate_keys)
+        continuation = self.client.post(f"/api/ops/{demo['id']}/continue")
+        self.assertEqual(continuation.status_code, 200)
+        self.assertEqual(continuation.get_json()["stage"], "PLANNING")
+        self.assertTrue(continuation.get_json()["url"].endswith("/planning"))
 
     def test_planning_generation_calculates_timeline_and_enforces_dependencies(self):
         response = self.client.post("/api/ops", json={
@@ -301,7 +319,9 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(revision["state"],"DRAFT")
         self.assertEqual(len(revision["sha256"]),64)
         self.assertGreater(revision["byte_size"],1000)
-        self.assertEqual(self.client.get(f"/ops/{operation_id}/handbook/files/{revision['id']}").status_code,200)
+        download = self.client.get(f"/ops/{operation_id}/handbook/files/{revision['id']}")
+        self.assertEqual(download.status_code, 200)
+        download.close()
 
     def test_targeted_execution_pack_issue_delivery_and_acknowledgement(self):
         self.assertEqual(self.client.get("/ops").status_code,200)
@@ -320,7 +340,9 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(acknowledged.status_code,200,acknowledged.get_json())
         with control_module.connect() as db: issue=db.execute("SELECT * FROM execution_pack_issues WHERE id=?",(issue_id,)).fetchone()
         self.assertEqual(issue["delivery_status"],"ACKNOWLEDGED");self.assertEqual(issue["acknowledged_by"],"Maha Al Hinai");self.assertEqual(len(issue["sha256"]),64)
-        self.assertEqual(self.client.get(f"/ops/{operation_id}/execution-packs/files/{issue_id}").status_code,200)
+        download = self.client.get(f"/ops/{operation_id}/execution-packs/files/{issue_id}")
+        self.assertEqual(download.status_code, 200)
+        download.close()
 
     def test_day_of_operation_briefing_blocks_then_freezes_complete_signoff(self):
         self.assertEqual(self.client.get("/ops").status_code,200)
@@ -752,6 +774,70 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(execution["status"], "ACTIVE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/rehearsal", json=payload).status_code, 409)
 
+    def complete_canonical_preparation_gates(self, operation_id):
+        with control_module.connect() as db:
+            db.execute(
+                "UPDATE operation_registry SET planned_start=COALESCE(planned_start, ?) WHERE id=?",
+                ("2026-09-03T08:00", operation_id),
+            )
+        generated = self.client.post(f"/api/ops/{operation_id}/planning/generate", json={})
+        self.assertEqual(generated.status_code, 200, generated.get_json())
+        with control_module.connect() as db:
+            db.execute(
+                """UPDATE operation_tasks
+                   SET status='ACCEPTED',
+                       assigned_person=CASE WHEN assigned_person='UNASSIGNED'
+                           THEN 'Controlled Test Specialist' ELSE assigned_person END,
+                       blocker='', updated_at=?
+                   WHERE operation_id=?""",
+                ("2026-09-03T06:00:00Z", operation_id),
+            )
+            role = db.execute(
+                """SELECT a.role_code,a.person_name
+                   FROM operation_role_assignments a
+                   JOIN staffing_plans s ON s.id=a.staffing_plan_id
+                   JOIN operation_tasks t
+                     ON t.operation_id=s.operation_id
+                    AND t.responsible_role=a.role_code
+                   WHERE s.operation_id=?
+                   ORDER BY a.role_code LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
+        self.assertIsNotNone(role)
+
+        self.assertEqual(self.client.get(f"/ops/{operation_id}/handbook").status_code, 200)
+        released_handbook = self.client.post(
+            f"/api/ops/{operation_id}/handbook/generate",
+            json={"state": "RELEASED", "generated_by": "Acceptance Document Controller"},
+        )
+        self.assertEqual(released_handbook.status_code, 200, released_handbook.get_json())
+
+        issued = self.client.post(
+            f"/api/ops/{operation_id}/execution-packs/generate",
+            json={
+                "scope_kind": "PERSON",
+                "scope_key": role["role_code"],
+                "state": "RELEASED",
+                "issued_by": "Acceptance Document Controller",
+            },
+        )
+        self.assertEqual(issued.status_code, 200, issued.get_json())
+        issue_id = issued.get_json()["issue_id"]
+        delivered = self.client.post(
+            f"/api/ops/{operation_id}/execution-packs/{issue_id}/delivery",
+            json={"action": "DELIVER", "actor": "Acceptance Document Controller"},
+        )
+        self.assertEqual(delivered.status_code, 200, delivered.get_json())
+        acknowledged = self.client.post(
+            f"/api/ops/{operation_id}/execution-packs/{issue_id}/delivery",
+            json={
+                "action": "ACKNOWLEDGE",
+                "actor": role["person_name"],
+                "note": "Controlled execution pack reviewed and accepted.",
+            },
+        )
+        self.assertEqual(acknowledged.status_code, 200, acknowledged.get_json())
+
     def prepare_execution_stage(self, code="QEXEC-010"):
         operation_id = self.prepare_rehearsal_stage(code)
         rehearsal = self.rehearsal_payload()
@@ -761,6 +847,7 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/ops/{operation_id}/briefing").status_code,200)
         with control_module.connect() as db:
             db.execute("UPDATE operation_briefings SET state='CLOSED',canonical_sha256=?,closed_at=?,closed_by=? WHERE operation_id=?",("d"*64,"2026-09-03T07:00:00Z","Test Director",operation_id))
+        self.complete_canonical_preparation_gates(operation_id)
         return operation_id
 
     def execution_release_payload(self):
@@ -784,7 +871,7 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=payload).status_code, 200)
         with control_module.connect() as db: db.execute("UPDATE operation_briefings SET state='DRAFT',canonical_sha256=NULL WHERE operation_id=?",(operation_id,))
         briefing_blocked=self.client.post(f"/api/ops/{operation_id}/execution/release",json=self.execution_authorizations())
-        self.assertEqual(briefing_blocked.status_code,409);self.assertIn("Day-of-Operation Briefing",briefing_blocked.get_json()["error"])
+        self.assertEqual(briefing_blocked.status_code,409);self.assertIn("Crew Briefing", briefing_blocked.get_json()["incomplete_gates"])
         with control_module.connect() as db: db.execute("UPDATE operation_briefings SET state='CLOSED',canonical_sha256=? WHERE operation_id=?",("d"*64,operation_id))
         blocked = self.client.post(f"/api/ops/{operation_id}/execution/release", json=self.execution_authorizations())
         self.assertEqual(blocked.status_code, 409)
@@ -795,6 +882,23 @@ class OperationWorkflowTests(unittest.TestCase):
         blocked = self.client.post(f"/api/ops/{operation_id}/execution/release", json=wrong)
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("does not match", blocked.get_json()["error"])
+
+    def test_execution_release_blocks_any_incomplete_upstream_lifecycle_gate(self):
+        operation_id = self.prepare_execution_stage("QEXEC-GATE")
+        payload = self.execution_release_payload()
+        self.assertEqual(self.client.post(f"/api/ops/{operation_id}/execution", json=payload).status_code, 200)
+        with control_module.connect() as db:
+            db.execute(
+                "UPDATE operation_tasks SET status='IN_PROGRESS' WHERE operation_id=? AND task_code=(SELECT task_code FROM operation_tasks WHERE operation_id=? ORDER BY id LIMIT 1)",
+                (operation_id, operation_id),
+            )
+            db.execute("UPDATE operations SET mode='LIVE',state='CHECKOUT' WHERE id=?", (control_module.OPERATION_ID,))
+        blocked = self.client.post(
+            f"/api/ops/{operation_id}/execution/release",
+            json=self.execution_authorizations(),
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("Preparation Plan", blocked.get_json()["incomplete_gates"])
 
     def test_released_execution_handoff_and_post_operation_closure(self):
         operation_id = self.prepare_execution_stage("QEXEC-020")
@@ -903,6 +1007,48 @@ class OperationWorkflowTests(unittest.TestCase):
         self.assertEqual(review["state"], "CLOSED")
         self.assertEqual(section["status"], "COMPLETE")
         self.assertEqual(self.client.post(f"/api/ops/{operation_id}/review", json=payload).status_code, 409)
+
+
+    def test_clean_database_full_controlled_journey_reaches_consistent_closure(self):
+        operation_id = self.prepare_review_stage("QACCEPT-001")
+        review_payload = self.post_review_payload()
+        saved = self.client.post(
+            f"/api/ops/{operation_id}/review",
+            json=review_payload,
+        )
+        self.assertEqual(saved.status_code, 200)
+        closed = self.client.post(
+            f"/api/ops/{operation_id}/review/close",
+            json={"closed_by": "Acceptance Test Director"},
+        )
+        self.assertEqual(closed.status_code, 200)
+
+        with control_module.connect() as db:
+            view = operation_view(db, operation_id)
+            registry = db.execute(
+                "SELECT current_stage,status FROM operation_registry WHERE id=?",
+                (operation_id,),
+            ).fetchone()
+            release = db.execute(
+                "SELECT state,outcome FROM execution_releases WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            context = db.execute(
+                "SELECT context_state FROM runtime_context WHERE id=1"
+            ).fetchone()
+            rejected_commands = db.execute(
+                """SELECT count(*) FROM command_journal
+                   WHERE operation_id=? AND outcome='REJECTED'""",
+                (control_module.OPERATION_ID,),
+            ).fetchone()[0]
+
+        self.assertEqual(view["progress"], 100)
+        self.assertIsNone(view["next_section"])
+        self.assertTrue(all(section["status"] == "COMPLETE" for section in view["sections"]))
+        self.assertEqual(tuple(registry), ("CLOSED", "CLOSED"))
+        self.assertEqual(tuple(release), ("CLOSED", "SUCCESS"))
+        self.assertEqual(context["context_state"], "CLOSED")
+        self.assertGreaterEqual(rejected_commands, 0)
 
     def test_operational_change_controls_approval_invalidation_and_verification(self):
         self.assertEqual(self.client.get("/ops").status_code, 200)

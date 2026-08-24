@@ -797,6 +797,58 @@ def ensure_operations() -> None:
     init_operations_db()
 
 
+def canonical_gate_view(db: sqlite3.Connection, operation_id: int) -> list[dict]:
+    def row(query: str):
+        return db.execute(query, (operation_id,)).fetchone()
+
+    tasks = row("SELECT COUNT(*) total,SUM(CASE WHEN status='ACCEPTED' THEN 1 ELSE 0 END) complete FROM operation_tasks WHERE operation_id=?")
+    packs = row("SELECT COUNT(*) total,SUM(CASE WHEN delivery_status='ACKNOWLEDGED' THEN 1 ELSE 0 END) complete FROM execution_pack_issues WHERE operation_id=?")
+    article = row("SELECT state FROM test_articles WHERE operation_id=?")
+    baseline = row("SELECT state FROM configuration_baselines WHERE operation_id=?")
+    staffing = row("SELECT state FROM staffing_plans WHERE operation_id=?")
+    procedure = row("SELECT state FROM operation_procedures WHERE operation_id=?")
+    safety = row("SELECT state FROM operation_safety_cases WHERE operation_id=?")
+    instrumentation = row("SELECT state FROM instrumentation_plans WHERE operation_id=?")
+    video = row("SELECT state FROM video_recording_plans WHERE operation_id=?")
+    handbook = row("SELECT state FROM handbook_revisions WHERE operation_id=? ORDER BY issue_sequence DESC LIMIT 1")
+    readiness = row("SELECT state,final_decision FROM readiness_reviews WHERE operation_id=?")
+    briefing = row("SELECT state,canonical_sha256 FROM operation_briefings WHERE operation_id=?")
+    rehearsal = row("SELECT state,result FROM rehearsal_campaigns WHERE operation_id=?")
+    execution = row("SELECT state FROM execution_releases WHERE operation_id=?")
+    review = row("SELECT state FROM post_operation_reviews WHERE operation_id=?")
+
+    definitions = [
+        ("BRIEF", "Operation Brief", f"/ops/{operation_id}", True, True),
+        ("PLANNING", "Preparation Plan", f"/ops/{operation_id}/planning", bool(tasks and tasks["total"]), bool(tasks and tasks["total"] and tasks["total"] == tasks["complete"])),
+        ("ARTICLE", "Test Article / Vehicle", f"/ops/{operation_id}/article", article is not None, bool(article and article["state"] == "IDENTIFIED")),
+        ("BASELINE", "Configuration Baseline", f"/ops/{operation_id}/baseline", baseline is not None, bool(baseline and baseline["state"] == "RELEASED")),
+        ("TEAM", "Team & Authority", f"/ops/{operation_id}/team", staffing is not None, bool(staffing and staffing["state"] == "APPROVED")),
+        ("PROCEDURE", "Procedure", f"/ops/{operation_id}/procedure", procedure is not None, bool(procedure and procedure["state"] == "APPROVED")),
+        ("SAFETY", "Safety Assurance", f"/ops/{operation_id}/safety", safety is not None, bool(safety and safety["state"] == "APPROVED")),
+        ("INSTRUMENTATION", "Instrumentation", f"/ops/{operation_id}/instrumentation", instrumentation is not None, bool(instrumentation and instrumentation["state"] == "APPROVED")),
+        ("VIDEO", "Video & Recording", f"/ops/{operation_id}/video", video is not None, bool(video and video["state"] == "APPROVED")),
+        ("HANDBOOK", "Operation Handbook", f"/ops/{operation_id}/handbook", handbook is not None, bool(handbook and handbook["state"] == "RELEASED")),
+        ("PACKS", "Execution Packs", f"/ops/{operation_id}/work-packages", bool(packs and packs["total"]), bool(packs and packs["total"] and packs["total"] == packs["complete"])),
+        ("READINESS", "Readiness Review", f"/ops/{operation_id}/readiness", readiness is not None, bool(readiness and readiness["state"] == "APPROVED" and readiness["final_decision"] == "GO")),
+        ("BRIEFING", "Crew Briefing", f"/ops/{operation_id}/briefing", briefing is not None, bool(briefing and briefing["state"] == "CLOSED" and briefing["canonical_sha256"])),
+        ("REHEARSAL", "Rehearsal", f"/ops/{operation_id}/rehearsal", rehearsal is not None, bool(rehearsal and rehearsal["state"] == "COMPLETED" and rehearsal["result"] == "PASS")),
+        ("EXECUTION", "Execution", f"/ops/{operation_id}/execution", execution is not None, bool(execution and execution["state"] in {"RELEASED", "CLOSED"})),
+        ("REVIEW", "Review & Final Closure", f"/ops/{operation_id}/review", review is not None, bool(review and review["state"] == "CLOSED")),
+    ]
+    return [
+        {
+            "section_key": key,
+            "name": name,
+            "url": url,
+            "sequence": sequence,
+            "status": "COMPLETE" if complete else ("IN_PROGRESS" if exists else "LOCKED"),
+            "owner": None,
+            "blocker": None if complete else f"{name} is incomplete",
+        }
+        for sequence, (key, name, url, exists, complete) in enumerate(definitions, 1)
+    ]
+
+
 def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
     row = db.execute("""SELECT o.*,m.code mission_code,m.name mission_name,m.mission_type,m.status mission_status
         FROM operation_registry o JOIN missions m ON m.id=o.mission_id WHERE o.id=?""", (operation_id,)).fetchone()
@@ -923,6 +975,19 @@ def operation_view(db: sqlite3.Connection, operation_id: int) -> dict | None:
         ).fetchone()
         context["active_run"] = dict(active_run) if active_run else None
         item["runtime_context"] = context
+    item["legacy_sections"] = item["sections"]
+    item["sections"] = canonical_gate_view(db, operation_id)
+    complete = sum(1 for gate in item["sections"] if gate["status"] == "COMPLETE")
+    item["progress"] = round(complete / max(1, len(item["sections"])) * 100)
+    item["next_section"] = next(
+        (gate for gate in item["sections"] if gate["status"] != "COMPLETE"),
+        None,
+    )
+    item["open_change_count"] = db.execute(
+        """SELECT COUNT(*) count FROM operation_changes
+           WHERE operation_id=? AND state NOT IN ('CLOSED','REJECTED','CANCELLED')""",
+        (operation_id,),
+    ).fetchone()["count"]
     return item
 
 
@@ -1908,15 +1973,12 @@ def continue_operation(operation_id: int):
     with connect() as db:
         item = operation_view(db, operation_id)
     if not item: return jsonify(error="operation not found"), 404
-    routes = {"ARTICLE": f"/ops/{operation_id}/article", "BASELINE": f"/ops/{operation_id}/baseline",
-              "TEAM": f"/ops/{operation_id}/team",
-              "PROCEDURE": f"/ops/{operation_id}/procedure",
-              "INSTRUMENTATION": f"/ops/{operation_id}/instrumentation",
-              "VIDEO": f"/ops/{operation_id}/video",
-              "READINESS": f"/ops/{operation_id}/readiness",
-              "REHEARSAL": f"/ops/{operation_id}/rehearsal",
-              "EXECUTION": f"/ops/{operation_id}/execution", "REVIEW": f"/ops/{operation_id}/review"}
-    return jsonify(ok=True, stage=item["current_stage"], url=routes.get(item["current_stage"], f"/ops/{operation_id}"))
+    next_gate = item["next_section"]
+    return jsonify(
+        ok=True,
+        stage=next_gate["section_key"] if next_gate else "CLOSED",
+        url=next_gate["url"] if next_gate else f"/ops/{operation_id}",
+    )
 
 
 def article_requirements(operation_type: str) -> set[str]:
@@ -2076,6 +2138,15 @@ def issue_execution_release(operation_id:int):
         operation=db.execute("SELECT * FROM operation_registry WHERE id=?",(operation_id,)).fetchone()
         if not operation:return jsonify(error="operation not found"),404
         if operation["current_stage"]!="EXECUTION":return jsonify(error="EXECUTION is not the active workflow stage"),409
+        incomplete_upstream = [
+            gate["name"] for gate in canonical_gate_view(db, operation_id)
+            if gate["section_key"] not in {"EXECUTION", "REVIEW"} and gate["status"] != "COMPLETE"
+        ]
+        if incomplete_upstream:
+            return jsonify(
+                error="mandatory lifecycle gates are incomplete: " + ", ".join(incomplete_upstream),
+                incomplete_gates=incomplete_upstream,
+            ), 409
         release=db.execute("SELECT * FROM execution_releases WHERE operation_id=?",(operation_id,)).fetchone()
         if not release:return jsonify(error="save the execution release package first"),409
         if release["state"]!="DRAFT":return jsonify(error="execution release has already been issued"),409
