@@ -425,6 +425,9 @@ def create_run():
     if not code or not title or not article: return jsonify(error="run code, title and test article are required"),400
     if not all(char.isalnum() or char in "-_" for char in code): return jsonify(error="run code may contain letters, numbers, hyphen and underscore only"),400
     with connect() as db:
+        context=get_runtime_context(db)
+        if context and context["context_state"]=="RELEASED":
+            return jsonify(error="Test Runs are created by the controlled Execution Release; close the active context before development run creation"),409
         try:
             cursor=db.execute("""INSERT INTO test_runs(operation_id,code,title,test_article,configuration_revision,propellant_batch,status,created_at,notes)
                 VALUES(?,?,?,?,?,?,'PLANNING',?,?)""",(OPERATION_ID,code,title,article,str(payload.get("configuration_revision","")).strip(),str(payload.get("propellant_batch","")).strip(),utc_now(),str(payload.get("notes","")).strip()))
@@ -437,6 +440,9 @@ def create_run():
 def activate_run(run_id: int):
     with connect() as db:
         if recording_status(db,OPERATION_ID).get("state")=="RECORDING": return jsonify(error="stop recording before changing the active run"),409
+        context=get_runtime_context(db)
+        if context and context["context_state"]=="RELEASED" and context["active_run_id"]!=run_id:
+            return jsonify(error="the released Mission Control context pins its Test Run; close execution before changing runs"),409
         operation=db.execute("SELECT state FROM operations WHERE id=?",(OPERATION_ID,)).fetchone()
         if operation["state"] not in {"CHECKOUT","HOLD"}: return jsonify(error="a run may only be activated during CHECKOUT or HOLD"),409
         run=db.execute("SELECT code FROM test_runs WHERE operation_id=? AND id=?",(OPERATION_ID,run_id)).fetchone()
