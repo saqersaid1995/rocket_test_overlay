@@ -8,3 +8,11 @@
 @media(max-width:850px){.release-context{grid-template-columns:1fr 1fr}}
 
 .panel-divider{margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--line);font:600 10px/1.2 var(--mono);letter-spacing:.12em;color:var(--muted)}
+
+.incident-form{display:grid;grid-template-columns:140px 180px 1fr 180px;gap:8px;padding:14px;border-bottom:1px solid var(--line)}
+.incident-form textarea{grid-column:1/5;min-height:76px;resize:vertical}
+.incident-form button{grid-column:4}
+.incident-form input,.incident-form select,.incident-form textarea{background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:9px;font:12px var(--sans)}
+#incident-center{padding:12px}
+.alarm-row em{display:block;margin-top:4px;color:var(--muted);font-style:normal;font-size:11px}
+@media(max-width:900px){.incident-form{grid-template-columns:1fr}.incident-form textarea,.incident-form button{grid-column:1}}
