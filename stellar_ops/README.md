@@ -1,80 +1,77 @@
-# Stellar Ops
+# Stellar Ops V2
 
-Independent Static Motor Test Control service. It does not import or modify Rocket Overlay Studio.
+Stellar Mission & Test Control System is the active operations service for controlled preparation, mission-control workspaces, telemetry, camera evidence, displays and broadcast coordination.
 
-## Run in GitHub Codespaces
+Version: `2.0.0-alpha.1`  
+Branch: `development/stellar-ops-v2`  
+Current status: development and training baseline; not yet production-authorized.
+
+## Run
 
 ```bash
 git fetch origin
-git switch agent/stellar-ops-system
-pip install -r requirements.txt
-PORT=5001 python -m stellar_ops.app
+git switch development/stellar-ops-v2
+python -m pip install -r requirements.txt
+STELLAR_OPS_ENV=DEVELOPMENT PORT=5001 python -m stellar_ops.app
 ```
 
-Open forwarded port 5001. Health check: `/health`.
+Open port 5001. Use `/health/live` for liveness and `/health` for readiness, build, database, disk, recording, run and edge status.
 
-The root route opens the Mission Control Workspace. The original engineering setup console remains available at `/control`.
+## Environment identity
 
-## Mission Control Workspace
+Set one of:
 
-The workspace provides role-based console presets for Test Director, Instrumentation, Propulsion, Data & Video, and Observer. Panels can be reordered, widened, removed, added, saved, shown in kiosk mode, or opened in synchronized pop-out windows for additional monitors. Included panels cover mission state, multi-channel plots, derived propulsion values, procedure position, station poll, alarms, events, camera wall, channel quality, network health, and evidence recording.
+```bash
+STELLAR_OPS_ENV=DEVELOPMENT
+STELLAR_OPS_ENV=TRAINING
+STELLAR_OPS_ENV=PRODUCTION
+```
 
-The global Time Conductor supports live view, display pause without stopping recording, replay context, configurable visible time windows, and ignition positioning. Camera tiles use virtual optical feeds only in `SIMULATION`; `LIVE` never fabricates a connected stream.
+Unknown values fall back to `DEVELOPMENT`. A deployment may also provide `STELLAR_OPS_COMMIT` so the UI and health response identify the exact build.
 
-Test Runs and saved workspaces persist in SQLite. Alarm acknowledgements, shelving, run changes, and workspace changes are audited. A live alarm condition cannot be manually closed until its source recovers.
+## Current service areas
 
-## Run-scoped evidence and reliability
+- `/ops` — controlled operation lifecycle and preparation records.
+- `/workspace` — Mission Control workspace and synchronized operator panels.
+- `/control` — current engineering setup and diagnostic console.
+- `/media` — display layouts, screen routing and broadcast preparation.
 
-Operational events, alarms, recording sessions, and Ethernet batches are linked to the active Test Run. Starting a recording opens a run-specific evidence directory; stopping it exports the received telemetry batches to canonical JSON Lines, writes a manifest, and seals both with SHA-256 integrity metadata. The Evidence panel shows open and sealed packages.
+The V2 restructuring will make Mission Control the only execution console and restrict `/control` to system configuration and diagnostics.
 
-Database startup applies numbered migrations and configures SQLite WAL, foreign keys, normal synchronous mode, and a 10-second busy timeout for safer concurrent Flask/gateway development. Production deployment should still migrate operational metadata to PostgreSQL and large telemetry/video to dedicated time-series/object storage.
+## Telemetry modes
 
-The workspace consumes a server-sent event stream rather than repeatedly fetching a complete snapshot. `/health` reports database latency, disk capacity, active run, recording, operation and edge status; `/health/live` is the lightweight process liveness endpoint.
+- `SIMULATION` — generated engineering and training signals.
+- `LIVE` — quality-aware Ethernet edge telemetry.
+- `REPLAY` — controlled historical CSV playback.
 
-The control console supports three explicit telemetry source modes:
+LIVE countdown is blocked unless recording is active, required channels are GOOD and the trusted Ethernet session has no sequence gaps. The FIRE command remains simulated and is not connected to ignition hardware.
 
-- `SIMULATION`: generated training signals.
-- `LIVE`: quality-aware data from the Ethernet edge gateway.
-- `REPLAY`: operator-controlled CSV playback with seek and speed control.
+## Camera and evidence behavior
 
-Recording sessions, source changes, alarms and commands are audited in SQLite. `LIVE` countdown is blocked unless recording is active, all required channels are `GOOD`, and the Ethernet session has no sequence gaps. The system remains read-only toward field ignition hardware; the FIRE command is deliberately simulated.
+Camera discovery uses ONVIF and video uses RTSP. Preview should use a substream while native H.264 evidence recording remuxes the main stream without transcoding. Credentials are stored outside the operational database.
 
-## Ethernet telemetry development
+Starting a recording opens a run-scoped evidence directory. Stopping exports telemetry, finalizes camera segments, writes a manifest and seals evidence metadata with SHA-256.
 
-Start the inbound telemetry gateway in a second terminal:
+## Ethernet development
+
+Gateway:
 
 ```bash
 python -m stellar_ops.edge_gateway --port 9100
 ```
 
-Run the ESP/DAQ simulator in a third terminal:
+Simulator:
 
 ```bash
 python -m stellar_ops.edge_simulator --host 127.0.0.1 --port 9100
 ```
 
-Device Setup shows the edge session, boot identity, sequence, total samples and detected gaps. Protocol definition: `docs/smtcs/06_ETHERNET_EDGE_PROTOCOL.md`.
+A LIVE Ethernet session is trusted only when its `device_id` is registered with the `SMTCS_EDGE_TCP` adapter.
 
-In the console, choose **LIVE ETHERNET**, start recording, and verify each required channel reports `GOOD`. Channel names do not require code changes: map the incoming device field to the canonical channel under **Device Setup → Channel Mapping & Calibration**.
+## Data
 
-## Device lifecycle
+SQLite with WAL is the development baseline. PostgreSQL and dedicated telemetry/object storage remain required before production authorization. Runtime databases, evidence, recordings, replay data and generated exports are excluded from Git.
 
-Use **Device Setup** to create or edit devices and channels. The registry separates live health from the last configuration connection test. Assets are archived rather than silently erased so their audit history remains intact. Archive or reassign active channels before archiving their source device; restore the device before restoring its channels. Configuration changes are blocked while recording and outside `CHECKOUT` or `HOLD`.
+## Safety boundary
 
-An Ethernet session is not trusted as a LIVE source until its `device_id` is registered with the `SMTCS_EDGE_TCP` adapter. Unregistered sessions remain visible in the gateway table for diagnosis but do not feed operational telemetry.
-
-## Controlled preparation documents
-
-Each operation includes a Document Export Center at `/ops/<operation-id>/documents`. It creates master-operation, department, or individual work packages from the controlled preparation plan.
-
-Every package contains a paginated PDF, a filterable Excel workbook, and a ZIP bundle with a JSON manifest. The register records revision, state, generator, creation time, file size, document SHA-256 values, and a package manifest fingerprint. Draft copies may expose open work for coordination; released copies are blocked until the operation has a planned start, named assignments, independent safety-critical verification, accepted tasks, and evidence records.
-
-Generated packages are stored under `stellar_ops/data/exports/` and are intentionally excluded from source control. Install `reportlab` and `openpyxl` through `requirements.txt` before generating documents.
-
-## Safety and procedure assurance
-
-Procedure Control now has a dedicated Safety & Procedure Assurance workspace at `/ops/<operation-id>/safety`. The workspace manages operation hazards, preventive and mitigating controls, residual risk, control verification, required equipment, tools, PPE, emergency equipment, controlled documents and formal HOLD points.
-
-Hazards and resources are linked to controlled procedure step codes. A safety-critical step cannot pass procedure approval without a linked hazard, verified controls and independent verification. Formal HOLD points identify the trigger, immediate safe state, call authority, release criteria and release authority. Mandatory resources must be READY and carry a certification, calibration or controlled-reference identity.
-
-The safety case is approved separately and protected by SHA-256. Procedure approval pins that approved safety-case fingerprint so later changes cannot silently alter the execution basis. The `DEMO-SF-001` training operation includes representative ignition, pressure, exclusion-zone and evidence-loss hazards with controls, PPE and HOLD logic.
+This software currently supports planning, simulation, monitoring, evidence and state-guarded operator workflows. It is not authorized to command physical ignition hardware. Authentication, individual users and final role enforcement are intentionally scheduled for the final development phase; until then the system operates as an explicitly identified single-operator development environment.
