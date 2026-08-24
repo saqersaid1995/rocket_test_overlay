@@ -177,8 +177,11 @@ def activate_released_operation(
         "runtime_operation_id": runtime_operation_id,
         "registry_operation_id": registry_operation["id"],
         "execution_release_id": execution_release["id"],
+        "active_run_id": run_id,
         "run_id": run_id,
         "run_code": run_code,
+        "context_state": "RELEASED",
+        "operation_code": registry_operation["code"],
         "release_code": execution_release["release_code"],
         "release_sha256": release_sha256,
     }
