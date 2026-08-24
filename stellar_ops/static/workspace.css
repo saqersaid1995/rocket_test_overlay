@@ -43,3 +43,8 @@
 .hazard-command-row button.hold{border-color:var(--amber);color:var(--amber)}
 .source-command-row button:disabled,.hazard-command-row button:disabled{opacity:.35;cursor:not-allowed}
 @media(max-width:760px){.command-status{grid-template-columns:1fr 1fr}}
+
+
+.context-topbar{height:54px}
+.context-topbar>div:not(.brand){flex:1;min-width:130px}
+@media(max-width:760px){.context-topbar{height:48px}.context-topbar>div:nth-child(n+3){display:none}}
