@@ -6,3 +6,5 @@
 .release-context b,.release-context code{display:block;margin-top:5px;color:#d9e8ed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .release-context span:nth-child(2) b,.release-context span:nth-child(3) b{color:#52e3ad}
 @media(max-width:850px){.release-context{grid-template-columns:1fr 1fr}}
+
+.panel-divider{margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--line);font:600 10px/1.2 var(--mono);letter-spacing:.12em;color:var(--muted)}
