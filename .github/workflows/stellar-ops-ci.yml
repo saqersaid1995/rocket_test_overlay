@@ -55,6 +55,6 @@ jobs:
             sed -n '1,240p' /tmp/stellar-ops-browser.log
             exit 1
           fi
-          RUN_BROWSER_E2E=1 STELLAR_OPS_BASE_URL=http://127.0.0.1:5011 python -m unittest stellar_ops.tests.test_browser_smoke -v
+          RUN_BROWSER_E2E=1 STELLAR_OPS_BASE_URL=http://127.0.0.1:5011 BROWSER_ARTIFACT_DIR=/tmp/stellar-browser-artifacts python -m unittest stellar_ops.tests.test_browser_smoke -v
       - name: Run Stellar Ops tests
         run: python -m unittest discover -s stellar_ops/tests -p "test_*.py" -v
