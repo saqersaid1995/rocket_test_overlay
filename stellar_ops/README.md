@@ -83,6 +83,14 @@ Every HTTP response carries an `X-Request-ID` correlation identifier and a `Serv
 
 Self-tests are only permitted during `CHECKOUT` or `HOLD` while recording is stopped, and every result is retained in the operational database and audit event stream. Detailed route, alarm and incident metrics are intentionally not exposed through a public Prometheus endpoint until authentication and monitoring-network controls are implemented in the final security phase.
 
+## Deployment guard
+
+Every deployment is assessed against its declared environment. The checks cover application-secret strength, immutable build identity, HTTPS origin, writable data storage, off-host backup location, debug mode and the production datastore requirement. Development remains usable with explicit warnings; Production fails closed and rejects operational mutations while any blocking check remains.
+
+Set `STELLAR_OPS_MAINTENANCE=1` to place the service in read-only maintenance mode. Safe backup, integrity verification and diagnostic actions remain available. Responses include CSP, frame, MIME-sniffing, referrer and browser-permission security headers; API and health responses are marked `no-store`.
+
+SQLite remains approved only for Development and Training. The deployment guard intentionally prevents Production authorization until PostgreSQL plus dedicated telemetry/object storage are implemented.
+
 ## Telemetry modes
 
 - `SIMULATION` — generated engineering and training signals.
