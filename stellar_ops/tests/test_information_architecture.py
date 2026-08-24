@@ -45,5 +45,13 @@ class InformationArchitectureTests(unittest.TestCase):
         self.assertIn(b"SYSTEM CONFIGURATION", response.data)
 
 
+    def test_workspace_camera_fullscreen_binding_uses_multi_selector(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "static" / "workspace.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("$('[data-camera-full]').forEach", script)
+        self.assertNotIn(";$('[data-camera-full]').forEach", script)
+
+
 if __name__ == "__main__":
     unittest.main()
