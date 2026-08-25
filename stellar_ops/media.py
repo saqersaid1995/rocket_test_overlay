@@ -93,7 +93,10 @@ def init_media_db() -> None:
         db.executescript(SCHEMA)
         stamp = now()
         ensure_broadcast_telemetry_schema(db, OPERATION_ID, stamp)
-        install_bundled_packages(db, OPERATION_ID, stamp)
+        # Unit tests create many isolated databases; browser acceptance and
+        # deployed environments still exercise the real bundled 4.3 MB asset.
+        if not current_app.config.get("TESTING"):
+            install_bundled_packages(db, OPERATION_ID, stamp)
         if not db.execute("SELECT 1 FROM graph_definitions WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             graphs = [
                 ("Propulsion Live", ["motor.chamber_pressure", "motor.thrust"], 60, {"linked_cursor": True, "show_limits": True}),
