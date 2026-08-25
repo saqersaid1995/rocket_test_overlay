@@ -520,7 +520,15 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
             raise PackageValidationError("manifest entry is unsafe")
         layout = _read_json(archive, entry)
 
-    template_id = str(manifest.get("template_id") or manifest.get("id") or "").strip().lower()
+    raw_template_id = str(manifest.get("template_id") or manifest.get("id") or "").strip().lower()
+    if manifest.get("schema") == "rocket-overlay-template":
+        # Studio v1 allowed display-like identifiers (spaces, underscores and
+        # punctuation). Preserve compatibility while storing one canonical ID.
+        template_id = re.sub(r"[^a-z0-9-]+", "-", raw_template_id).strip("-")
+        if not template_id:
+            template_id = re.sub(r"[^a-z0-9-]+", "-", Path(filename).stem.lower()).strip("-")
+    else:
+        template_id = raw_template_id
     version = str(manifest.get("version") or manifest.get("template_version") or "").strip()
     name = str(manifest.get("name") or manifest.get("display_name") or template_id).strip()
     canvas_value = manifest.get("canvas", "")
