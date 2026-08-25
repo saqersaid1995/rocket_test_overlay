@@ -37,8 +37,8 @@ LEGACY_BINDING_CHANNELS = {
 
 def _binding_channel(binding: object) -> str | None:
     value = str(binding or "").strip().lower()
-    if CHANNEL_ID_RE.fullmatch(value):
-        return value
+    # Legacy bindings also look like dotted canonical IDs, so translate them
+    # before accepting a value as a native channel identifier.
     for prefix, channel_id in LEGACY_BINDING_CHANNELS.items():
         if value == prefix or value.startswith(prefix + "."):
             return channel_id
@@ -46,6 +46,8 @@ def _binding_channel(binding: object) -> str | None:
         candidate = value[len("channels."):].rsplit(".", 1)[0]
         if CHANNEL_ID_RE.fullmatch(candidate):
             return candidate
+    if CHANNEL_ID_RE.fullmatch(value):
+        return value
     return None
 
 
