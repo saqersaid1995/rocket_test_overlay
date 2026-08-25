@@ -486,12 +486,15 @@ def resolve_overlay_selection(
            WHERE operation_id=?""",
         (active_id, runtime_phase, stamp, operation_id),
     )
+    public_package = dict(active) if active else None
+    if public_package:
+        public_package.pop("archive_blob", None)
     return {
         "mode": mode,
         "active_phase": runtime_phase,
         "active_package_id": active_id,
         "transition": transition,
-        "package": dict(active) if active else None,
+        "package": public_package,
     }
 
 
