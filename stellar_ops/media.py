@@ -17,9 +17,14 @@ from .broadcast_telemetry import (
     PackageValidationError,
     channel_catalog,
     ensure_broadcast_telemetry_schema,
+    install_bundled_packages,
     overlay_packages,
+    phase_overlay_assignments,
     register_channel,
+    resolve_overlay_selection,
     save_package,
+    save_phase_overlay,
+    set_overlay_selection,
     validate_package,
 )
 
@@ -88,6 +93,7 @@ def init_media_db() -> None:
         db.executescript(SCHEMA)
         stamp = now()
         ensure_broadcast_telemetry_schema(db, OPERATION_ID, stamp)
+        install_bundled_packages(db, OPERATION_ID, stamp)
         if not db.execute("SELECT 1 FROM graph_definitions WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             graphs = [
                 ("Propulsion Live", ["motor.chamber_pressure", "motor.thrust"], 60, {"linked_cursor": True, "show_limits": True}),
@@ -174,8 +180,16 @@ def media_snapshot() -> dict:
             "video_walls", "published_templates", "broadcast_scenes", "stream_destinations", "broadcast_events")}
         result["telemetry_catalog"] = channel_catalog(db, OPERATION_ID)
         result["overlay_packages"] = overlay_packages(db, OPERATION_ID)
+        result["phase_overlay_assignments"] = phase_overlay_assignments(db, OPERATION_ID)
         session = db.execute("SELECT * FROM broadcast_sessions WHERE operation_id=?", (OPERATION_ID,)).fetchone()
         result["broadcast"] = dict(session)
+        operation_state = db.execute(
+            "SELECT state FROM operations WHERE id=?", (OPERATION_ID,)
+        ).fetchone()
+        runtime_phase = str(operation_state["state"] if operation_state else "STANDBY").upper()
+        result["overlay_selection"] = resolve_overlay_selection(
+            db, OPERATION_ID, runtime_phase, now()
+        )
         cutoff = datetime.now(timezone.utc).timestamp() - 30
         for endpoint in result["display_endpoints"]:
             try:
@@ -304,6 +318,44 @@ def save_telemetry_channel():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     return jsonify(ok=True, channel=saved)
+
+
+@media.post("/api/media/phase-overlay")
+def assign_phase_overlay():
+    p = body()
+    try:
+        package_id = int(p.get("package_id"))
+        with connect() as db:
+            save_phase_overlay(
+                db, OPERATION_ID, str(p.get("phase", "")), package_id,
+                str(p.get("transition", "CUT")), now(),
+            )
+            event(
+                db, "OVERLAY_PHASE_MAP", "BROADCAST_ENGINEER", "INFO",
+                f"Broadcast phase {str(p.get('phase', '')).upper()} mapped to package {package_id}",
+            )
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, detail="Phase overlay assignment saved")
+
+
+@media.post("/api/media/overlay-selection")
+def change_overlay_selection():
+    p = body()
+    package_id = p.get("package_id")
+    try:
+        package_id = int(package_id) if package_id not in (None, "") else None
+        with connect() as db:
+            set_overlay_selection(
+                db, OPERATION_ID, str(p.get("mode", "AUTO")), package_id, now()
+            )
+            event(
+                db, "OVERLAY_SELECTION", "BROADCAST_DIRECTOR", "INFO",
+                f"Overlay selection mode changed to {str(p.get('mode', 'AUTO')).upper()}",
+            )
+    except (TypeError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, detail="Overlay selection updated")
 
 
 @media.post("/api/media/overlay-package")
