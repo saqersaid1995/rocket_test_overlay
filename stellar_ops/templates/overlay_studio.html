@@ -16,7 +16,7 @@
   <div class="context-title"><small>EXTERNAL BROADCAST SYSTEM</small><strong>OVERLAY STUDIO</strong></div>
   <div><small>OPERATION</small><strong id="operation">—</strong></div>
   <div><small>PHASE</small><strong id="phase">—</strong></div>
-  <div><small>CATALOG</small><strong id="catalog-count">—</strong></div>
+  <div><small>ACTIVE LAYOUT</small><strong id="active-layout">—</strong></div>
   <div><small>PACKAGES</small><strong id="package-count">—</strong></div>
   <div><small>{{system_identity.environment}}</small><strong>V{{system_identity.version}}</strong></div>
 </header>
@@ -27,26 +27,19 @@
   </aside>
   <main>
     <div class="page-title">
-      <div><span>PUBLIC BROADCAST / ROTPL REGISTRY</span><h1>Broadcast Overlay Studio</h1><p>Upload versioned layouts and bind public graphics to any registered telemetry channel.</p></div>
+      <div><span>PUBLIC BROADCAST / ROTPL REGISTRY</span><h1>Broadcast Overlay Studio</h1><p>Register layouts, assign one to every mission phase, then run automatically or override manually.</p></div>
       <span class="status" id="validation-status">REGISTRY READY</span>
     </div>
     <div class="studio-grid">
       <section class="panel upload-panel">
-        <header><div><b>UPLOAD ROTPL PACKAGE</b><small>VALIDATED · VERSIONED · IMMUTABLE</small></div></header>
+        <header><div><b>UPLOAD ROTPL PACKAGE</b><small>BUNDLED FILES LOAD AUTOMATICALLY · UPLOAD MORE HERE</small></div></header>
         <div class="body">
           <form id="package-form">
-            <label class="drop-zone" for="package-input">
-              <b>SELECT .ROTPL PACKAGE</b>
-              <span>manifest.json + layout.json + assets</span>
-              <input id="package-input" name="package" type="file" accept=".rotpl,.zip" required>
-            </label>
+            <label class="drop-zone" for="package-input"><b>SELECT .ROTPL PACKAGE</b><span>manifest.json + layout.json + assets</span><input id="package-input" name="package" type="file" accept=".rotpl,.zip" required></label>
             <div id="selected-package">No package selected</div>
             <button class="action" type="submit">VALIDATE &amp; REGISTER PACKAGE</button>
           </form>
-          <div class="rules">
-            <span>10 MB compressed limit</span><span>25 MB extracted limit</span>
-            <span>SHA-256 fingerprint</span><span>Public-data classification check</span>
-          </div>
+          <div class="rules"><span>10 MB compressed limit</span><span>25 MB extracted limit</span><span>SHA-256 fingerprint</span><span>Public-data classification check</span></div>
         </div>
       </section>
       <section class="panel channel-panel">
@@ -67,6 +60,21 @@
       <section class="panel packages-panel">
         <header><div><b>REGISTERED PACKAGES</b><small>EXACT VERSION + CHECKSUM</small></div></header>
         <div class="body" id="packages"></div>
+      </section>
+      <section class="panel selection-panel">
+        <header><div><b>LIVE LAYOUT SELECTION</b><small>AUTO BY PHASE · MANUAL OVERRIDE</small></div><span class="status" id="selection-mode-tag">AUTO</span></header>
+        <div class="body">
+          <form id="selection-form" class="selection-form">
+            <label><small>MODE</small><select id="selection-mode" name="mode"><option>AUTO</option><option>MANUAL</option></select></label>
+            <label><small>MANUAL PACKAGE</small><select id="manual-package" name="package_id"></select></label>
+            <button class="action" type="submit">APPLY SELECTION</button>
+          </form>
+          <div class="active-card" id="active-card"></div>
+        </div>
+      </section>
+      <section class="panel phases-panel">
+        <header><div><b>MISSION PHASE LAYOUTS</b><small>EACH PHASE MAY USE A DIFFERENT ROTPL PACKAGE</small></div><span id="phase-coverage"></span></header>
+        <div class="body"><div class="table-wrap phase-table"><table><thead><tr><th>PHASE</th><th>LAYOUT PACKAGE</th><th>TRANSITION</th><th>ACTION</th></tr></thead><tbody id="phase-assignments"></tbody></table></div></div>
       </section>
       <section class="panel catalog-panel">
         <header><div><b>TELEMETRY CHANNEL REGISTRY</b><small>MEASURED · DERIVED · ESTIMATED · EVENTS</small></div><input id="catalog-filter" placeholder="Filter channels"></header>
