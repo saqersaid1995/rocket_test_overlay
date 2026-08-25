@@ -7,6 +7,7 @@ import re
 import sqlite3
 import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -20,6 +21,13 @@ CANVAS_RE = re.compile(r"^(\d{3,5})x(\d{3,5})(?:@(\d{1,3}))?$")
 DATA_TYPES = {"number", "boolean", "text", "enum", "timestamp", "geo", "vector", "quaternion", "event", "series"}
 CLASSIFICATIONS = {"PUBLIC", "DELAYED_PUBLIC", "INTERNAL", "RESTRICTED"}
 SOURCE_KINDS = {"MEASURED", "DERIVED", "ESTIMATED", "EVENT", "SYSTEM"}
+BROADCAST_PHASES = (
+    "STANDBY", "CHECKOUT", "COUNTDOWN", "HOLD", "IGNITION", "LIFTOFF",
+    "POWERED_ASCENT", "FIRING", "BURNOUT", "COAST", "APOGEE", "DESCENT",
+    "RECOVERY", "POST_FIRE", "LANDING", "IMPACT", "COMPLETE", "CLOSED",
+    "ABORT",
+)
+PHASE_TRANSITIONS = {"CUT", "DISSOLVE", "FADE"}
 
 # Backward-compatible mapping for packages exported by the original Overlay Studio.
 LEGACY_BINDING_CHANNELS = {
@@ -159,6 +167,18 @@ CREATE TABLE IF NOT EXISTS overlay_packages(
  optional_channels_json TEXT NOT NULL, archive_blob BLOB NOT NULL,
  state TEXT NOT NULL, public_safe INTEGER NOT NULL DEFAULT 0,
  uploaded_at TEXT NOT NULL, UNIQUE(operation_id,template_id,version));
+CREATE TABLE IF NOT EXISTS bundled_overlay_imports(
+ operation_id TEXT NOT NULL, file_name TEXT NOT NULL, package_id INTEGER NOT NULL,
+ file_sha256 TEXT NOT NULL, imported_at TEXT NOT NULL,
+ PRIMARY KEY(operation_id,file_name));
+CREATE TABLE IF NOT EXISTS broadcast_phase_overlays(
+ operation_id TEXT NOT NULL, phase TEXT NOT NULL, package_id INTEGER NOT NULL,
+ transition TEXT NOT NULL DEFAULT 'CUT', enabled INTEGER NOT NULL DEFAULT 1,
+ updated_at TEXT NOT NULL, PRIMARY KEY(operation_id,phase));
+CREATE TABLE IF NOT EXISTS broadcast_overlay_selection(
+ operation_id TEXT PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'AUTO',
+ manual_package_id INTEGER, active_package_id INTEGER, active_phase TEXT,
+ updated_at TEXT NOT NULL);
 """
 
 
@@ -195,6 +215,12 @@ def ensure_broadcast_telemetry_schema(db: sqlite3.Connection, operation_id: str,
                 item["source_kind"], item["description"], stamp,
             ),
         )
+    db.execute(
+        """INSERT OR IGNORE INTO broadcast_overlay_selection(
+               operation_id,mode,manual_package_id,active_package_id,active_phase,updated_at)
+           VALUES(?,'AUTO',NULL,NULL,'STANDBY',?)""",
+        (operation_id, stamp),
+    )
 
 
 def channel_catalog(db: sqlite3.Connection, operation_id: str) -> list[dict[str, Any]]:
@@ -312,6 +338,167 @@ def _channel_ids(value: Any, field: str) -> list[str]:
         if channel_id not in result:
             result.append(channel_id)
     return result
+
+
+def install_bundled_packages(
+    db: sqlite3.Connection, operation_id: str, stamp: str,
+    package_dir: Path | None = None,
+) -> list[int]:
+    directory = package_dir or Path(__file__).resolve().parent.parent / "UPLOAD_TEMPLATE_HERE"
+    if not directory.is_dir():
+        return []
+    imported: list[int] = []
+    catalog = channel_catalog(db, operation_id)
+    for path in sorted(directory.glob("*.rotpl")):
+        known = db.execute(
+            """SELECT package_id FROM bundled_overlay_imports
+               WHERE operation_id=? AND file_name=?""",
+            (operation_id, path.name),
+        ).fetchone()
+        if known:
+            continue
+        package_bytes = path.read_bytes()
+        package = validate_package(path.name, package_bytes, catalog)
+        package_id = save_package(db, operation_id, package, stamp)
+        db.execute(
+            """INSERT INTO bundled_overlay_imports(
+                   operation_id,file_name,package_id,file_sha256,imported_at)
+               VALUES(?,?,?,?,?)""",
+            (operation_id, path.name, package_id, package.sha256, stamp),
+        )
+        imported.append(package_id)
+    first = db.execute(
+        """SELECT id FROM overlay_packages WHERE operation_id=?
+           ORDER BY public_safe DESC,id LIMIT 1""",
+        (operation_id,),
+    ).fetchone()
+    if first:
+        for phase in BROADCAST_PHASES:
+            db.execute(
+                """INSERT OR IGNORE INTO broadcast_phase_overlays(
+                       operation_id,phase,package_id,transition,enabled,updated_at)
+                   VALUES(?,?,?,'CUT',1,?)""",
+                (operation_id, phase, first["id"], stamp),
+            )
+    return imported
+
+
+def phase_overlay_assignments(db: sqlite3.Connection, operation_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        """SELECT mapping.phase,mapping.package_id,mapping.transition,mapping.enabled,
+                  package.template_id,package.name AS package_name,package.version,
+                  package.canvas,package.public_safe
+           FROM broadcast_phase_overlays mapping
+           JOIN overlay_packages package ON package.id=mapping.package_id
+           WHERE mapping.operation_id=? ORDER BY
+             CASE mapping.phase
+               WHEN 'STANDBY' THEN 1 WHEN 'CHECKOUT' THEN 2
+               WHEN 'COUNTDOWN' THEN 3 WHEN 'HOLD' THEN 4
+               WHEN 'IGNITION' THEN 5 WHEN 'LIFTOFF' THEN 6
+               WHEN 'POWERED_ASCENT' THEN 7 WHEN 'FIRING' THEN 8
+               WHEN 'BURNOUT' THEN 9 WHEN 'COAST' THEN 10
+               WHEN 'APOGEE' THEN 11 WHEN 'DESCENT' THEN 12
+               WHEN 'RECOVERY' THEN 13 WHEN 'POST_FIRE' THEN 14
+               WHEN 'LANDING' THEN 15 WHEN 'IMPACT' THEN 16
+               WHEN 'COMPLETE' THEN 17 WHEN 'CLOSED' THEN 18
+               ELSE 19 END""",
+        (operation_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_phase_overlay(
+    db: sqlite3.Connection, operation_id: str, phase: str,
+    package_id: int, transition: str, stamp: str,
+) -> None:
+    phase = phase.strip().upper()
+    transition = transition.strip().upper()
+    if phase not in BROADCAST_PHASES:
+        raise ValueError("unsupported broadcast mission phase")
+    if transition not in PHASE_TRANSITIONS:
+        raise ValueError("transition must be CUT, DISSOLVE or FADE")
+    package = db.execute(
+        """SELECT public_safe FROM overlay_packages
+           WHERE operation_id=? AND id=? AND state='VALIDATED'""",
+        (operation_id, package_id),
+    ).fetchone()
+    if not package:
+        raise ValueError("validated overlay package not found")
+    if not package["public_safe"]:
+        raise ValueError("internal or restricted overlay package cannot be assigned to public broadcast")
+    db.execute(
+        """INSERT INTO broadcast_phase_overlays(
+               operation_id,phase,package_id,transition,enabled,updated_at)
+           VALUES(?,?,?,?,1,?)
+           ON CONFLICT(operation_id,phase) DO UPDATE SET
+             package_id=excluded.package_id,transition=excluded.transition,
+             enabled=1,updated_at=excluded.updated_at""",
+        (operation_id, phase, package_id, transition, stamp),
+    )
+
+
+def resolve_overlay_selection(
+    db: sqlite3.Connection, operation_id: str, runtime_phase: str, stamp: str,
+) -> dict[str, Any]:
+    selection = db.execute(
+        "SELECT * FROM broadcast_overlay_selection WHERE operation_id=?",
+        (operation_id,),
+    ).fetchone()
+    mode = selection["mode"] if selection else "AUTO"
+    active = None
+    transition = "CUT"
+    if mode == "MANUAL" and selection and selection["manual_package_id"]:
+        active = db.execute(
+            "SELECT * FROM overlay_packages WHERE operation_id=? AND id=?",
+            (operation_id, selection["manual_package_id"]),
+        ).fetchone()
+    else:
+        mapping = db.execute(
+            """SELECT package.*,mapping.transition
+               FROM broadcast_phase_overlays mapping
+               JOIN overlay_packages package ON package.id=mapping.package_id
+               WHERE mapping.operation_id=? AND mapping.phase=? AND mapping.enabled=1""",
+            (operation_id, runtime_phase),
+        ).fetchone()
+        if mapping:
+            active = mapping
+            transition = mapping["transition"]
+    active_id = active["id"] if active else None
+    db.execute(
+        """UPDATE broadcast_overlay_selection
+           SET active_package_id=?,active_phase=?,updated_at=?
+           WHERE operation_id=?""",
+        (active_id, runtime_phase, stamp, operation_id),
+    )
+    return {
+        "mode": mode,
+        "active_phase": runtime_phase,
+        "active_package_id": active_id,
+        "transition": transition,
+        "package": dict(active) if active else None,
+    }
+
+
+def set_overlay_selection(
+    db: sqlite3.Connection, operation_id: str, mode: str,
+    package_id: int | None, stamp: str,
+) -> None:
+    mode = mode.strip().upper()
+    if mode not in {"AUTO", "MANUAL"}:
+        raise ValueError("overlay selection mode must be AUTO or MANUAL")
+    if mode == "MANUAL":
+        package = db.execute(
+            """SELECT 1 FROM overlay_packages
+               WHERE operation_id=? AND id=? AND state='VALIDATED' AND public_safe=1""",
+            (operation_id, package_id),
+        ).fetchone()
+        if not package:
+            raise ValueError("manual selection requires a public-safe validated package")
+    db.execute(
+        """UPDATE broadcast_overlay_selection
+           SET mode=?,manual_package_id=?,updated_at=? WHERE operation_id=?""",
+        (mode, package_id if mode == "MANUAL" else None, stamp, operation_id),
+    )
 
 
 def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str, Any]]) -> ValidatedPackage:
