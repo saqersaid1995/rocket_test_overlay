@@ -361,7 +361,7 @@ def save_package(db: sqlite3.Connection, operation_id: str,
                operation_id,template_id,name,version,sha256,canvas,manifest_json,
                layout_json,required_channels_json,optional_channels_json,
                archive_blob,state,public_safe,uploaded_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,'VALIDATED',?,?,?)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,'VALIDATED',?,?)
            ON CONFLICT(operation_id,template_id,version) DO UPDATE SET
              name=excluded.name,sha256=excluded.sha256,canvas=excluded.canvas,
              manifest_json=excluded.manifest_json,layout_json=excluded.layout_json,
