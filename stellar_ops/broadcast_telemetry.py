@@ -268,10 +268,12 @@ def _safe_members(archive: zipfile.ZipFile) -> None:
     total = 0
     seen: set[str] = set()
     for member in archive.infolist():
-        normalized = member.filename.replace("\\", "/")
+        normalized = member.filename.replace("\\", "/").rstrip("/")
         parts = normalized.split("/")
         if not normalized or normalized.startswith("/") or any(part in {"", ".", ".."} for part in parts):
             raise PackageValidationError("package contains an unsafe path")
+        if member.is_dir():
+            continue
         if member.flag_bits & 0x1:
             raise PackageValidationError("encrypted package members are not supported")
         total += member.file_size
