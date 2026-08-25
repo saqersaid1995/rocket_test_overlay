@@ -31,6 +31,13 @@ PHASE_TRANSITIONS = {"CUT", "DISSOLVE", "FADE"}
 
 # Backward-compatible mapping for packages exported by the original Overlay Studio.
 LEGACY_BINDING_CHANNELS = {
+    "pressure": "motor.chamber_pressure",
+    "thrust": "motor.thrust",
+    "mission_clock": "mission.elapsed_time",
+    "mission_time": "mission.elapsed_time",
+    "mission_time_s": "mission.elapsed_time",
+    "phase": "mission.phase",
+    "status": "mission.phase",
     "telemetry.pressure": "motor.chamber_pressure",
     "telemetry.thrust": "motor.thrust",
     "frame.mission_time_s": "mission.elapsed_time",
@@ -338,6 +345,10 @@ def _channel_ids(value: Any, field: str, legacy: bool = False) -> list[str]:
         channel_id = str(raw or "").strip().lower()
         if legacy:
             channel_id = _binding_channel(channel_id) or ""
+            # Visual-only Studio variables (colors, labels, asset toggles) may
+            # appear beside telemetry declarations. They are not data channels.
+            if not channel_id:
+                continue
         if not CHANNEL_ID_RE.fullmatch(channel_id):
             raise PackageValidationError(f"{field} contains an invalid channel identifier")
         if channel_id not in result:
