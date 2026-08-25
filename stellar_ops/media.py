@@ -13,6 +13,15 @@ from .control import OPERATION_ID, connect, event, init_control_db, snapshot
 from .broadcast_runtime import (load_stream_key, output_metrics, output_status, save_stream_key,
                                 start_output, start_program_recording, stop_outputs,
                                 stop_program_recording)
+from .broadcast_telemetry import (
+    PackageValidationError,
+    channel_catalog,
+    ensure_broadcast_telemetry_schema,
+    overlay_packages,
+    register_channel,
+    save_package,
+    validate_package,
+)
 
 media = Blueprint("media", __name__)
 
@@ -78,6 +87,7 @@ def init_media_db() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
         stamp = now()
+        ensure_broadcast_telemetry_schema(db, OPERATION_ID, stamp)
         if not db.execute("SELECT 1 FROM graph_definitions WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             graphs = [
                 ("Propulsion Live", ["motor.chamber_pressure", "motor.thrust"], 60, {"linked_cursor": True, "show_limits": True}),
@@ -162,6 +172,8 @@ def media_snapshot() -> dict:
         result = {name: rows(db, name) for name in (
             "graph_definitions", "display_pages", "display_endpoints", "camera_profiles",
             "video_walls", "published_templates", "broadcast_scenes", "stream_destinations", "broadcast_events")}
+        result["telemetry_catalog"] = channel_catalog(db, OPERATION_ID)
+        result["overlay_packages"] = overlay_packages(db, OPERATION_ID)
         session = db.execute("SELECT * FROM broadcast_sessions WHERE operation_id=?", (OPERATION_ID,)).fetchone()
         result["broadcast"] = dict(session)
         cutoff = datetime.now(timezone.utc).timestamp() - 30
@@ -200,6 +212,11 @@ def media_snapshot() -> dict:
 @media.get("/media")
 def media_console():
     return render_template("media.html", initial=media_snapshot(), display_slug=None)
+
+
+@media.get("/media/overlays")
+def overlay_studio():
+    return render_template("overlay_studio.html", initial=media_snapshot())
 
 
 @media.get("/display/<slug>")
@@ -272,6 +289,49 @@ def _scene_payload(scene) -> dict:
 
 def clean_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
+
+
+@media.post("/api/media/telemetry-channel")
+def save_telemetry_channel():
+    p = body()
+    try:
+        with connect() as db:
+            saved = register_channel(db, OPERATION_ID, p, now())
+            event(
+                db, "TELEMETRY_CATALOG", "BROADCAST_ENGINEER", "INFO",
+                f"Broadcast telemetry channel registered: {saved['channel_id']}",
+            )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, channel=saved)
+
+
+@media.post("/api/media/overlay-package")
+def upload_overlay_package():
+    uploaded = request.files.get("package")
+    if not uploaded or not uploaded.filename:
+        return jsonify(error="select a .rotpl package to upload"), 400
+    package_bytes = uploaded.read()
+    try:
+        with connect() as db:
+            catalog = channel_catalog(db, OPERATION_ID)
+            package = validate_package(uploaded.filename, package_bytes, catalog)
+            package_id = save_package(db, OPERATION_ID, package, now())
+            event(
+                db, "OVERLAY_PACKAGE", "BROADCAST_ENGINEER", "INFO",
+                f"ROTPL package validated: {package.template_id} v{package.version}",
+            )
+    except PackageValidationError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(
+        ok=True,
+        package_id=package_id,
+        template_id=package.template_id,
+        version=package.version,
+        sha256=package.sha256,
+        public_safe=package.public_safe,
+        detail=f"{package.name} v{package.version} validated",
+    )
 
 
 @media.post("/api/media/graph")
