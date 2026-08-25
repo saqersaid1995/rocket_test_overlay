@@ -21,6 +21,33 @@ DATA_TYPES = {"number", "boolean", "text", "enum", "timestamp", "geo", "vector",
 CLASSIFICATIONS = {"PUBLIC", "DELAYED_PUBLIC", "INTERNAL", "RESTRICTED"}
 SOURCE_KINDS = {"MEASURED", "DERIVED", "ESTIMATED", "EVENT", "SYSTEM"}
 
+# Backward-compatible mapping for packages exported by the original Overlay Studio.
+LEGACY_BINDING_CHANNELS = {
+    "telemetry.pressure": "motor.chamber_pressure",
+    "telemetry.thrust": "motor.thrust",
+    "frame.mission_time_s": "mission.elapsed_time",
+    "frame.mission_clock": "mission.elapsed_time",
+    "status.code": "mission.phase",
+    "status.label": "mission.phase",
+    "phases.active_id": "mission.phase",
+    "phases.active_index": "mission.phase",
+    "phases.progress": "mission.progress",
+}
+
+
+def _binding_channel(binding: object) -> str | None:
+    value = str(binding or "").strip().lower()
+    if CHANNEL_ID_RE.fullmatch(value):
+        return value
+    for prefix, channel_id in LEGACY_BINDING_CHANNELS.items():
+        if value == prefix or value.startswith(prefix + "."):
+            return channel_id
+    if value.startswith("channels."):
+        candidate = value[len("channels."):].rsplit(".", 1)[0]
+        if CHANNEL_ID_RE.fullmatch(candidate):
+            return candidate
+    return None
+
 
 def _channel(channel_id: str, label: str, unit: str, category: str,
              classification: str = "PUBLIC", data_type: str = "number",
@@ -297,12 +324,22 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
     with archive:
         _safe_members(archive)
         manifest = _read_json(archive, "manifest.json")
-        layout = _read_json(archive, "layout.json")
+        entry = str(manifest.get("entry", "layout.json")).replace("\\", "/")
+        if not entry or entry.startswith("/") or ".." in entry.split("/"):
+            raise PackageValidationError("manifest entry is unsafe")
+        layout = _read_json(archive, entry)
 
-    template_id = str(manifest.get("template_id", "")).strip().lower()
-    version = str(manifest.get("version", "")).strip()
-    name = str(manifest.get("name") or template_id).strip()
-    canvas = str(manifest.get("canvas", "")).strip().lower()
+    template_id = str(manifest.get("template_id") or manifest.get("id") or "").strip().lower()
+    version = str(manifest.get("version") or manifest.get("template_version") or "").strip()
+    name = str(manifest.get("name") or manifest.get("display_name") or template_id).strip()
+    canvas_value = manifest.get("canvas", "")
+    if isinstance(canvas_value, dict):
+        try:
+            canvas = f"{int(canvas_value['width'])}x{int(canvas_value['height'])}"
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PackageValidationError("manifest canvas dimensions are invalid") from exc
+    else:
+        canvas = str(canvas_value).strip().lower()
     if not TEMPLATE_ID_RE.fullmatch(template_id):
         raise PackageValidationError("manifest template_id is invalid")
     if not VERSION_RE.fullmatch(version):
@@ -313,8 +350,27 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
     if not name or len(name) > 100:
         raise PackageValidationError("manifest name is required and must be 100 characters or fewer")
 
-    required = _channel_ids(manifest.get("required_channels"), "required_channels")
-    optional = _channel_ids(manifest.get("optional_channels"), "optional_channels")
+    if "required_channels" in manifest:
+        required = _channel_ids(manifest.get("required_channels"), "required_channels")
+    else:
+        required = []
+        bindings = manifest.get("required_bindings", [])
+        if not isinstance(bindings, list):
+            raise PackageValidationError("required_bindings must be a list")
+        for binding in bindings:
+            channel_id = _binding_channel(binding)
+            if channel_id and channel_id not in required:
+                required.append(channel_id)
+    if "optional_channels" in manifest:
+        optional = _channel_ids(manifest.get("optional_channels"), "optional_channels")
+    else:
+        optional = []
+        variables = manifest.get("variables", {})
+        if isinstance(variables, dict):
+            for binding in variables:
+                channel_id = _binding_channel(binding)
+                if channel_id and channel_id not in required and channel_id not in optional:
+                    optional.append(channel_id)
     if set(required) & set(optional):
         raise PackageValidationError("a channel cannot be both required and optional")
 
@@ -325,19 +381,29 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
     for element in elements:
         if not isinstance(element, dict):
             raise PackageValidationError("every layout element must be an object")
-        binding = element.get("binding")
-        if isinstance(binding, str) and binding and binding not in declared:
-            raise PackageValidationError(f"layout binding is not declared in manifest: {binding}")
+        binding = element.get("binding", element.get("bind"))
         if isinstance(binding, dict):
-            channel_id = str(binding.get("channel", "")).strip().lower()
-            if channel_id and channel_id not in declared:
+            binding = binding.get("channel")
+        channel_id = _binding_channel(binding)
+        if channel_id and channel_id not in declared:
+            # Legacy Studio packages may declare a value as a variable rather
+            # than a required binding. Treat it as optional and preserve it.
+            if manifest.get("schema") == "rocket-overlay-template":
+                optional.append(channel_id)
+                declared.add(channel_id)
+            else:
                 raise PackageValidationError(f"layout binding is not declared in manifest: {channel_id}")
 
     by_id = {item["channel_id"]: item for item in catalog if item.get("enabled")}
     missing = sorted(set(required) - set(by_id))
     if missing:
         raise PackageValidationError("required telemetry channels are not registered: " + ", ".join(missing))
-    public_safe = all(by_id[channel]["classification"] in {"PUBLIC", "DELAYED_PUBLIC"} for channel in required)
+    declared_channels = set(required) | set(optional)
+    public_safe = bool(declared_channels) and all(
+        channel in by_id
+        and by_id[channel]["classification"] in {"PUBLIC", "DELAYED_PUBLIC"}
+        for channel in declared_channels
+    )
     digest = hashlib.sha256(package_bytes).hexdigest()
     return ValidatedPackage(
         template_id=template_id,
