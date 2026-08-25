@@ -324,15 +324,20 @@ def _read_json(archive: zipfile.ZipFile, name: str) -> dict[str, Any]:
     return value
 
 
-def _channel_ids(value: Any, field: str) -> list[str]:
+def _channel_ids(value: Any, field: str, legacy: bool = False) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
         raise PackageValidationError(f"{field} must be a list")
     result: list[str] = []
     for item in value:
-        channel_id = item.get("id") if isinstance(item, dict) else item
-        channel_id = str(channel_id or "").strip().lower()
+        if isinstance(item, dict):
+            raw = item.get("id") or item.get("channel") or item.get("binding")
+        else:
+            raw = item
+        channel_id = str(raw or "").strip().lower()
+        if legacy:
+            channel_id = _binding_channel(channel_id) or ""
         if not CHANNEL_ID_RE.fullmatch(channel_id):
             raise PackageValidationError(f"{field} contains an invalid channel identifier")
         if channel_id not in result:
@@ -550,7 +555,10 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
         raise PackageValidationError("manifest name is required and must be 100 characters or fewer")
 
     if "required_channels" in manifest:
-        required = _channel_ids(manifest.get("required_channels"), "required_channels")
+        required = _channel_ids(
+            manifest.get("required_channels"), "required_channels",
+            legacy=manifest.get("schema") == "rocket-overlay-template",
+        )
     else:
         required = []
         bindings = manifest.get("required_bindings", [])
@@ -561,7 +569,10 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
             if channel_id and channel_id not in required:
                 required.append(channel_id)
     if "optional_channels" in manifest:
-        optional = _channel_ids(manifest.get("optional_channels"), "optional_channels")
+        optional = _channel_ids(
+            manifest.get("optional_channels"), "optional_channels",
+            legacy=manifest.get("schema") == "rocket-overlay-template",
+        )
     else:
         optional = []
         variables = manifest.get("variables", {})
