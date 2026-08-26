@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -243,6 +244,7 @@ def event(db: sqlite3.Connection, kind: str, source: str, severity: str, message
 
 _INITIALIZED_DATABASES: set[str] = set()
 _INITIALIZATION_LOCK = threading.RLock()
+_COMMAND_LOCK = threading.RLock()
 
 
 def _database_key() -> str:
@@ -253,12 +255,24 @@ def _database_key() -> str:
 def init_control_db() -> None:
     key = _database_key()
     if key in _INITIALIZED_DATABASES:
+        # Bootstrap is expensive and runs once, but restart reconciliation is a
+        # lightweight safety invariant that must run on every request.
+        with connect() as db:
+            reconcile_runtime_boot(db, OPERATION_ID)
         return
     with _INITIALIZATION_LOCK:
         if key in _INITIALIZED_DATABASES:
             return
         _initialize_control_db()
         _INITIALIZED_DATABASES.add(key)
+
+
+def serialized_command(func):
+    @wraps(func)
+    def guarded(*args, **kwargs):
+        with _COMMAND_LOCK:
+            return func(*args, **kwargs)
+    return guarded
 
 
 def _initialize_control_db() -> None:
@@ -1193,6 +1207,7 @@ def complete_step(sequence: int):
 
 
 @control.post("/api/control/command")
+@serialized_command
 def command():
     body = request.get_json(silent=True) or {}
     action = str(body.get("action", "")).upper()
