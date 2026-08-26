@@ -50,10 +50,8 @@ LEGACY_BINDING_CHANNELS = {
 }
 
 
-def _binding_channel(binding: object) -> str | None:
+def _legacy_binding_channel(binding: object) -> str | None:
     value = str(binding or "").strip().lower()
-    # Legacy bindings also look like dotted canonical IDs, so translate them
-    # before accepting a value as a native channel identifier.
     for prefix, channel_id in LEGACY_BINDING_CHANNELS.items():
         if value == prefix or value.startswith(prefix + "."):
             return channel_id
@@ -61,6 +59,16 @@ def _binding_channel(binding: object) -> str | None:
         candidate = value[len("channels."):].rsplit(".", 1)[0]
         if CHANNEL_ID_RE.fullmatch(candidate):
             return candidate
+    return None
+
+
+def _binding_channel(binding: object) -> str | None:
+    value = str(binding or "").strip().lower()
+    # Legacy bindings also look like dotted canonical IDs, so translate them
+    # before accepting a value as a native channel identifier.
+    legacy = _legacy_binding_channel(value)
+    if legacy:
+        return legacy
     if CHANNEL_ID_RE.fullmatch(value):
         return value
     return None
@@ -592,7 +600,11 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
         variables = manifest.get("variables", {})
         if isinstance(variables, dict):
             for binding in variables:
-                channel_id = _binding_channel(binding)
+                channel_id = (
+                    _legacy_binding_channel(binding)
+                    if manifest.get("schema") == "rocket-overlay-template"
+                    else _binding_channel(binding)
+                )
                 if channel_id and channel_id not in required and channel_id not in optional:
                     optional.append(channel_id)
     if set(required) & set(optional):
@@ -608,11 +620,16 @@ def validate_package(filename: str, package_bytes: bytes, catalog: list[dict[str
         binding = element.get("binding", element.get("bind"))
         if isinstance(binding, dict):
             binding = binding.get("channel")
-        channel_id = _binding_channel(binding)
+        legacy_package = manifest.get("schema") == "rocket-overlay-template"
+        channel_id = (
+            _legacy_binding_channel(binding) if legacy_package
+            else _binding_channel(binding)
+        )
         if channel_id and channel_id not in declared:
-            # Legacy Studio packages may declare a value as a variable rather
-            # than a required binding. Treat it as optional and preserve it.
-            if manifest.get("schema") == "rocket-overlay-template":
+            # Legacy Studio packages may declare telemetry as a variable rather
+            # than a required binding. Visual text/color/image variables are
+            # deliberately ignored and never become telemetry channels.
+            if legacy_package:
                 optional.append(channel_id)
                 declared.add(channel_id)
             else:
