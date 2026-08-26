@@ -68,6 +68,24 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.get_by_role("button", name="Close alarm center").click()
         self.assert_no_javascript_errors()
 
+    def test_media_camera_form_survives_live_refresh(self):
+        self.page.goto(
+            f"{self.base_url}/media?view=sources",
+            wait_until="domcontentloaded",
+        )
+        mode = self.page.locator('#camera-form select[name="mode"]')
+        mode.wait_for()
+        mode.select_option("LIVE")
+        main_url = self.page.locator('#camera-form input[name="main_url"]')
+        main_url.fill("rtsp://192.0.2.10/main")
+
+        # The media snapshot refreshes every second. The active form must not
+        # be replaced while an operator is choosing a mode or entering a URL.
+        self.page.wait_for_timeout(2_200)
+        self.assertEqual(mode.input_value(), "LIVE")
+        self.assertEqual(main_url.input_value(), "rtsp://192.0.2.10/main")
+        self.assert_no_javascript_errors()
+
     def test_critical_controls_have_accessible_names(self):
         self.page.goto(f"{self.base_url}/workspace", wait_until="domcontentloaded")
         for name in (
