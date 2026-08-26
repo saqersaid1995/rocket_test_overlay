@@ -31,6 +31,26 @@
       <span class="status" id="validation-status">REGISTRY READY</span>
     </div>
     <div class="studio-grid">
+      <section class="panel preview-panel">
+        <header><div><b>LAYOUT PREVIEW PLAYER</b><small>SIMULATED CAMERA + LIVE ROTPL RENDER · NO DEVICE REQUIRED</small></div><span class="status" id="preview-status">SIMULATION</span></header>
+        <div class="body">
+          <div class="preview-toolbar">
+            <label><small>MISSION PHASE</small><select id="preview-phase"></select></label>
+            <label><small>LAYOUT PACKAGE</small><select id="preview-package"></select></label>
+            <label><small>BACKGROUND</small><select id="preview-mode"><option value="VIDEO">SIMULATED CAMERA</option><option value="REFERENCE">TEMPLATE REFERENCE</option><option value="OVERLAY">OVERLAY ONLY</option></select></label>
+            <button class="action" id="preview-play" type="button">PAUSE</button>
+            <button class="mini-action" id="preview-reset" type="button">RESET</button>
+            <button class="mini-action" id="preview-fullscreen" type="button">FULL SCREEN</button>
+          </div>
+          <div class="preview-stage" id="preview-stage"><img id="preview-image" alt="Rendered broadcast layout preview"><div class="preview-loading" id="preview-loading">RENDERING LAYOUT…</div></div>
+          <div class="preview-telemetry">
+            <label><small>MISSION TIME <output id="preview-time-value">T+00:01.2</output></small><input id="preview-time" type="range" min="-5" max="12" step="0.1" value="1.2"></label>
+            <label><small>PRESSURE <output id="preview-pressure-value">42.0 bar</output></small><input id="preview-pressure" type="range" min="0" max="80" step="0.5" value="42"></label>
+            <label><small>THRUST <output id="preview-thrust-value">720 N</output></small><input id="preview-thrust" type="range" min="0" max="1200" step="10" value="720"></label>
+          </div>
+          <p class="preview-note">SIMULATION PREVIEW — nothing here starts a camera, recording or external stream.</p>
+        </div>
+      </section>
       <section class="panel upload-panel">
         <header><div><b>UPLOAD ROTPL PACKAGE</b><small>BUNDLED FILES LOAD AUTOMATICALLY · UPLOAD MORE HERE</small></div></header>
         <div class="body">
