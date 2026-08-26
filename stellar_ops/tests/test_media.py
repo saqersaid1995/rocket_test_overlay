@@ -49,13 +49,35 @@ class MediaControlTests(unittest.TestCase):
         ]})
         self.assertEqual(invalid.status_code, 400)
 
-    def test_camera_live_mode_requires_rtsp_and_simulation_is_explicit(self):
-        invalid = self.client.post("/api/media/camera", json={"device_id": "CAM-01", "mode": "LIVE", "main_url": "http://camera"})
-        self.assertEqual(invalid.status_code, 400)
-        valid = self.client.post("/api/media/camera", json={"device_id": "CAM-01", "mode": "LIVE", "main_url": "rtsp://10.0.20.11/main", "preview_url": "rtsp://10.0.20.11/sub"})
-        self.assertEqual(valid.status_code, 200)
-        profile = next(x for x in self.client.get("/api/media/snapshot").get_json()["camera_profiles"] if x["device_id"] == "CAM-01")
-        self.assertEqual(profile["mode"], "LIVE")
+    def test_media_reuses_system_camera_registry_without_duplicate_rtsp(self):
+        rejected = self.client.post(
+            "/api/media/camera",
+            json={
+                "device_id": "CAM-01",
+                "mode": "LIVE",
+                "main_url": "rtsp://10.0.20.11/main",
+            },
+        )
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(
+            rejected.get_json()["configure_url"],
+            "/control?panel=cameras",
+        )
+
+        profile = next(
+            item
+            for item in self.client.get("/api/media/snapshot").get_json()[
+                "camera_profiles"
+            ]
+            if item["device_id"] == "CAM-01"
+        )
+        self.assertEqual(profile["source_owner"], "SYSTEM_CONFIGURATION")
+        self.assertIsNone(profile["main_url"])
+        self.assertIsNone(profile["preview_url"])
+        self.assertTrue(profile["stream_url"].endswith(
+            "/api/control/camera/CAM-01/stream.mjpg?profile=preview"
+        ))
+
 
     def test_broadcast_preview_program_emergency_and_stream_guard(self):
         state = self.client.get("/api/media/snapshot").get_json()

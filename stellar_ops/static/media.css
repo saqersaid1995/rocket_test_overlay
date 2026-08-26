@@ -27,3 +27,31 @@ main{width:100%;max-width:100%;min-width:0;padding:8px;overflow:hidden}
 .scene-bank>div{grid-template-columns:1fr 1fr}
 table{display:block;max-width:100%;overflow-x:auto}
 }
+
+
+/* Unified registered-camera source cards */
+.camera-source-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px;padding:14px}
+.camera-source-card{display:grid;grid-template-columns:minmax(260px,1.2fr) minmax(240px,1fr);border:1px solid var(--line);background:#06131a;min-height:240px}
+.source-video{position:relative;display:grid;place-items:center;overflow:hidden;background:#000;min-height:220px}
+.source-video img{width:100%;height:100%;object-fit:contain;display:block}
+.source-video>span{position:absolute;top:10px;right:10px}
+.empty-camera{color:var(--muted);align-content:center;gap:8px}
+.empty-camera b{font-size:24px;color:var(--text)}
+.camera-source-info{display:flex;flex-direction:column;gap:16px;padding:18px}
+.camera-source-info h3{margin:5px 0 0;font-size:20px}
+.source-facts{display:grid;gap:9px}
+.source-facts span{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:8px;color:var(--muted);font-size:11px}
+.source-facts b{color:var(--text);text-align:right}
+.source-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
+.source-actions a{border:1px solid var(--cyan-dim);padding:9px 11px;color:var(--cyan);text-decoration:none;font-size:11px}
+.monitor{position:relative}
+.monitor-offline{position:absolute;inset:0;display:grid;place-content:center;text-align:center;gap:8px;background:#02080b}
+.program-hud{position:absolute;inset:0;pointer-events:none}
+.graphics-label{position:absolute;right:12px;top:12px;padding:5px 8px;background:rgba(0,0,0,.72);color:var(--cyan);font-size:10px}
+.telemetry-strip{position:absolute;left:12px;right:12px;bottom:12px;display:flex;gap:8px;flex-wrap:wrap}
+.telemetry-strip span{min-width:150px;padding:8px 11px;background:rgba(0,7,10,.82);border-left:3px solid var(--cyan)}
+.telemetry-strip small,.telemetry-strip b{display:block}
+.telemetry-strip small{font-size:9px;color:var(--muted)}
+.check-field{align-self:end;display:flex!important;align-items:center;gap:8px;min-height:42px}
+.check-field input{width:auto}
+@media(max-width:820px){.camera-source-card{grid-template-columns:1fr}.camera-source-grid{grid-template-columns:1fr}.source-video{min-height:190px}}
