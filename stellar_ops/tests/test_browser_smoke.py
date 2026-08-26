@@ -68,23 +68,30 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.get_by_role("button", name="Close alarm center").click()
         self.assert_no_javascript_errors()
 
-    def test_media_uses_registered_camera_sources_and_scene_builder(self):
+    def test_broadcast_operator_workflow_is_focused_and_scene_driven(self):
         self.page.goto(
-            f"{self.base_url}/media?view=sources",
+            f"{self.base_url}/media",
             wait_until="domcontentloaded",
         )
-        self.page.get_by_text("CAMERA SOURCES", exact=True).wait_for()
-        self.page.get_by_text("SYSTEM CONFIGURATION", exact=True).first.wait_for()
-        self.assertEqual(self.page.locator("#camera-form").count(), 0)
+        self.page.get_by_role("heading", name="Broadcast Control").wait_for()
+        sidebar = self.page.locator(".broadcast-nav")
+        self.assertEqual(
+            sidebar.locator("button").all_inner_texts(),
+            ["01 Broadcast Control", "02 Scene Designer", "03 Outputs"],
+        )
+        self.page.get_by_text("CAMERAS & LIVE SCENES", exact=True).wait_for()
+        self.page.locator(".monitor-card.preview").wait_for()
+        self.page.locator(".monitor-card.program").wait_for()
 
-        self.page.goto(
-            f"{self.base_url}/media?view=broadcast-setup",
-            wait_until="domcontentloaded",
-        )
+        self.page.get_by_role("button", name="02 Scene Designer").click()
         self.page.locator("#scene-form").wait_for()
-        self.page.get_by_role("combobox", name="CAMERA SOURCE").wait_for()
-        self.page.get_by_role("combobox", name="APPROVED GRAPHICS").wait_for()
+        self.page.get_by_role("combobox", name="CAMERA").wait_for()
+        self.page.get_by_role("combobox", name="LAYOUT / OVERLAY").wait_for()
         self.page.get_by_role("combobox", name="PRIMARY TELEMETRY").wait_for()
+
+        self.page.get_by_role("button", name="03 Outputs").click()
+        self.page.get_by_text("EXTERNAL STREAMING", exact=True).wait_for()
+        self.assertEqual(self.page.locator("#camera-form").count(), 0)
         self.assert_no_javascript_errors()
 
 
