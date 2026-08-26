@@ -4,6 +4,8 @@ import io
 import json
 import re
 import sqlite3
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -32,6 +34,8 @@ from .broadcast_telemetry import (
 )
 
 media = Blueprint("media", __name__)
+_PREVIEW_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_PREVIEW_CACHE_LOCK = threading.Lock()
 
 
 def now() -> str:
@@ -90,8 +94,28 @@ CREATE TABLE IF NOT EXISTS broadcast_events(
 """
 
 
+_INITIALIZED_DATABASES: set[str] = set()
+_INITIALIZATION_LOCK = threading.RLock()
+
+
+def _database_key() -> str:
+    with connect() as db:
+        return str(db.execute("PRAGMA database_list").fetchone()[2])
+
+
 def init_media_db() -> None:
     init_control_db()
+    key = _database_key()
+    if key in _INITIALIZED_DATABASES:
+        return
+    with _INITIALIZATION_LOCK:
+        if key in _INITIALIZED_DATABASES:
+            return
+        _initialize_media_db()
+        _INITIALIZED_DATABASES.add(key)
+
+
+def _initialize_media_db() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
         add_column(db, "broadcast_scenes", "overlay_package_id INTEGER")
@@ -354,11 +378,26 @@ def overlay_preview_image(package_id: int):
         thrust = float(request.args.get("thrust", "720"))
         mode = str(request.args.get("mode", "VIDEO"))
         width = int(request.args.get("width", "960"))
-        with connect() as db:
-            image = render_overlay_preview(
-                db, OPERATION_ID, package_id, mission_time,
-                pressure, thrust, mode=mode, width=width,
-            )
+        # Preview and Program commonly request the same frame. Quantizing the
+        # live values avoids rendering an expensive ROTPL package several times
+        # per UI refresh while remaining visually real-time.
+        cache_key = (package_id, mode.upper(), width, round(mission_time, 1),
+                     round(pressure, 1), round(thrust, 0))
+        with _PREVIEW_CACHE_LOCK:
+            image = _PREVIEW_CACHE.get(cache_key)
+            if image is not None:
+                _PREVIEW_CACHE.move_to_end(cache_key)
+        if image is None:
+            with connect() as db:
+                image = render_overlay_preview(
+                    db, OPERATION_ID, package_id, mission_time,
+                    pressure, thrust, mode=mode, width=width,
+                )
+            with _PREVIEW_CACHE_LOCK:
+                _PREVIEW_CACHE[cache_key] = image
+                _PREVIEW_CACHE.move_to_end(cache_key)
+                while len(_PREVIEW_CACHE) > 48:
+                    _PREVIEW_CACHE.popitem(last=False)
     except (TypeError, ValueError, OverlayPreviewError) as exc:
         return jsonify(error=str(exc)), 400
     return send_file(
