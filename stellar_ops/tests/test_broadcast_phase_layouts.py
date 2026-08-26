@@ -88,6 +88,22 @@ class BroadcastPhaseLayoutTests(unittest.TestCase):
         self.assertEqual(selected["active_package_id"], package["id"])
         self.assertEqual(selected["package"]["template_id"], package["template_id"])
 
+        preview = self.client.get(
+            f"/api/media/overlay-preview/{package['id']}.png"
+            "?t=1.2&pressure=42&thrust=720&mode=VIDEO&width=640"
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.mimetype, "image/png")
+        self.assertTrue(preview.data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"))
+        self.assertGreater(len(preview.data), 20_000)
+
+        transparent = self.client.get(
+            f"/api/media/overlay-preview/{package['id']}.png"
+            "?t=-2&pressure=0&thrust=0&mode=OVERLAY&width=640"
+        )
+        self.assertEqual(transparent.status_code, 200)
+        self.assertTrue(transparent.data.startswith(b"\\x89PNG"))
+
     def test_public_layout_can_be_assigned_to_a_mission_phase(self):
         package_id = self.upload()
         response = self.client.post(
