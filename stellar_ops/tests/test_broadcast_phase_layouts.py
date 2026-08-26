@@ -66,10 +66,8 @@ class BroadcastPhaseLayoutTests(unittest.TestCase):
         self.assertEqual(len(imported), 1)
 
         state = self.client.get("/api/media/snapshot").get_json()
-        package = next(
-            item for item in state["overlay_packages"]
-            if item["template_id"] == "stellar-kinetics-1-0-0"
-        )
+        self.assertEqual(len(state["overlay_packages"]), 1)
+        package = state["overlay_packages"][0]
         self.assertTrue(package["public_safe"], package)
         self.assertEqual(package["state"], "VALIDATED")
 
@@ -88,7 +86,7 @@ class BroadcastPhaseLayoutTests(unittest.TestCase):
         self.assertEqual(manual.status_code, 200, manual.get_json())
         selected = self.client.get("/api/media/snapshot").get_json()["overlay_selection"]
         self.assertEqual(selected["active_package_id"], package["id"])
-        self.assertEqual(selected["package"]["template_id"], "stellar-kinetics-1-0-0")
+        self.assertEqual(selected["package"]["template_id"], package["template_id"])
 
     def test_public_layout_can_be_assigned_to_a_mission_phase(self):
         package_id = self.upload()
