@@ -4,6 +4,7 @@ import json
 import hashlib
 import re
 import sqlite3
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -755,8 +756,28 @@ def seed_demo_safety_foundation(db: sqlite3.Connection, stamp: str) -> None:
                 "Firing power removed; ignition circuit SAFE; countdown stopped","Cause identified, corrective action verified and all affected stations return GO","ANY STATION","RSO",1,"VERIFIED",stamp))
 
 
+_INITIALIZED_DATABASES: set[str] = set()
+_INITIALIZATION_LOCK = threading.RLock()
+
+
+def _database_key() -> str:
+    with connect() as db:
+        return str(db.execute("PRAGMA database_list").fetchone()[2])
+
+
 def init_operations_db() -> None:
     init_control_db()
+    key = _database_key()
+    if key in _INITIALIZED_DATABASES:
+        return
+    with _INITIALIZATION_LOCK:
+        if key in _INITIALIZED_DATABASES:
+            return
+        _initialize_operations_db()
+        _INITIALIZED_DATABASES.add(key)
+
+
+def _initialize_operations_db() -> None:
     stamp = utc_now()
     with connect() as db:
         db.executescript(SCHEMA)
