@@ -94,7 +94,7 @@ class BroadcastPhaseLayoutTests(unittest.TestCase):
         )
         self.assertEqual(preview.status_code, 200)
         self.assertEqual(preview.mimetype, "image/png")
-        self.assertTrue(preview.data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"))
+        self.assertTrue(preview.data.startswith(bytes.fromhex("89504e470d0a1a0a")))
         self.assertGreater(len(preview.data), 20_000)
 
         transparent = self.client.get(
@@ -102,7 +102,7 @@ class BroadcastPhaseLayoutTests(unittest.TestCase):
             "?t=-2&pressure=0&thrust=0&mode=OVERLAY&width=640"
         )
         self.assertEqual(transparent.status_code, 200)
-        self.assertTrue(transparent.data.startswith(b"\\x89PNG"))
+        self.assertTrue(transparent.data.startswith(bytes.fromhex("89504e47")))
 
     def test_public_layout_can_be_assigned_to_a_mission_phase(self):
         package_id = self.upload()
