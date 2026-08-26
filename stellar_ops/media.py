@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 import sqlite3
@@ -7,9 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, render_template, request, send_file
 
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
+from .overlay_preview import OverlayPreviewError, render_overlay_preview
 from .broadcast_runtime import (load_stream_key, output_metrics, output_status, save_stream_key,
                                 start_output, start_program_recording, stop_outputs,
                                 stop_program_recording)
@@ -306,6 +308,27 @@ def _scene_payload(scene) -> dict:
 
 def clean_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
+
+
+@media.get("/api/media/overlay-preview/<int:package_id>.png")
+def overlay_preview_image(package_id: int):
+    try:
+        mission_time = float(request.args.get("t", "1.2"))
+        pressure = float(request.args.get("pressure", "42"))
+        thrust = float(request.args.get("thrust", "720"))
+        mode = str(request.args.get("mode", "VIDEO"))
+        width = int(request.args.get("width", "960"))
+        with connect() as db:
+            image = render_overlay_preview(
+                db, OPERATION_ID, package_id, mission_time,
+                pressure, thrust, mode=mode, width=width,
+            )
+    except (TypeError, ValueError, OverlayPreviewError) as exc:
+        return jsonify(error=str(exc)), 400
+    return send_file(
+        io.BytesIO(image), mimetype="image/png",
+        max_age=0, download_name=f"overlay-preview-{package_id}.png",
+    )
 
 
 @media.post("/api/media/telemetry-channel")
