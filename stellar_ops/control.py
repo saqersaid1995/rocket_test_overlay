@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -240,7 +241,27 @@ def event(db: sqlite3.Connection, kind: str, source: str, severity: str, message
     )
 
 
+_INITIALIZED_DATABASES: set[str] = set()
+_INITIALIZATION_LOCK = threading.RLock()
+
+
+def _database_key() -> str:
+    """Return a stable key while still supporting per-test database overrides."""
+    return str(CONTROL_DB.resolve())
+
+
 def init_control_db() -> None:
+    key = _database_key()
+    if key in _INITIALIZED_DATABASES:
+        return
+    with _INITIALIZATION_LOCK:
+        if key in _INITIALIZED_DATABASES:
+            return
+        _initialize_control_db()
+        _INITIALIZED_DATABASES.add(key)
+
+
+def _initialize_control_db() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
         stamp = utc_now()
