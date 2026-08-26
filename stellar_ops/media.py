@@ -10,11 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Blueprint, current_app, jsonify, render_template, request, send_file
+from flask import (Blueprint, Response, current_app, jsonify, render_template,
+                   request, send_file, stream_with_context)
 
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
 from .database import add_column
 from .overlay_preview import OverlayPreviewError, render_overlay_preview
+from .camera_runtime import mjpeg_frames
+from .scene_compositor import (SceneCompositorError, compose_scene_jpeg,
+                               mjpeg_part, slate_jpeg)
 from .broadcast_runtime import (load_stream_key, output_metrics, output_status, save_stream_key,
                                 start_output, start_program_recording, stop_outputs,
                                 stop_program_recording)
@@ -403,6 +407,126 @@ def overlay_preview_image(package_id: int):
     return send_file(
         io.BytesIO(image), mimetype="image/png",
         max_age=0, download_name=f"overlay-preview-{package_id}.png",
+    )
+
+
+def _scene_stream(scene_id: int):
+    with connect() as db:
+        scene = db.execute(
+            "SELECT * FROM broadcast_scenes WHERE operation_id=? AND id=?",
+            (OPERATION_ID, scene_id),
+        ).fetchone()
+        if not scene:
+            raise SceneCompositorError("broadcast scene not found")
+        sources = json.loads(scene["sources_json"] or "[]")
+        camera_id = next((str(item.get("source")) for item in sources
+                          if item.get("kind") == "camera"), "")
+        camera = db.execute(
+            """SELECT d.id,d.endpoint,i.adapter_type,i.config_json,i.enabled
+               FROM devices d JOIN device_integrations i
+                 ON i.operation_id=d.operation_id AND i.device_id=d.id
+               WHERE d.operation_id=? AND d.id=? AND d.device_type='IP-CAMERA'""",
+            (OPERATION_ID, camera_id),
+        ).fetchone()
+        overlay_package_id = scene["overlay_package_id"]
+        config = json.loads(camera["config_json"] or "{}") if camera else {}
+
+    if not camera_id:
+        frame = mjpeg_part(slate_jpeg(scene["name"], scene["scene_type"]))
+        while True:
+            yield frame
+            import time
+            time.sleep(0.5)
+    if not camera or not camera["enabled"]:
+        raise SceneCompositorError("scene camera is not registered and enabled")
+
+    camera_frames = mjpeg_frames(
+        camera["id"], camera["adapter_type"],
+        config.get("endpoint") or camera["endpoint"] or "",
+        config.get("username", ""), "preview", config.get("profile", ""),
+    )
+    overlay = None
+    overlay_rendered_at = 0.0
+    for camera_part in camera_frames:
+        stamp = datetime.now(timezone.utc).timestamp()
+        if overlay_package_id and stamp - overlay_rendered_at >= 0.2:
+            state = snapshot()["telemetry"]
+            channels = state.get("channels", {})
+            pressure = channels.get("motor.chamber_pressure", {})
+            thrust = channels.get("motor.thrust", {})
+            pressure = pressure.get("value", 0) if isinstance(pressure, dict) else pressure
+            thrust = thrust.get("value", 0) if isinstance(thrust, dict) else thrust
+            with connect() as db:
+                overlay = render_overlay_preview(
+                    db, OPERATION_ID, overlay_package_id,
+                    float(state.get("elapsed", 0)), float(pressure or 0),
+                    float(thrust or 0), mode="OVERLAY", width=960,
+                )
+            overlay_rendered_at = stamp
+        yield mjpeg_part(compose_scene_jpeg(camera_part, overlay))
+
+
+@media.get("/api/media/scene/<int:scene_id>/stream.mjpg")
+def scene_stream(scene_id: int):
+    try:
+        stream = _scene_stream(scene_id)
+        # Resolve configuration errors before returning an endless response.
+        first = next(stream)
+    except (SceneCompositorError, StopIteration) as exc:
+        return jsonify(error=str(exc) or "scene produced no video"), 409
+
+    def frames():
+        yield first
+        yield from stream
+
+    return Response(
+        stream_with_context(frames()),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+def _broadcast_bus_stream(column: str):
+    if column not in {"preview_scene_id", "program_scene_id"}:
+        raise SceneCompositorError("invalid broadcast bus")
+    active_scene_id = None
+    active_stream = None
+    while True:
+        with connect() as db:
+            session = db.execute(
+                f"SELECT {column} AS scene_id FROM broadcast_sessions WHERE operation_id=?",
+                (OPERATION_ID,),
+            ).fetchone()
+        scene_id = session["scene_id"] if session else None
+        if not scene_id:
+            raise SceneCompositorError("broadcast bus has no assigned scene")
+        if scene_id != active_scene_id:
+            if active_stream is not None:
+                active_stream.close()
+            active_scene_id = scene_id
+            active_stream = _scene_stream(scene_id)
+        yield next(active_stream)
+
+
+@media.get("/api/media/bus/<bus>/stream.mjpg")
+def broadcast_bus_stream(bus: str):
+    column = {"preview": "preview_scene_id", "program": "program_scene_id"}.get(bus)
+    if not column:
+        return jsonify(error="broadcast bus must be preview or program"), 404
+    try:
+        stream = _broadcast_bus_stream(column)
+        first = next(stream)
+    except (SceneCompositorError, StopIteration) as exc:
+        return jsonify(error=str(exc) or "broadcast bus produced no video"), 409
+
+    def frames():
+        yield first
+        yield from stream
+
+    return Response(
+        stream_with_context(frames()),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 
 
