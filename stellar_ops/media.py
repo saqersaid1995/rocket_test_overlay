@@ -510,18 +510,69 @@ def save_video_wall():
 
 @media.post("/api/media/scene")
 def save_scene():
-    p = body(); name = str(p.get("name", "")).strip(); sources = p.get("sources", [])
-    if not name or not isinstance(sources, list): return jsonify(error="scene name and sources are required"), 400
+    p = body()
+    name = str(p.get("name", "")).strip()
+    scene_type = str(p.get("scene_type", "LIVE")).upper()
+    transition = str(p.get("transition", "CUT")).upper()
+    sources = p.get("sources", [])
+    public_safe = bool(p.get("public_safe", True))
+    if not name or not isinstance(sources, list):
+        return jsonify(error="scene name and controlled sources are required"), 400
+    if scene_type not in {"LIVE", "SLATE", "EMERGENCY"}:
+        return jsonify(error="scene type must be LIVE, SLATE or EMERGENCY"), 400
+    if transition not in {"CUT", "DISSOLVE"}:
+        return jsonify(error="transition must be CUT or DISSOLVE"), 400
+
+    camera_ids = [
+        str(source.get("source", "")).upper()
+        for source in sources
+        if source.get("kind") == "camera"
+    ]
+    telemetry_ids = [
+        str(source.get("source", ""))
+        for source in sources
+        if source.get("kind") == "telemetry_overlay"
+    ]
+    if scene_type == "LIVE" and not camera_ids:
+        return jsonify(error="a LIVE scene requires a registered camera source"), 400
+    if len(camera_ids) > 2:
+        return jsonify(error="a public scene supports no more than two camera sources"), 400
+
     with connect() as db:
+        for camera_id in camera_ids:
+            camera = db.execute("""SELECT 1 FROM devices d JOIN device_integrations i
+                ON i.operation_id=d.operation_id AND i.device_id=d.id
+                WHERE d.operation_id=? AND d.id=? AND d.device_type='IP-CAMERA'
+                  AND i.enabled=1 AND d.endpoint!='UNASSIGNED'""",
+                (OPERATION_ID, camera_id)).fetchone()
+            if not camera:
+                return jsonify(error=f"camera source is not registered and enabled: {camera_id}"), 409
+        for channel_id in telemetry_ids:
+            if not db.execute(
+                "SELECT 1 FROM channels WHERE operation_id=? AND id=?",
+                (OPERATION_ID, channel_id),
+            ).fetchone():
+                return jsonify(error=f"telemetry channel not found: {channel_id}"), 404
+
         template_id = p.get("template_id")
-        if template_id and not db.execute("SELECT 1 FROM published_templates WHERE operation_id=? AND id=?", (OPERATION_ID, template_id)).fetchone():
-            return jsonify(error="published template not found"), 404
+        if template_id:
+            template = db.execute(
+                "SELECT state FROM published_templates WHERE operation_id=? AND id=?",
+                (OPERATION_ID, template_id),
+            ).fetchone()
+            if not template:
+                return jsonify(error="published template not found"), 404
+            if public_safe and template["state"] not in {"PUBLISHED", "ACTIVE"}:
+                return jsonify(error="public scenes require an approved Studio template"), 409
+
         db.execute("""INSERT INTO broadcast_scenes(operation_id,name,scene_type,template_id,sources_json,transition,public_safe,updated_at)
             VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(operation_id,name) DO UPDATE SET scene_type=excluded.scene_type,
             template_id=excluded.template_id,sources_json=excluded.sources_json,transition=excluded.transition,
-            public_safe=excluded.public_safe,updated_at=excluded.updated_at""", (OPERATION_ID, name, str(p.get("scene_type", "LIVE")), template_id,
-            json.dumps(sources), str(p.get("transition", "CUT")), int(bool(p.get("public_safe", True))), now()))
-        event(db, "SCENE_CONFIG", "BROADCAST_DIRECTOR", "INFO", f"Broadcast scene saved: {name}")
+            public_safe=excluded.public_safe,updated_at=excluded.updated_at""",
+            (OPERATION_ID, name, scene_type, template_id, json.dumps(sources),
+             transition, int(public_safe), now()))
+        event(db, "SCENE_CONFIG", "BROADCAST_DIRECTOR", "INFO",
+              f"Broadcast scene saved: {name}")
     return jsonify(ok=True)
 
 
