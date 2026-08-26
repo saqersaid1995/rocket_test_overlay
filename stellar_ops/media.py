@@ -108,11 +108,27 @@ def init_media_db() -> None:
             for name, channels, window, options in graphs:
                 db.execute("INSERT INTO graph_definitions(operation_id,name,channels_json,time_window,options_json,updated_at) VALUES(?,?,?,?,?,?)",
                            (OPERATION_ID, name, json.dumps(channels), window, json.dumps(options), stamp))
-        cameras = db.execute("SELECT id,name FROM devices WHERE operation_id=? AND device_type='IP-CAMERA'", (OPERATION_ID,)).fetchall()
+        # Camera connection ownership lives in System Configuration. Media keeps only
+        # stable logical identities/capabilities and never duplicates RTSP credentials.
+        cameras = db.execute("""SELECT d.id,d.name,d.endpoint,COALESCE(i.enabled,0) AS integration_enabled
+            FROM devices d LEFT JOIN device_integrations i
+              ON i.operation_id=d.operation_id AND i.device_id=d.id
+            WHERE d.operation_id=? AND d.device_type='IP-CAMERA'""", (OPERATION_ID,)).fetchall()
         for camera in cameras:
-            db.execute("""INSERT OR IGNORE INTO camera_profiles(operation_id,device_id,name,mode,main_url,preview_url,capabilities_json,updated_at)
-                VALUES(?,?,?,'SIMULATION',NULL,NULL,?,?)""",
-                       (OPERATION_ID, camera["id"], camera["name"], json.dumps({"ptz": False, "iso_record": True}), stamp))
+            endpoint = str(camera["endpoint"] or "")
+            if not camera["integration_enabled"]:
+                camera_mode = "DISABLED"
+            elif endpoint.upper().startswith("SIM:") or endpoint.upper() == "UNASSIGNED":
+                camera_mode = "SIMULATION"
+            else:
+                camera_mode = "LIVE"
+            db.execute("""INSERT INTO camera_profiles(operation_id,device_id,name,mode,main_url,preview_url,capabilities_json,enabled,updated_at)
+                VALUES(?,?,?,?,NULL,NULL,?,?,?) ON CONFLICT(device_id) DO UPDATE SET
+                name=excluded.name,mode=excluded.mode,main_url=NULL,preview_url=NULL,
+                enabled=excluded.enabled,updated_at=excluded.updated_at""",
+                       (OPERATION_ID, camera["id"], camera["name"], camera_mode,
+                        json.dumps({"ptz": False, "iso_record": True}),
+                        int(camera_mode != "DISABLED"), stamp))
         if not db.execute("SELECT 1 FROM video_walls WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             db.execute("INSERT INTO video_walls(operation_id,name,grid,tiles_json,updated_at) VALUES(?,?,?,?,?)",
                        (OPERATION_ID, "Test Stand Video Wall", "2x2", json.dumps([
@@ -217,12 +233,17 @@ def media_snapshot() -> dict:
     result["devices"] = core["devices"]
     result["telemetry"] = core["telemetry"]
     device_map = {item["id"]: item for item in core["devices"]}
+    integration_map = {item["device_id"]: item for item in core.get("integrations", [])}
     for profile in result["camera_profiles"]:
         device = device_map.get(profile["device_id"], {})
+        integration = integration_map.get(profile["device_id"], {})
+        endpoint = str(device.get("endpoint") or "")
         profile["runtime_status"] = device.get("health", "NOT_CONNECTED")
         profile["recording"] = device.get("recording", "STOPPED")
-        profile["runtime_live"] = bool(device.get("endpoint") not in {None, "", "UNASSIGNED"}
+        profile["configured"] = bool(integration.get("enabled") and endpoint not in {"", "UNASSIGNED"})
+        profile["runtime_live"] = bool(profile["configured"]
                                        and device.get("health") in {"STREAMING", "RECONNECTING"})
+        profile["source_owner"] = "SYSTEM_CONFIGURATION"
         profile["stream_url"] = f"/api/control/camera/{profile['device_id']}/stream.mjpg?profile=preview"
         profile["popout_url"] = f"/control/camera/{profile['device_id']}/popout"
     return result
@@ -466,21 +487,12 @@ def route_display(code: str):
 
 @media.post("/api/media/camera")
 def save_camera():
-    p = body(); device_id = str(p.get("device_id", "")).strip().upper(); mode = str(p.get("mode", "SIMULATION")).upper()
-    if mode not in {"SIMULATION", "LIVE", "DISABLED"}: return jsonify(error="camera mode must be SIMULATION, LIVE or DISABLED"), 400
-    main_url = str(p.get("main_url", "")).strip() or None; preview_url = str(p.get("preview_url", "")).strip() or None
-    if mode == "LIVE" and (not main_url or urlparse(main_url).scheme.lower() != "rtsp"):
-        return jsonify(error="LIVE camera requires an RTSP main stream URL"), 400
-    with connect() as db:
-        device = db.execute("SELECT name FROM devices WHERE operation_id=? AND id=? AND device_type='IP-CAMERA'", (OPERATION_ID, device_id)).fetchone()
-        if not device: return jsonify(error="camera device must first exist in Engineering Setup"), 404
-        db.execute("""INSERT INTO camera_profiles(operation_id,device_id,name,mode,main_url,preview_url,capabilities_json,enabled,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,mode=excluded.mode,
-            main_url=excluded.main_url,preview_url=excluded.preview_url,capabilities_json=excluded.capabilities_json,
-            enabled=excluded.enabled,updated_at=excluded.updated_at""", (OPERATION_ID, device_id, str(p.get("name") or device["name"]), mode, main_url, preview_url,
-            json.dumps(p.get("capabilities", {})), int(mode != "DISABLED"), now()))
-        event(db, "CAMERA_CONFIG", "VIDEO_ENGINEER", "INFO", f"Camera {device_id} configured for {mode}")
-    return jsonify(ok=True)
+    # Kept as an explicit guard for older clients. Camera endpoints and secrets
+    # are configured once in System Configuration, never in Broadcast.
+    return jsonify(
+        error="camera configuration is owned by System Configuration",
+        configure_url="/control?panel=cameras",
+    ), 409
 
 
 @media.post("/api/media/video-wall")
