@@ -333,8 +333,13 @@ def _program_cameras(db, scene: dict) -> list[dict]:
 
 
 def _scene_payload(scene) -> dict:
-    return {"id":scene["id"],"name":scene["name"],"scene_type":scene["scene_type"],
-            "sources":json.loads(scene["sources_json"] or "[]")}
+    return {
+        "id": scene["id"],
+        "name": scene["name"],
+        "scene_type": scene["scene_type"],
+        "overlay_package_id": scene["overlay_package_id"],
+        "sources": json.loads(scene["sources_json"] or "[]"),
+    }
 
 
 def clean_slug(value: str) -> str:
