@@ -1,6 +1,6 @@
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let D=window.__MEDIA__,view=new URLSearchParams(location.search).get('view')||'live',samples=[];
+let D=window.__MEDIA__,view=new URLSearchParams(location.search).get('view')||'live',samples=[],refreshPending=false;
 view=({'overview':'live','sources':'live','broadcast-setup':'scene-designer','visuals':'scene-designer','displays':'outputs'}[view]||view);
 const tag=v=>`<span class="tag ${String(v).toLowerCase().replaceAll('_','-')}">${esc(v)}</span>`;
 const panel=(name,body,cls='',meta='')=>`<section class="panel ${cls}"><header><div><b>${name}</b>${meta?`<small>${meta}</small>`:''}</div></header><div class="body">${body}</div></section>`;
@@ -110,6 +110,8 @@ function operatorIsEditing(){
  return Boolean(active&&active.closest?.('#app form')&&active.matches('input,select,textarea'));
 }
 async function refresh(){
+ if(refreshPending||document.hidden)return;
+ refreshPending=true;
  try{
   const r=await fetch('/api/media/snapshot',{cache:'no-store'});D=await r.json();
   samples.push(D.telemetry.channels||{});if(samples.length>240)samples.shift();
@@ -117,10 +119,11 @@ async function refresh(){
   // one-second repaint closed native select menus and discarded field values.
   if(operatorIsEditing()){syncHeader();draw();return}
   render();
- }catch(e){toast(e.message,true)}
+ }catch(e){toast(e.message,true)}finally{refreshPending=false}
 }
 document.addEventListener('submit',event=>{const wall=event.target.closest('#wall-form');if(wall){event.preventDefault();const f=new FormData(wall),tiles=[...f.getAll('enabled_slot')].map(slot=>{const [kind,...source]=String(f.get(`source_${slot}`)).split('|');return{slot:Number(slot),kind,source:source.join('|')}});send('/api/media/video-wall',{name:f.get('name'),grid:f.get('grid'),tiles}).then(()=>{const selected=Number(f.get('operator_wall'))||D.video_walls.find(w=>w.name===f.get('name'))?.id||null;return send('/api/media/operator-video-preference',{wall_id:selected,grid:f.get('grid')})}).catch(e=>toast(e.message,true));return}const route=event.target.closest('#route-form');if(route){event.preventDefault();const f=new FormData(route),code=String(f.get('code')).trim().toUpperCase();send(`/api/media/display/${encodeURIComponent(code)}/route`,Object.fromEntries(f.entries())).catch(e=>toast(e.message,true))}});
 const endpointCode=new URLSearchParams(location.search).get('endpoint');
 async function heartbeat(){if(!window.__DISPLAY_SLUG__||!endpointCode)return;try{const r=await fetch(`/api/media/display/${encodeURIComponent(endpointCode)}/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),body=await r.json();if(r.ok&&body.page_slug&&body.page_slug!==window.__DISPLAY_SLUG__)location.replace(body.redirect)}catch(_){} }
 heartbeat();setInterval(heartbeat,10000);
+window.addEventListener('pagehide',()=>{$$('#app img[src*="/stream.mjpg"]').forEach(img=>img.removeAttribute('src'))});
 setInterval(refresh,1000);setInterval(syncHeader,250);render();
