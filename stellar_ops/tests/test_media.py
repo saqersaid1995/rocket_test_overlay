@@ -79,6 +79,41 @@ class MediaControlTests(unittest.TestCase):
         ))
 
 
+    def test_scene_designer_requires_registered_camera_and_valid_overlay(self):
+        missing_camera = self.client.post(
+            "/api/media/scene",
+            json={
+                "name": "Invalid Live",
+                "scene_type": "LIVE",
+                "sources": [],
+                "public_safe": True,
+            },
+        )
+        self.assertEqual(missing_camera.status_code, 400)
+
+        missing_overlay = self.client.post(
+            "/api/media/scene",
+            json={
+                "name": "CAM-01 Public",
+                "scene_type": "LIVE",
+                "overlay_package_id": 999999,
+                "sources": [
+                    {
+                        "kind": "camera",
+                        "source": "CAM-01",
+                        "slot": "camera_main",
+                    }
+                ],
+                "public_safe": True,
+            },
+        )
+        self.assertEqual(missing_overlay.status_code, 404)
+
+        state = self.client.get("/api/media/snapshot").get_json()
+        self.assertTrue(
+            all("overlay_package_id" in scene for scene in state["broadcast_scenes"])
+        )
+
     def test_broadcast_preview_program_emergency_and_stream_guard(self):
         state = self.client.get("/api/media/snapshot").get_json()
         target = next(x for x in state["broadcast_scenes"] if x["name"] == "Countdown")
