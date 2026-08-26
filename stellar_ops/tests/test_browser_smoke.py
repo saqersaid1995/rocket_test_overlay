@@ -76,7 +76,10 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.get_by_role("heading", name="Broadcast Control").wait_for()
         sidebar = self.page.locator(".broadcast-nav")
         self.assertEqual(
-            sidebar.locator("button").all_inner_texts(),
+            [
+                " ".join(label.split())
+                for label in sidebar.locator("button").all_inner_texts()
+            ],
             ["01 Broadcast Control", "02 Scene Designer", "03 Outputs"],
         )
         self.page.get_by_text("CAMERAS & LIVE SCENES", exact=True).wait_for()
