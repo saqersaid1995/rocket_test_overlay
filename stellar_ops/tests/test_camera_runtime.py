@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from stellar_ops import camera_runtime
 
 class CameraRuntimeTests(unittest.TestCase):
     def setUp(self):
+        camera_runtime.shutdown_shared_ingests()
         camera_runtime._statuses.clear()
         camera_runtime._secret_presence.clear()
 
@@ -80,6 +82,39 @@ class CameraRuntimeTests(unittest.TestCase):
             stopped = camera_runtime.stop_camera_recordings(42)
             self.assertEqual(stopped[0]["state"], "RECORDED")
             self.assertEqual(Path(stopped[0]["file"]).read_bytes(), b"matroska-video")
+
+    def test_browser_consumers_share_one_camera_ingest_session(self):
+        source_started = threading.Event()
+        release_source = threading.Event()
+        sessions = []
+
+        def fake_source(*_args):
+            sessions.append("opened")
+            source_started.set()
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\nshared\r\n"
+            release_source.wait(timeout=2)
+
+        with patch("stellar_ops.camera_runtime._camera_source_frames", side_effect=fake_source):
+            first = camera_runtime.mjpeg_frames(
+                "CAM-01", "ONVIF", "http://camera", "operator", "preview"
+            )
+            self.assertEqual(next(first)[-8:], b"shared\r\n")
+            self.assertTrue(source_started.wait(timeout=1))
+
+            second = camera_runtime.mjpeg_frames(
+                "CAM-01", "ONVIF", "http://camera", "operator", "preview"
+            )
+            self.assertEqual(next(second)[-8:], b"shared\r\n")
+
+            status = camera_runtime.shared_ingest_status()
+            self.assertEqual(len(status), 1)
+            self.assertEqual(status[0]["subscribers"], 2)
+            self.assertEqual(status[0]["source_sessions"], 1)
+            self.assertEqual(len(sessions), 1)
+
+            first.close()
+            second.close()
+            release_source.set()
 
 
 if __name__ == "__main__":

@@ -21,6 +21,9 @@ _recorders: dict[str, dict] = {}
 _recorder_lock = threading.Lock()
 _runtime_events: list[dict] = []
 _event_lock = threading.Lock()
+_ingest_lock = threading.RLock()
+_ingests: dict[tuple[str, str], "_SharedCameraIngest"] = {}
+INGEST_IDLE_SECONDS = float(os.environ.get("STELLAR_CAMERA_INGEST_IDLE_SECONDS", "3"))
 
 
 @dataclass(frozen=True)
@@ -546,8 +549,8 @@ def test_camera(device_id: str, adapter: str, endpoint: str, username: str,
         return result
 
 
-def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str,
-                 profile: str = "preview", discovery_profile: str = ""):
+def _camera_source_frames(device_id: str, adapter: str, endpoint: str, username: str,
+                          profile: str = "preview", discovery_profile: str = ""):
     try:
         import cv2
     except ImportError:
@@ -607,3 +610,140 @@ def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str,
             capture.release()
         time.sleep(min(2.0, 0.2 * max(1, failures)))
     _set_status(device_id, "DISCONNECTED", "camera reconnect limit reached")
+
+
+class _SharedCameraIngest:
+    """One decoded camera session fanned out to every browser consumer.
+
+    The previous implementation opened one RTSP/OpenCV session per ``<img>``.
+    Broadcast Control can show the same camera in Preview, Program and the shot
+    deck, so that design multiplied camera sessions and could exhaust both the
+    camera and the browser connection pool.  This broker owns one source
+    generator per camera/profile and publishes its latest encoded frame.
+    """
+
+    def __init__(self, device_id: str, adapter: str, endpoint: str, username: str,
+                 profile: str, discovery_profile: str):
+        self.device_id = device_id.upper()
+        self.profile = profile
+        self.source_args = (self.device_id, adapter, endpoint, username,
+                            profile, discovery_profile)
+        self.condition = threading.Condition(threading.RLock())
+        self.latest: bytes | None = None
+        self.sequence = 0
+        self.subscribers = 0
+        self.idle_since: float | None = None
+        self.stopped = False
+        self.source_sessions = 0
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"camera-ingest-{self.device_id}-{profile}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _publish_status(self) -> None:
+        _set_status(
+            self.device_id,
+            camera_status(self.device_id).get("status", "CONNECTING"),
+            camera_status(self.device_id).get("message", "shared camera ingest active"),
+            ingest_profile=self.profile,
+            ingest_subscribers=self.subscribers,
+            ingest_source_sessions=self.source_sessions,
+        )
+
+    def _run(self) -> None:
+        self.source_sessions += 1
+        self._publish_status()
+        try:
+            for frame in _camera_source_frames(*self.source_args):
+                with self.condition:
+                    if (self.subscribers == 0 and self.idle_since is not None
+                            and time.monotonic() - self.idle_since >= INGEST_IDLE_SECONDS):
+                        break
+                    self.latest = frame
+                    self.sequence += 1
+                    self.condition.notify_all()
+        finally:
+            with self.condition:
+                self.stopped = True
+                self.condition.notify_all()
+            with _ingest_lock:
+                key = (self.device_id, self.profile)
+                if _ingests.get(key) is self:
+                    _ingests.pop(key, None)
+            self._publish_status()
+
+    def subscribe(self):
+        with self.condition:
+            self.subscribers += 1
+            self.idle_since = None
+            last_sequence = 0
+            self._publish_status()
+        try:
+            while True:
+                with self.condition:
+                    self.condition.wait_for(
+                        lambda: self.sequence > last_sequence or self.stopped,
+                        timeout=10,
+                    )
+                    if self.sequence <= last_sequence:
+                        if self.stopped:
+                            return
+                        continue
+                    frame = self.latest
+                    last_sequence = self.sequence
+                if frame is not None:
+                    yield frame
+        finally:
+            with self.condition:
+                self.subscribers = max(0, self.subscribers - 1)
+                if self.subscribers == 0:
+                    self.idle_since = time.monotonic()
+                self._publish_status()
+
+
+def shared_ingest_status() -> list[dict]:
+    with _ingest_lock:
+        ingests = list(_ingests.values())
+    result = []
+    for ingest in ingests:
+        with ingest.condition:
+            result.append({
+                "device_id": ingest.device_id,
+                "profile": ingest.profile,
+                "subscribers": ingest.subscribers,
+                "source_sessions": ingest.source_sessions,
+                "sequence": ingest.sequence,
+                "running": ingest.thread.is_alive() and not ingest.stopped,
+            })
+    return result
+
+
+def shutdown_shared_ingests() -> None:
+    """Test/process-shutdown helper; subscribers terminate on their next wait."""
+    with _ingest_lock:
+        ingests = list(_ingests.values())
+        _ingests.clear()
+    for ingest in ingests:
+        with ingest.condition:
+            ingest.stopped = True
+            ingest.condition.notify_all()
+
+
+def mjpeg_frames(device_id: str, adapter: str, endpoint: str, username: str,
+                 profile: str = "preview", discovery_profile: str = ""):
+    device_id = device_id.upper()
+    profile = "main" if profile == "main" else "preview"
+    key = (device_id, profile)
+    with _ingest_lock:
+        ingest = _ingests.get(key)
+        if ingest is None or ingest.stopped:
+            ingest = _SharedCameraIngest(
+                device_id, adapter, endpoint, username, profile, discovery_profile
+            )
+            _ingests[key] = ingest
+            ingest.start()
+    yield from ingest.subscribe()
