@@ -94,16 +94,10 @@ class MediaControlTests(unittest.TestCase):
         missing_overlay = self.client.post(
             "/api/media/scene",
             json={
-                "name": "CAM-01 Public",
-                "scene_type": "LIVE",
+                "name": "Invalid Overlay Slate",
+                "scene_type": "SLATE",
                 "overlay_package_id": 999999,
-                "sources": [
-                    {
-                        "kind": "camera",
-                        "source": "CAM-01",
-                        "slot": "camera_main",
-                    }
-                ],
+                "sources": [],
                 "public_safe": True,
             },
         )
