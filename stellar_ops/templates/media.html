@@ -5,12 +5,10 @@
 <body class="{% if display_slug %}output-only{% endif %}">
 {% if not display_slug %}{% set active_area = 'displays' %}{% set section_label = 'DISPLAYS & BROADCAST' %}{% include "partials/global_nav.html" %}{% endif %}
 <header class="mast {% if not display_slug %}context-mast{% endif %}">{% if display_slug %}<div class="brand"><b>SK</b><span>STELLAR MISSION & TEST CONTROL<small>DISPLAY OUTPUT</small></span></div>{% else %}<div class="context-title"><small>DISPLAY, VIDEO &amp; BROADCAST SYSTEM</small><strong>BROADCAST CONTROL</strong></div>{% endif %}<div><small>OPERATION</small><strong id="operation">—</strong></div><div><small>PHASE</small><strong id="phase">—</strong></div><div><small>BROADCAST</small><strong id="broadcast-state">—</strong></div><div><small>UTC</small><strong id="utc">—</strong></div><div><small>{{system_identity.environment}}</small><strong>V{{system_identity.version}}</strong></div></header>
-<div class="shell"><aside>
-  <section><small>OPERATIONS</small><button data-view="overview" class="active"><i>01</i> Control Room</button></section>
-  <section><small>INPUTS</small><button data-view="sources"><i>02</i> Sources</button></section>
-  <section><small>COMPOSITION</small><button data-view="visuals"><i>03</i> Visualizations</button><button data-view="displays"><i>04</i> Display Layouts</button></section>
-  <section><small>PUBLIC GRAPHICS</small><a href="/media/overlays"><i>05</i> Overlay Studio</a></section>
-  <section><small>PRODUCTION</small><button data-view="live"><i>06</i> Live Production</button><button data-view="broadcast-setup"><i>07</i> Broadcast Setup</button></section>
+<div class="shell"><aside class="broadcast-nav">
+  <section><small>ON-AIR</small><button data-view="live" class="active"><i>01</i> Broadcast Control</button></section>
+  <section><small>PREPARE</small><button data-view="scene-designer"><i>02</i> Scene Designer</button><button data-view="outputs"><i>03</i> Outputs</button></section>
+  <section><small>ENGINEERING</small><a href="/control"><i>↗</i> Camera Setup</a><a href="/media/overlays"><i>↗</i> Overlay Packages</a></section>
  </aside><main id="app"></main></div><div id="toast"></div>
 <script>window.__MEDIA__={{initial|tojson}};window.__DISPLAY_SLUG__={{display_slug|tojson}};</script><script src="{{url_for('static',filename='media.js')}}"></script>
 </body></html>

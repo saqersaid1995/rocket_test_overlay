@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, current_app, jsonify, render_template, request, send_file
 
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
+from .database import add_column
 from .overlay_preview import OverlayPreviewError, render_overlay_preview
 from .broadcast_runtime import (load_stream_key, output_metrics, output_status, save_stream_key,
                                 start_output, start_program_recording, stop_outputs,
@@ -93,6 +94,7 @@ def init_media_db() -> None:
     init_control_db()
     with connect() as db:
         db.executescript(SCHEMA)
+        add_column(db, "broadcast_scenes", "overlay_package_id INTEGER")
         stamp = now()
         ensure_broadcast_telemetry_schema(db, OPERATION_ID, stamp)
         # Unit tests create many isolated databases; browser acceptance and
@@ -142,6 +144,8 @@ def init_media_db() -> None:
                 VALUES(?,?,?,?,?,?,?,?,?)""", (OPERATION_ID, "STUDIO-LAUNCH", "Launch Broadcast", "1.0.0", "UNPUBLISHED-STUDIO-REFERENCE", "1920x1080@30",
                     json.dumps(["camera_main", "camera_pip", "mission_clock", "lower_third", "telemetry_primary"]), "REFERENCE", stamp))
         template = db.execute("SELECT id FROM published_templates WHERE operation_id=? ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
+        overlay = db.execute("""SELECT id FROM overlay_packages WHERE operation_id=?
+            AND state='VALIDATED' AND public_safe=1 ORDER BY id LIMIT 1""", (OPERATION_ID,)).fetchone()
         if not db.execute("SELECT 1 FROM broadcast_scenes WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             scenes = [
                 ("Standby", "SLATE", [{"kind": "title", "value": "QUALIFICATION TEST — STANDBY"}], "CUT"),
@@ -151,8 +155,14 @@ def init_media_db() -> None:
                 ("Emergency", "EMERGENCY", [{"kind": "title", "value": "TRANSMISSION PAUSED"}], "CUT"),
             ]
             for name, kind, sources, transition in scenes:
-                db.execute("""INSERT INTO broadcast_scenes(operation_id,name,scene_type,template_id,sources_json,transition,public_safe,updated_at)
-                    VALUES(?,?,?,?,?,?,1,?)""", (OPERATION_ID, name, kind, template["id"], json.dumps(sources), transition, stamp))
+                db.execute("""INSERT INTO broadcast_scenes(operation_id,name,scene_type,template_id,overlay_package_id,sources_json,transition,public_safe,updated_at)
+                    VALUES(?,?,?,?,?,?,?,1,?)""", (OPERATION_ID, name, kind, template["id"],
+                    overlay["id"] if overlay and kind == "LIVE" else None,
+                    json.dumps(sources), transition, stamp))
+        if overlay:
+            db.execute("""UPDATE broadcast_scenes SET overlay_package_id=?
+                WHERE operation_id=? AND scene_type='LIVE' AND overlay_package_id IS NULL""",
+                (overlay["id"], OPERATION_ID))
         # Operational graph definitions belong to control-room displays. Broadcast Program
         # consumes only slots explicitly exposed by an immutable Studio template.
         for stored in db.execute("SELECT id,sources_json FROM broadcast_scenes WHERE operation_id=?", (OPERATION_ID,)).fetchall():
@@ -323,8 +333,13 @@ def _program_cameras(db, scene: dict) -> list[dict]:
 
 
 def _scene_payload(scene) -> dict:
-    return {"id":scene["id"],"name":scene["name"],"scene_type":scene["scene_type"],
-            "sources":json.loads(scene["sources_json"] or "[]")}
+    return {
+        "id": scene["id"],
+        "name": scene["name"],
+        "scene_type": scene["scene_type"],
+        "overlay_package_id": scene["overlay_package_id"],
+        "sources": json.loads(scene["sources_json"] or "[]"),
+    }
 
 
 def clean_slug(value: str) -> str:
@@ -554,23 +569,34 @@ def save_scene():
             ).fetchone():
                 return jsonify(error=f"telemetry channel not found: {channel_id}"), 404
 
-        template_id = p.get("template_id")
-        if template_id:
-            template = db.execute(
-                "SELECT state FROM published_templates WHERE operation_id=? AND id=?",
-                (OPERATION_ID, template_id),
+        overlay_package_id = p.get("overlay_package_id")
+        if overlay_package_id:
+            package = db.execute(
+                """SELECT state,public_safe FROM overlay_packages
+                   WHERE operation_id=? AND id=?""",
+                (OPERATION_ID, overlay_package_id),
             ).fetchone()
-            if not template:
-                return jsonify(error="published template not found"), 404
-            if public_safe and template["state"] not in {"PUBLISHED", "ACTIVE"}:
-                return jsonify(error="public scenes require an approved Studio template"), 409
+            if not package:
+                return jsonify(error="overlay package not found"), 404
+            if package["state"] != "VALIDATED":
+                return jsonify(error="scene overlay must be a validated package"), 409
+            if public_safe and not package["public_safe"]:
+                return jsonify(error="public scenes require a public-safe overlay"), 409
 
-        db.execute("""INSERT INTO broadcast_scenes(operation_id,name,scene_type,template_id,sources_json,transition,public_safe,updated_at)
-            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(operation_id,name) DO UPDATE SET scene_type=excluded.scene_type,
-            template_id=excluded.template_id,sources_json=excluded.sources_json,transition=excluded.transition,
-            public_safe=excluded.public_safe,updated_at=excluded.updated_at""",
-            (OPERATION_ID, name, scene_type, template_id, json.dumps(sources),
-             transition, int(public_safe), now()))
+        db.execute("""INSERT INTO broadcast_scenes(
+                operation_id,name,scene_type,template_id,overlay_package_id,
+                sources_json,transition,public_safe,updated_at)
+            VALUES(?,?,?,NULL,?,?,?,?,?)
+            ON CONFLICT(operation_id,name) DO UPDATE SET
+                scene_type=excluded.scene_type,
+                template_id=NULL,
+                overlay_package_id=excluded.overlay_package_id,
+                sources_json=excluded.sources_json,
+                transition=excluded.transition,
+                public_safe=excluded.public_safe,
+                updated_at=excluded.updated_at""",
+            (OPERATION_ID, name, scene_type, overlay_package_id,
+             json.dumps(sources), transition, int(public_safe), now()))
         event(db, "SCENE_CONFIG", "BROADCAST_DIRECTOR", "INFO",
               f"Broadcast scene saved: {name}")
     return jsonify(ok=True)
