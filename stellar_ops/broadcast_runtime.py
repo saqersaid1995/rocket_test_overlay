@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import threading
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 from .camera_runtime import _ffmpeg_executable
@@ -15,6 +16,18 @@ _lock = threading.Lock()
 _outputs: dict[int, dict] = {}
 _secret_cache: dict[int, str] = {}
 _program_recording: dict | None = None
+_audio_config = {"device": "", "volume_db": 0.0, "muted": False, "av_sync_ms": 0}
+
+
+def configure_audio(device: str = "", volume_db: float = 0.0,
+                    muted: bool = False, av_sync_ms: int = 0) -> dict:
+    _audio_config.update(
+        device=str(device).strip(),
+        volume_db=max(-60.0, min(float(volume_db), 12.0)),
+        muted=bool(muted),
+        av_sync_ms=max(-2000, min(int(av_sync_ms), 2000)),
+    )
+    return dict(_audio_config)
 
 
 def audio_source() -> tuple[str, list[str]]:
@@ -24,7 +37,8 @@ def audio_source() -> tuple[str, list[str]]:
     This keeps recordings and RTMP outputs standards-compliant without claiming
     that an operator microphone is active.
     """
-    source = os.environ.get("STELLAR_BROADCAST_AUDIO_SOURCE", "").strip()
+    source = (_audio_config.get("device") or
+              os.environ.get("STELLAR_BROADCAST_AUDIO_SOURCE", "")).strip()
     if not source:
         return "SILENCE", ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
     if source.startswith("rtsp://"):
@@ -91,6 +105,22 @@ def probe_program_bus(timeout: float = 6.0) -> dict:
         raise RuntimeError(f"Program Bus preflight failed: {exc}") from exc
 
 
+def probe_destination_network(ingest_url: str, timeout: float = 4.0) -> dict:
+    """Verify DNS/TCP reachability of the configured public ingest endpoint."""
+    parsed = urlparse(ingest_url)
+    if parsed.scheme not in {"rtmp", "rtmps"} or not parsed.hostname:
+        raise RuntimeError("stream destination is not a valid RTMP/RTMPS endpoint")
+    port = parsed.port or (443 if parsed.scheme == "rtmps" else 1935)
+    started = time.monotonic()
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=timeout):
+            pass
+    except OSError as exc:
+        raise RuntimeError(f"stream destination network preflight failed: {exc}") from exc
+    return {"host": parsed.hostname, "port": port,
+            "latency_ms": round((time.monotonic() - started) * 1000, 1)}
+
+
 def _program_command(cameras: list[dict], scene: dict, target: str,
                      source_url: str | None = None) -> list[str]:
     """Encode the already-composited Program Bus; never bypass it for RTSP."""
@@ -99,6 +129,10 @@ def _program_command(cameras: list[dict], scene: dict, target: str,
     fps = max(1, min(int(os.environ.get("STELLAR_BROADCAST_FPS", "30")), 60))
     bitrate = os.environ.get("STELLAR_BROADCAST_VIDEO_BITRATE", "4500k")
     _audio_name, audio_flags = audio_source()
+    sync_seconds = float(_audio_config.get("av_sync_ms", 0)) / 1000.0
+    if sync_seconds:
+        audio_flags = ["-itsoffset", f"{sync_seconds:.3f}", *audio_flags]
+    volume = -60.0 if _audio_config.get("muted") else float(_audio_config.get("volume_db", 0))
     command = [
         _ffmpeg_executable(), "-hide_banner", "-loglevel", "warning",
         "-nostats", "-progress", "pipe:2", "-fflags", "nobuffer",
@@ -107,6 +141,7 @@ def _program_command(cameras: list[dict], scene: dict, target: str,
         *audio_flags,
         "-vf", f"scale={width}:{height}:flags=lanczos,fps={fps}",
         "-map", "0:v:0", "-map", "1:a:0",
+        "-af", f"volume={volume:.1f}dB",
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
         "-r", str(fps), "-pix_fmt", "yuv420p", "-g", str(fps * 2),
         "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", "9000k",
@@ -160,7 +195,10 @@ def _supervise(destination: dict, cameras: list[dict], scene: dict, target: str)
             current.update(process=process, state="STREAMING", reconnects=attempt-1,
                            failovers=max(0, attempt - 1), encoder_generation=attempt,
                            started_at=current.get("started_at") or time.time(),
-                           encoder_started_at=time.time(), audio_source=audio_source()[0])
+                           encoder_started_at=time.time(), audio_source=audio_source()[0],
+                           audio_muted=bool(_audio_config.get("muted")),
+                           audio_volume_db=float(_audio_config.get("volume_db", 0)),
+                           av_sync_ms=int(_audio_config.get("av_sync_ms", 0)))
         if _capture_progress(destination_id, process) == 0:
             return
         with _lock:
@@ -180,13 +218,15 @@ def start_output(destination: dict, cameras: list[dict] | dict, scene: dict | No
     cameras = [cameras] if isinstance(cameras, dict) else cameras
     scene = scene or {"name": "PROGRAM", "sources": [{"kind":"camera","source":cameras[0]["device_id"]}]}
     target = destination["ingest_url"].rstrip("/") + "/" + quote(key, safe="-_~.")
+    network = probe_destination_network(destination["ingest_url"])
     with _lock:
         prior = _outputs.pop(destination_id, None)
         if prior and prior.get("process") and prior["process"].poll() is None:
             prior["process"].terminate()
         _outputs[destination_id] = {"process": None, "device_ids": [c["device_id"] for c in cameras],
                                     "state": "CONNECTING", "stop": False, "reconnects": 0,
-                                    "failovers": 0, "encoder_generation": 0}
+                                    "failovers": 0, "encoder_generation": 0,
+                                    "network_latency_ms": network["latency_ms"]}
     threading.Thread(target=_supervise, args=(destination, cameras, scene, target), daemon=True).start()
     return {"destination_id": destination_id, "state": "CONNECTING", "device_ids": [c["device_id"] for c in cameras]}
 
@@ -222,7 +262,16 @@ def output_metrics(destination_id: int) -> dict:
         item = _outputs.get(int(destination_id))
         if not item:
             return {"state":"STOPPED","reconnects":0,"uptime_seconds":0}
-        return {"state":item.get("state"),"reconnects":item.get("reconnects",0),
+        progress_age = (time.time() - item["last_progress_at"]
+                        if item.get("last_progress_at") else None)
+        state = item.get("state")
+        health = ("FAILED" if state == "FAILED" else
+                  "DEGRADED" if state == "RECONNECTING" or
+                  (progress_age is not None and progress_age > 5) else
+                  "HEALTHY" if state == "STREAMING" else "IDLE")
+        return {"state":state,"health":health,
+                "progress_age_seconds":round(progress_age, 1) if progress_age is not None else None,
+                "reconnects":item.get("reconnects",0),
                 "failovers":item.get("failovers",0),
                 "encoder_generation":item.get("encoder_generation",0),
                 "uptime_seconds":round(time.time()-item.get("started_at",time.time()),1),
@@ -230,7 +279,11 @@ def output_metrics(destination_id: int) -> dict:
                 "frame":item.get("frame"),"fps":item.get("fps"),
                 "bitrate":item.get("bitrate"),"drop_frames":item.get("drop_frames"),
                 "speed":item.get("speed"),"last_progress_at":item.get("last_progress_at"),
-                "audio_source":item.get("audio_source", audio_source()[0])}
+                "audio_source":item.get("audio_source", audio_source()[0]),
+                "audio_muted":item.get("audio_muted", bool(_audio_config.get("muted"))),
+                "audio_volume_db":item.get("audio_volume_db", float(_audio_config.get("volume_db", 0))),
+                "av_sync_ms":item.get("av_sync_ms", int(_audio_config.get("av_sync_ms", 0))),
+                "network_latency_ms":item.get("network_latency_ms")}
 
 
 def start_program_recording(cameras: list[dict], scene: dict, directory: Path) -> dict:
