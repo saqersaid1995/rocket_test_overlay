@@ -17,6 +17,25 @@ _secret_cache: dict[int, str] = {}
 _program_recording: dict | None = None
 
 
+def audio_source() -> tuple[str, list[str]]:
+    """Return the configured programme audio input and its FFmpeg input flags.
+
+    A silent stereo source is used when no mixer/camera audio URL is configured.
+    This keeps recordings and RTMP outputs standards-compliant without claiming
+    that an operator microphone is active.
+    """
+    source = os.environ.get("STELLAR_BROADCAST_AUDIO_SOURCE", "").strip()
+    if not source:
+        return "SILENCE", ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    if source.startswith("rtsp://"):
+        return source, ["-rtsp_transport", "tcp", "-i", source]
+    if source.startswith(("http://", "https://", "rtmp://", "rtmps://")):
+        return source, ["-i", source]
+    if os.name == "posix" and os.uname().sysname == "Darwin":
+        return source, ["-f", "avfoundation", "-i", f":{source}"]
+    return source, ["-f", "alsa", "-i", source]
+
+
 def _keyring():
     try:
         import keyring
@@ -79,15 +98,20 @@ def _program_command(cameras: list[dict], scene: dict, target: str,
     height = max(360, int(os.environ.get("STELLAR_BROADCAST_HEIGHT", "720")))
     fps = max(1, min(int(os.environ.get("STELLAR_BROADCAST_FPS", "30")), 60))
     bitrate = os.environ.get("STELLAR_BROADCAST_VIDEO_BITRATE", "4500k")
+    _audio_name, audio_flags = audio_source()
     command = [
         _ffmpeg_executable(), "-hide_banner", "-loglevel", "warning",
         "-nostats", "-progress", "pipe:2", "-fflags", "nobuffer",
         "-flags", "low_delay", "-thread_queue_size", "512",
         "-f", "mpjpeg", "-i", source_url or program_bus_url(),
+        *audio_flags,
         "-vf", f"scale={width}:{height}:flags=lanczos,fps={fps}",
+        "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
         "-r", str(fps), "-pix_fmt", "yuv420p", "-g", str(fps * 2),
-        "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", "9000k", "-an",
+        "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", "9000k",
+        "-c:a", "aac", "-b:a", os.environ.get("STELLAR_BROADCAST_AUDIO_BITRATE", "160k"),
+        "-ar", "48000", "-ac", "2", "-shortest",
     ]
     if target.lower().endswith(".mkv"):
         command += ["-f", "matroska", target]
@@ -117,7 +141,9 @@ def _capture_progress(destination_id: int, process) -> int:
 
 def _supervise(destination: dict, cameras: list[dict], scene: dict, target: str) -> None:
     destination_id = int(destination["id"])
-    for attempt in range(1, 6):
+    attempt = 0
+    while True:
+        attempt += 1
         with _lock:
             current = _outputs.get(destination_id)
             if not current or current.get("stop"):
@@ -131,16 +157,18 @@ def _supervise(destination: dict, cameras: list[dict], scene: dict, target: str)
             current = _outputs.get(destination_id)
             if not current or current.get("stop"):
                 process.terminate(); return
-            current.update(process=process, state="STREAMING", reconnects=attempt-1, started_at=time.time())
+            current.update(process=process, state="STREAMING", reconnects=attempt-1,
+                           failovers=max(0, attempt - 1), encoder_generation=attempt,
+                           started_at=current.get("started_at") or time.time(),
+                           encoder_started_at=time.time(), audio_source=audio_source()[0])
         if _capture_progress(destination_id, process) == 0:
             return
         with _lock:
             if destination_id in _outputs:
                 _outputs[destination_id]["state"] = "RECONNECTING"
-        time.sleep(min(attempt * 2, 10))
-    with _lock:
-        if destination_id in _outputs:
-            _outputs[destination_id]["state"] = "FAILED"
+        # Never abandon an on-air destination.  A bounded exponential backoff
+        # avoids a tight crash loop while still recovering after long outages.
+        time.sleep(min(2 ** min(attempt, 5), 30))
 
 
 def start_output(destination: dict, cameras: list[dict] | dict, scene: dict | None = None) -> dict:
@@ -157,7 +185,8 @@ def start_output(destination: dict, cameras: list[dict] | dict, scene: dict | No
         if prior and prior.get("process") and prior["process"].poll() is None:
             prior["process"].terminate()
         _outputs[destination_id] = {"process": None, "device_ids": [c["device_id"] for c in cameras],
-                                    "state": "CONNECTING", "stop": False, "reconnects": 0}
+                                    "state": "CONNECTING", "stop": False, "reconnects": 0,
+                                    "failovers": 0, "encoder_generation": 0}
     threading.Thread(target=_supervise, args=(destination, cameras, scene, target), daemon=True).start()
     return {"destination_id": destination_id, "state": "CONNECTING", "device_ids": [c["device_id"] for c in cameras]}
 
@@ -194,11 +223,14 @@ def output_metrics(destination_id: int) -> dict:
         if not item:
             return {"state":"STOPPED","reconnects":0,"uptime_seconds":0}
         return {"state":item.get("state"),"reconnects":item.get("reconnects",0),
+                "failovers":item.get("failovers",0),
+                "encoder_generation":item.get("encoder_generation",0),
                 "uptime_seconds":round(time.time()-item.get("started_at",time.time()),1),
                 "device_ids":item.get("device_ids",[]),
                 "frame":item.get("frame"),"fps":item.get("fps"),
                 "bitrate":item.get("bitrate"),"drop_frames":item.get("drop_frames"),
-                "speed":item.get("speed"),"last_progress_at":item.get("last_progress_at")}
+                "speed":item.get("speed"),"last_progress_at":item.get("last_progress_at"),
+                "audio_source":item.get("audio_source", audio_source()[0])}
 
 
 def start_program_recording(cameras: list[dict], scene: dict, directory: Path) -> dict:

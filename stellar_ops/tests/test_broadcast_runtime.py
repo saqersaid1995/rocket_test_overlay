@@ -32,6 +32,17 @@ class BroadcastRuntimeTests(unittest.TestCase):
         self.assertNotIn("rtsp://", joined)
         self.assertNotIn("operator", joined)
         self.assertIn("-progress pipe:2", joined)
+        self.assertNotIn(" -an", joined)
+        self.assertIn("-c:a aac", joined)
+        self.assertIn("anullsrc=r=48000:cl=stereo", joined)
+
+    def test_configured_audio_source_is_mapped_to_program(self):
+        with patch.dict("os.environ", {"STELLAR_BROADCAST_AUDIO_SOURCE": "rtsp://audio.local/live"}):
+            with patch("stellar_ops.broadcast_runtime._ffmpeg_executable", return_value="ffmpeg"):
+                command = broadcast_runtime._program_command([], {}, "output.mkv")
+        joined = " ".join(command)
+        self.assertIn("-rtsp_transport tcp -i rtsp://audio.local/live", joined)
+        self.assertIn("-map 1:a:0", joined)
 
     def test_program_bus_url_uses_local_application_port(self):
         with patch.dict("os.environ", {"PORT": "5111", "STELLAR_PROGRAM_BUS_URL": ""}):
@@ -65,6 +76,7 @@ class BroadcastRuntimeTests(unittest.TestCase):
         self.assertEqual(metrics["frame"], "90")
         self.assertEqual(metrics["fps"], "29.9")
         self.assertEqual(metrics["drop_frames"], "2")
+        self.assertEqual(metrics["failovers"], 0)
 
     def test_ffmpeg_records_decodable_video_from_program_bus(self):
         output = io.BytesIO()
