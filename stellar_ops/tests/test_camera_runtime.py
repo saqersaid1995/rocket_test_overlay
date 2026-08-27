@@ -25,6 +25,12 @@ class CameraRuntimeTests(unittest.TestCase):
             "rtsp://camera%20user:p%40ss%3A%2Fword@192.168.1.64:554/Streaming/Channels/102",
         )
 
+    def test_signal_loss_continuity_frame_is_a_real_jpeg(self):
+        part = camera_runtime._signal_lost_part("CAM-01")
+        payload = part.split(b"\r\n\r\n", 1)[1].rstrip(b"\r\n")
+        self.assertTrue(payload.startswith(b"\xff\xd8"))
+        self.assertTrue(payload.endswith(b"\xff\xd9"))
+
     def test_environment_secret_fallback(self):
         with patch.dict(os.environ, {"STELLAR_CAMERA_CAM_01_PASSWORD": "secret"}, clear=False):
             self.assertEqual(camera_runtime.load_password("CAM-01"), "secret")
