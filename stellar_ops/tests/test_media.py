@@ -129,6 +129,19 @@ class MediaControlTests(unittest.TestCase):
         self.assertTrue(state["broadcast"]["emergency"])
         self.assertEqual(next(x for x in state["broadcast_scenes"] if x["id"] == state["broadcast"]["program_scene_id"])["scene_type"], "EMERGENCY")
 
+    def test_broadcast_audio_sync_and_transition_settings_are_persistent(self):
+        response = self.client.post("/api/media/broadcast-settings", json={
+            "audio_device": "2", "audio_volume_db": -6.5, "audio_muted": True,
+            "av_sync_ms": 125, "transition_ms": 750, "min_upload_mbps": 12.5,
+        })
+        self.assertEqual(response.status_code, 200)
+        settings = self.client.get("/api/media/snapshot").get_json()["broadcast_settings"]
+        self.assertEqual(settings["audio_device"], "2")
+        self.assertEqual(settings["audio_volume_db"], -6.5)
+        self.assertEqual(settings["audio_muted"], 1)
+        self.assertEqual(settings["av_sync_ms"], 125)
+        self.assertEqual(settings["transition_ms"], 750)
+
 
 if __name__ == "__main__":
     unittest.main()
