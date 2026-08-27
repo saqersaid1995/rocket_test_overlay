@@ -94,6 +94,12 @@ class BrowserSmokeTests(unittest.TestCase):
 
         self.page.get_by_role("button", name="03 Outputs").click()
         self.page.get_by_text("EXTERNAL STREAMING", exact=True).wait_for()
+        self.page.get_by_text("PROGRAM AUDIO & TRANSITIONS", exact=True).wait_for()
+        self.page.get_by_role("spinbutton", name="LEVEL (dB)").fill("-4.5")
+        self.page.get_by_role("spinbutton", name="A/V SYNC (ms)").fill("120")
+        self.page.get_by_role("spinbutton", name="DISSOLVE (ms)").fill("650")
+        self.page.get_by_role("button", name="APPLY RUNTIME SETTINGS").click()
+        self.page.get_by_text("Broadcast runtime settings applied").wait_for()
         self.assertEqual(self.page.locator("#camera-form").count(), 0)
         self.assert_no_javascript_errors()
 
