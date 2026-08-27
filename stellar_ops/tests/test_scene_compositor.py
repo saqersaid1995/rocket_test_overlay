@@ -6,6 +6,7 @@ from PIL import Image
 from stellar_ops.scene_compositor import (
     SceneCompositorError,
     compose_scene_jpeg,
+    dissolve_jpegs,
     extract_mjpeg_jpeg,
     mjpeg_part,
     slate_jpeg,
@@ -44,6 +45,16 @@ class SceneCompositorTests(unittest.TestCase):
         image = Image.open(io.BytesIO(slate_jpeg("TECHNICAL HOLD", "SAFE OUTPUT")))
         self.assertEqual(image.size, (960, 540))
         self.assertEqual(image.format, "JPEG")
+
+    def test_dissolve_generates_real_intermediate_video_frames(self):
+        old = encoded(Image.new("RGB", (32, 18), "black"), "JPEG")
+        new = encoded(Image.new("RGB", (32, 18), "white"), "JPEG")
+        frames = dissolve_jpegs(old, new, 5)
+        self.assertEqual(len(frames), 5)
+        levels = [Image.open(io.BytesIO(frame)).convert("RGB").getpixel((10, 10))[0]
+                  for frame in frames]
+        self.assertEqual(levels, sorted(levels))
+        self.assertGreater(levels[-1], 240)
 
 
 if __name__ == "__main__":
