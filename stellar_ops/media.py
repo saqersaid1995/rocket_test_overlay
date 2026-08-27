@@ -16,10 +16,10 @@ from flask import (Blueprint, Response, current_app, jsonify, render_template,
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
 from .database import add_column
 from .overlay_preview import OverlayPreviewError, render_overlay_preview
-from .camera_runtime import mjpeg_frames
+from .camera_runtime import drain_runtime_events, mjpeg_frames
 from .scene_compositor import (SceneCompositorError, compose_scene_jpeg,
-                               mjpeg_part, slate_jpeg)
-from .broadcast_runtime import (load_stream_key, output_metrics, output_status,
+                               dissolve_jpegs, extract_mjpeg_jpeg, mjpeg_part, slate_jpeg)
+from .broadcast_runtime import (configure_audio, load_stream_key, output_metrics, output_status,
                                 probe_program_bus, program_recording_status,
                                 save_stream_key, start_output, start_program_recording, stop_outputs,
                                 stop_program_recording)
@@ -96,6 +96,11 @@ CREATE TABLE IF NOT EXISTS broadcast_sessions(
 CREATE TABLE IF NOT EXISTS broadcast_events(
  id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, occurred_at TEXT NOT NULL,
  action TEXT NOT NULL, detail TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS broadcast_settings(
+ operation_id TEXT PRIMARY KEY, audio_device TEXT NOT NULL DEFAULT '',
+ audio_volume_db REAL NOT NULL DEFAULT 0, audio_muted INTEGER NOT NULL DEFAULT 0,
+ av_sync_ms INTEGER NOT NULL DEFAULT 0, transition_ms INTEGER NOT NULL DEFAULT 500,
+ min_upload_mbps REAL NOT NULL DEFAULT 8, updated_at TEXT NOT NULL);
 """
 
 
@@ -206,6 +211,8 @@ def _initialize_media_db() -> None:
         first = db.execute("SELECT id FROM broadcast_scenes WHERE operation_id=? ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
         db.execute("""INSERT OR IGNORE INTO broadcast_sessions(operation_id,preview_scene_id,program_scene_id,state,recording,emergency,updated_at)
             VALUES(?,?,?,'OFF_AIR',0,0,?)""", (OPERATION_ID, first["id"], first["id"], stamp))
+        db.execute("INSERT OR IGNORE INTO broadcast_settings(operation_id,updated_at) VALUES(?,?)",
+                   (OPERATION_ID, stamp))
         if not db.execute("SELECT 1 FROM display_pages WHERE operation_id=?", (OPERATION_ID,)).fetchone():
             graph_ids = [row["id"] for row in db.execute("SELECT id FROM graph_definitions WHERE operation_id=? ORDER BY id", (OPERATION_ID,))]
             wall = db.execute("SELECT id FROM video_walls WHERE operation_id=? ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
@@ -235,6 +242,12 @@ def rows(db, table: str) -> list[dict]:
 
 def media_snapshot() -> dict:
     with connect() as db:
+        for runtime_event in drain_runtime_events():
+            db.execute(
+                "INSERT INTO broadcast_events(operation_id,occurred_at,action,detail) VALUES(?,?,?,?)",
+                (OPERATION_ID, now(), runtime_event.get("kind", "CAMERA_EVENT"),
+                 f"{runtime_event.get('device_id', 'CAMERA')}: {runtime_event.get('message', '')}"[:500]),
+            )
         result = {name: rows(db, name) for name in (
             "graph_definitions", "display_pages", "display_endpoints", "camera_profiles",
             "video_walls", "published_templates", "broadcast_scenes", "stream_destinations", "broadcast_events")}
@@ -243,6 +256,14 @@ def media_snapshot() -> dict:
         result["phase_overlay_assignments"] = phase_overlay_assignments(db, OPERATION_ID)
         session = db.execute("SELECT * FROM broadcast_sessions WHERE operation_id=?", (OPERATION_ID,)).fetchone()
         result["broadcast"] = dict(session)
+        settings = db.execute("SELECT * FROM broadcast_settings WHERE operation_id=?", (OPERATION_ID,)).fetchone()
+        result["broadcast_settings"] = dict(settings) if settings else {}
+        configure_audio(
+            result["broadcast_settings"].get("audio_device", ""),
+            result["broadcast_settings"].get("audio_volume_db", 0),
+            bool(result["broadcast_settings"].get("audio_muted", 0)),
+            result["broadcast_settings"].get("av_sync_ms", 0),
+        )
         result["broadcast"]["recording_runtime"] = program_recording_status()
         operation_state = db.execute(
             "SELECT state FROM operations WHERE id=?", (OPERATION_ID,)
@@ -346,6 +367,33 @@ def api_media_snapshot():
 
 def body() -> dict:
     return request.get_json(silent=True) or {}
+
+
+@media.post("/api/media/broadcast-settings")
+def save_broadcast_settings():
+    p = body()
+    try:
+        volume = max(-60.0, min(float(p.get("audio_volume_db", 0)), 12.0))
+        sync = max(-2000, min(int(p.get("av_sync_ms", 0)), 2000))
+        transition_ms = max(0, min(int(p.get("transition_ms", 500)), 3000))
+        min_upload = max(1.0, min(float(p.get("min_upload_mbps", 8)), 1000.0))
+    except (TypeError, ValueError):
+        return jsonify(error="broadcast settings contain invalid numeric values"), 400
+    device = str(p.get("audio_device", "")).strip()[:200]
+    muted = int(bool(p.get("audio_muted")))
+    with connect() as db:
+        db.execute("""INSERT INTO broadcast_settings(operation_id,audio_device,audio_volume_db,
+            audio_muted,av_sync_ms,transition_ms,min_upload_mbps,updated_at)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
+            audio_device=excluded.audio_device,audio_volume_db=excluded.audio_volume_db,
+            audio_muted=excluded.audio_muted,av_sync_ms=excluded.av_sync_ms,
+            transition_ms=excluded.transition_ms,min_upload_mbps=excluded.min_upload_mbps,
+            updated_at=excluded.updated_at""",
+            (OPERATION_ID, device, volume, muted, sync, transition_ms, min_upload, now()))
+        db.execute("INSERT INTO broadcast_events(operation_id,occurred_at,action,detail) VALUES(?,?,?,?)",
+                   (OPERATION_ID, now(), "SETTINGS", "Broadcast audio, sync and transition settings updated"))
+    configure_audio(device, volume, bool(muted), sync)
+    return jsonify(ok=True, detail="Broadcast runtime settings applied")
 
 
 def _program_cameras(db, scene: dict) -> list[dict]:
@@ -493,21 +541,46 @@ def _broadcast_bus_stream(column: str):
         raise SceneCompositorError("invalid broadcast bus")
     active_scene_id = None
     active_stream = None
+    last_part = None
     while True:
         with connect() as db:
             session = db.execute(
                 f"SELECT {column} AS scene_id FROM broadcast_sessions WHERE operation_id=?",
                 (OPERATION_ID,),
             ).fetchone()
+            settings = db.execute(
+                "SELECT transition_ms FROM broadcast_settings WHERE operation_id=?",
+                (OPERATION_ID,),
+            ).fetchone()
         scene_id = session["scene_id"] if session else None
         if not scene_id:
             raise SceneCompositorError("broadcast bus has no assigned scene")
         if scene_id != active_scene_id:
+            previous_part = last_part
             if active_stream is not None:
                 active_stream.close()
             active_scene_id = scene_id
             active_stream = _scene_stream(scene_id)
-        yield next(active_stream)
+            first_part = next(active_stream)
+            with connect() as db:
+                selected_scene = db.execute(
+                    "SELECT transition FROM broadcast_scenes WHERE id=?", (scene_id,)
+                ).fetchone()
+            transition = str(selected_scene["transition"] if selected_scene else "CUT").upper()
+            duration_ms = int(settings["transition_ms"] if settings else 500)
+            if previous_part and transition == "DISSOLVE" and duration_ms > 0:
+                steps = max(2, min(30, round(duration_ms / 33.3)))
+                for jpeg in dissolve_jpegs(
+                        extract_mjpeg_jpeg(previous_part),
+                        extract_mjpeg_jpeg(first_part), steps):
+                    last_part = mjpeg_part(jpeg)
+                    yield last_part
+                continue
+            last_part = first_part
+            yield first_part
+            continue
+        last_part = next(active_stream)
+        yield last_part
 
 
 @media.get("/api/media/bus/<bus>/stream.mjpg")

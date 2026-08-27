@@ -44,12 +44,30 @@ class BroadcastRuntimeTests(unittest.TestCase):
         self.assertIn("-rtsp_transport tcp -i rtsp://audio.local/live", joined)
         self.assertIn("-map 1:a:0", joined)
 
+    def test_audio_mixer_and_sync_are_applied_to_ffmpeg(self):
+        broadcast_runtime.configure_audio("3", -7.5, False, 180)
+        with patch("stellar_ops.broadcast_runtime._ffmpeg_executable", return_value="ffmpeg"):
+            command = broadcast_runtime._program_command([], {}, "output.mkv")
+        joined = " ".join(command)
+        self.assertIn("-itsoffset 0.180", joined)
+        self.assertIn("-af volume=-7.5dB", joined)
+        broadcast_runtime.configure_audio()
+
     def test_program_bus_url_uses_local_application_port(self):
         with patch.dict("os.environ", {"PORT": "5111", "STELLAR_PROGRAM_BUS_URL": ""}):
             self.assertEqual(
                 broadcast_runtime.program_bus_url(),
                 "http://127.0.0.1:5111/api/media/bus/program/stream.mjpg",
             )
+
+    @patch("stellar_ops.broadcast_runtime.socket.create_connection")
+    def test_destination_network_preflight_uses_secure_rtmp_port(self, connection):
+        connection.return_value.__enter__.return_value = object()
+        result = broadcast_runtime.probe_destination_network(
+            "rtmps://a.rtmps.youtube.com/live2"
+        )
+        connection.assert_called_once_with(("a.rtmps.youtube.com", 443), timeout=4.0)
+        self.assertEqual(result["port"], 443)
 
     def test_encoder_progress_is_exposed_as_real_runtime_metrics(self):
         class Progress:
