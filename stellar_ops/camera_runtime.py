@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import io
 import re
 import signal
 import subprocess
@@ -24,6 +25,20 @@ _event_lock = threading.Lock()
 _ingest_lock = threading.RLock()
 _ingests: dict[tuple[str, str], "_SharedCameraIngest"] = {}
 INGEST_IDLE_SECONDS = float(os.environ.get("STELLAR_CAMERA_INGEST_IDLE_SECONDS", "3"))
+
+
+def _signal_lost_part(device_id: str) -> bytes:
+    """Generate an explicit continuity frame; never disguise an outage as live."""
+    from PIL import Image, ImageDraw
+    image = Image.new("RGB", (960, 540), "#090f14")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 960, 8), fill="#ffb020")
+    draw.text((70, 215), "CAMERA SIGNAL LOST", fill="white")
+    draw.text((70, 255), f"{device_id} — AUTOMATIC RECOVERY ACTIVE", fill="#ffb020")
+    output = io.BytesIO()
+    image.save(output, "JPEG", quality=88)
+    return (b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n"
+            + output.getvalue() + b"\r\n")
 
 
 @dataclass(frozen=True)
@@ -573,7 +588,11 @@ def _camera_source_frames(device_id: str, adapter: str, endpoint: str, username:
     window_started = time.monotonic()
     window_frames = 0
     window_bytes = 0
-    while failures < 20:
+    # An active production source must not permanently give up after a fixed
+    # number of failures. It continues reconnecting until its final subscriber
+    # leaves; after 20 consecutive failures the state becomes DISCONNECTED but
+    # recovery attempts continue in the background.
+    while True:
         capture = cv2.VideoCapture(_credential_url(url, username, password), cv2.CAP_FFMPEG)
         try:
             while True:
@@ -584,7 +603,8 @@ def _camera_source_frames(device_id: str, adapter: str, endpoint: str, username:
                     outage_started = outage_started or time.time()
                     if failures == 1:
                         _runtime_event(device_id, "CAMERA_OUTAGE", "video frame loss detected; automatic reconnect started")
-                    _set_status(device_id, "RECONNECTING", "video frame lost; reconnecting", main_url=known.get("main_url"), preview_url=known.get("preview_url"), reconnects=reconnects, outage_started=outage_started)
+                    state = "DISCONNECTED" if failures >= 20 else "RECONNECTING"
+                    _set_status(device_id, state, "video frame lost; automatic recovery active", main_url=known.get("main_url"), preview_url=known.get("preview_url"), reconnects=reconnects, outage_started=outage_started)
                     break
                 failures = 0
                 encoded, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
@@ -608,8 +628,7 @@ def _camera_source_frames(device_id: str, adapter: str, endpoint: str, username:
                     yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + payload + b"\r\n"
         finally:
             capture.release()
-        time.sleep(min(2.0, 0.2 * max(1, failures)))
-    _set_status(device_id, "DISCONNECTED", "camera reconnect limit reached")
+        time.sleep(min(10.0, 0.25 * max(1, failures)))
 
 
 class _SharedCameraIngest:
@@ -683,18 +702,23 @@ class _SharedCameraIngest:
             last_sequence = 0
             self._publish_status()
         try:
+            outage_part = _signal_lost_part(self.device_id)
             while True:
                 with self.condition:
                     self.condition.wait_for(
                         lambda: self.sequence > last_sequence or self.stopped,
-                        timeout=10,
+                        timeout=1.0,
                     )
                     if self.sequence <= last_sequence:
                         if self.stopped:
                             return
-                        continue
-                    frame = self.latest
-                    last_sequence = self.sequence
+                        # Keep the production pipeline clocking during an RTSP
+                        # outage. The explicit slate prevents frozen imagery
+                        # from being mistaken for a live camera.
+                        frame = outage_part
+                    else:
+                        frame = self.latest
+                        last_sequence = self.sequence
                 if frame is not None:
                     yield frame
         finally:
