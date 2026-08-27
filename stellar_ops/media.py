@@ -19,8 +19,9 @@ from .overlay_preview import OverlayPreviewError, render_overlay_preview
 from .camera_runtime import mjpeg_frames
 from .scene_compositor import (SceneCompositorError, compose_scene_jpeg,
                                mjpeg_part, slate_jpeg)
-from .broadcast_runtime import (load_stream_key, output_metrics, output_status, save_stream_key,
-                                start_output, start_program_recording, stop_outputs,
+from .broadcast_runtime import (load_stream_key, output_metrics, output_status,
+                                probe_program_bus, program_recording_status,
+                                save_stream_key, start_output, start_program_recording, stop_outputs,
                                 stop_program_recording)
 from .broadcast_telemetry import (
     PackageValidationError,
@@ -242,6 +243,7 @@ def media_snapshot() -> dict:
         result["phase_overlay_assignments"] = phase_overlay_assignments(db, OPERATION_ID)
         session = db.execute("SELECT * FROM broadcast_sessions WHERE operation_id=?", (OPERATION_ID,)).fetchone()
         result["broadcast"] = dict(session)
+        result["broadcast"]["recording_runtime"] = program_recording_status()
         operation_state = db.execute(
             "SELECT state FROM operations WHERE id=?", (OPERATION_ID,)
         ).fetchone()
@@ -801,12 +803,8 @@ def broadcast_action():
             scene = scene or db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["preview_scene_id"],)).fetchone()
             if not scene: return jsonify(error="preview scene is not available"), 409
             db.execute("UPDATE broadcast_sessions SET program_scene_id=?,emergency=0,updated_at=? WHERE operation_id=?", (scene["id"], now(), OPERATION_ID)); detail = f"Program changed to {scene['name']} via {action}"
-            if session["state"] == "ON_AIR" and not current_app.config.get("TESTING"):
-                destinations = [dict(row) for row in db.execute("SELECT * FROM stream_destinations WHERE operation_id=? AND enabled=1", (OPERATION_ID,))]
-                cameras = _program_cameras(db, dict(scene))
-                stop_outputs()
-                for destination in destinations:
-                    start_output(destination, cameras, _scene_payload(scene))
+            # Encoders remain connected to the stable Program Bus. TAKE/CUT
+            # changes that bus and must never restart YouTube or recording.
         elif action == "EMERGENCY":
             emergency = db.execute("SELECT * FROM broadcast_scenes WHERE operation_id=? AND scene_type='EMERGENCY' ORDER BY id LIMIT 1", (OPERATION_ID,)).fetchone()
             db.execute("UPDATE broadcast_sessions SET program_scene_id=?,preview_scene_id=?,emergency=1,updated_at=? WHERE operation_id=?", (emergency["id"], emergency["id"], now(), OPERATION_ID)); detail = "Emergency slate taken to program"
@@ -819,8 +817,8 @@ def broadcast_action():
             if not current_app.config.get("TESTING"):
                 program_scene = db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["program_scene_id"],)).fetchone()
                 cameras = _program_cameras(db, dict(program_scene))
-                if not cameras: return jsonify(error="no authenticated camera is available for public program output"), 409
                 try:
+                    probe_program_bus()
                     started = [start_output(destination, cameras, _scene_payload(program_scene)) for destination in destinations]
                 except RuntimeError as exc:
                     stop_outputs()
@@ -838,8 +836,11 @@ def broadcast_action():
                 if value:
                     program_scene = db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["program_scene_id"],)).fetchone()
                     cameras = _program_cameras(db, dict(program_scene))
-                    if not cameras: return jsonify(error="no camera is available for Program recording"), 409
-                    start_program_recording(cameras, _scene_payload(program_scene), Path(current_app.instance_path) / "public-program")
+                    try:
+                        probe_program_bus()
+                        start_program_recording(cameras, _scene_payload(program_scene), Path(current_app.instance_path) / "public-program")
+                    except RuntimeError as exc:
+                        return jsonify(error=str(exc)), 409
                 else:
                     stop_program_recording()
             db.execute("UPDATE broadcast_sessions SET recording=?,updated_at=? WHERE operation_id=?", (value, now(), OPERATION_ID)); detail = action.replace("_", " ").title()
