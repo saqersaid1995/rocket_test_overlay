@@ -51,6 +51,24 @@ def mjpeg_part(jpeg: bytes) -> bytes:
             b"Cache-Control: no-store\r\n\r\n" + jpeg + b"\r\n")
 
 
+def dissolve_jpegs(old_jpeg: bytes, new_jpeg: bytes, steps: int) -> list[bytes]:
+    """Create real intermediate frames for a production dissolve."""
+    try:
+        old = Image.open(io.BytesIO(old_jpeg)).convert("RGB")
+        new = Image.open(io.BytesIO(new_jpeg)).convert("RGB")
+        if new.size != old.size:
+            new = new.resize(old.size, Image.Resampling.LANCZOS)
+        result = []
+        for index in range(1, max(2, min(int(steps), 30)) + 1):
+            frame = Image.blend(old, new, index / max(2, min(int(steps), 30)))
+            encoded = io.BytesIO()
+            frame.save(encoded, "JPEG", quality=88)
+            result.append(encoded.getvalue())
+        return result
+    except Exception as exc:
+        raise SceneCompositorError(f"scene dissolve failed: {exc}") from exc
+
+
 def slate_jpeg(title: str, subtitle: str = "STELLAR KINETICS",
                size: tuple[int, int] = (960, 540)) -> bytes:
     """Create an intentional broadcast slate as a real encoded video frame."""
