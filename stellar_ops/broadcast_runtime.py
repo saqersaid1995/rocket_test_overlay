@@ -141,7 +141,8 @@ def _program_command(cameras: list[dict], scene: dict, target: str,
         *audio_flags,
         "-vf", f"scale={width}:{height}:flags=lanczos,fps={fps}",
         "-map", "0:v:0", "-map", "1:a:0",
-        "-af", f"volume={volume:.1f}dB",
+        "-af", (f"volume={volume:.1f}dB,astats=metadata=1:reset=1,"
+                "ametadata=print:key=lavfi.astats.Overall.RMS_level:file='pipe\\:2'"),
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
         "-r", str(fps), "-pix_fmt", "yuv420p", "-g", str(fps * 2),
         "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", "9000k",
@@ -164,8 +165,11 @@ def _capture_progress(destination_id: int, process) -> int:
         if not line or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        if key not in {"frame", "fps", "bitrate", "drop_frames", "out_time_ms", "speed"}:
+        if key not in {"frame", "fps", "bitrate", "drop_frames", "out_time_ms", "speed",
+                       "lavfi.astats.Overall.RMS_level"}:
             continue
+        if key == "lavfi.astats.Overall.RMS_level":
+            key = "audio_rms_db"
         with _lock:
             item = _outputs.get(destination_id)
             if item is not None:
@@ -279,6 +283,7 @@ def output_metrics(destination_id: int) -> dict:
                 "frame":item.get("frame"),"fps":item.get("fps"),
                 "bitrate":item.get("bitrate"),"drop_frames":item.get("drop_frames"),
                 "speed":item.get("speed"),"last_progress_at":item.get("last_progress_at"),
+                "audio_rms_db":item.get("audio_rms_db"),
                 "audio_source":item.get("audio_source", audio_source()[0]),
                 "audio_muted":item.get("audio_muted", bool(_audio_config.get("muted"))),
                 "audio_volume_db":item.get("audio_volume_db", float(_audio_config.get("volume_db", 0))),
