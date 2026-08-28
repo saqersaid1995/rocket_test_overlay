@@ -83,6 +83,12 @@ class BrowserSmokeTests(unittest.TestCase):
             ["01 Broadcast Control", "02 Scene Designer", "03 Outputs"],
         )
         self.page.get_by_text("CAMERAS & LIVE SCENES", exact=True).wait_for()
+        self.page.get_by_text("GO-LIVE READINESS", exact=True).wait_for()
+        self.page.get_by_text("PROGRAM AUDIO & TRANSITION", exact=True).wait_for()
+        self.page.get_by_role("spinbutton", name="A/V SYNC").fill("120")
+        self.page.get_by_role("spinbutton", name="DISSOLVE").fill("650")
+        self.page.get_by_role("button", name="APPLY", exact=True).click()
+        self.page.get_by_text("Broadcast runtime settings applied").wait_for()
         self.page.locator(".monitor-card.preview").wait_for()
         self.page.locator(".monitor-card.program").wait_for()
 
@@ -94,12 +100,8 @@ class BrowserSmokeTests(unittest.TestCase):
 
         self.page.get_by_role("button", name="03 Outputs").click()
         self.page.get_by_text("EXTERNAL STREAMING", exact=True).wait_for()
-        self.page.get_by_text("PROGRAM AUDIO & TRANSITIONS", exact=True).wait_for()
-        self.page.get_by_role("spinbutton", name="LEVEL (dB)").fill("-4.5")
-        self.page.get_by_role("spinbutton", name="A/V SYNC (ms)").fill("120")
-        self.page.get_by_role("spinbutton", name="DISSOLVE (ms)").fill("650")
-        self.page.get_by_role("button", name="APPLY RUNTIME SETTINGS").click()
-        self.page.get_by_text("Broadcast runtime settings applied").wait_for()
+        self.page.get_by_text("SERVER AUDIO & NETWORK POLICY", exact=True).wait_for()
+        self.page.get_by_role("button", name="SAVE ENGINEERING SETTINGS").wait_for()
         self.assertEqual(self.page.locator("#camera-form").count(), 0)
         self.assert_no_javascript_errors()
 
