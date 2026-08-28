@@ -73,7 +73,8 @@ class BroadcastRuntimeTests(unittest.TestCase):
         class Progress:
             def __init__(self):
                 self.lines = iter(["frame=90\n", "fps=29.9\n", "bitrate=4480kbits/s\n",
-                                   "drop_frames=2\n", "speed=1.00x\n"])
+                                   "drop_frames=2\n", "lavfi.astats.Overall.RMS_level=-18.4\n",
+                                   "speed=1.00x\n"])
 
             def readline(self):
                 return next(self.lines, "")
@@ -94,6 +95,7 @@ class BroadcastRuntimeTests(unittest.TestCase):
         self.assertEqual(metrics["frame"], "90")
         self.assertEqual(metrics["fps"], "29.9")
         self.assertEqual(metrics["drop_frames"], "2")
+        self.assertEqual(metrics["audio_rms_db"], "-18.4")
         self.assertEqual(metrics["failovers"], 0)
 
     def test_ffmpeg_records_decodable_video_from_program_bus(self):
