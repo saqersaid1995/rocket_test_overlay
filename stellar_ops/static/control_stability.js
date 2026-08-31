@@ -2,7 +2,6 @@
   if (typeof render !== 'function') return;
 
   const originalRender = render;
-  let lastFullRender = 0;
   let lastStructure = '';
   let interactionUntil = 0;
   let pendingFullRender = false;
@@ -19,16 +18,24 @@
     return dialogOpen || editing || now() < interactionUntil;
   };
 
+  const setText = (selector, value) => {
+    const node = document.querySelector(selector);
+    if (node && node.textContent !== String(value)) node.textContent = String(value);
+  };
+
+  const setBadge = (node, value) => {
+    if (!node) return;
+    const text = String(value || 'UNKNOWN');
+    if (node.textContent !== text) node.textContent = text;
+    node.className = `badge ${text.toLowerCase().replaceAll('_','-')}`;
+  };
+
   const liveFieldsOnly = () => {
     try {
       const op = data?.operation || {};
       const t = data?.telemetry || {};
       const meta = t.meta || {};
       const record = data?.recording || { state: 'STOPPED' };
-      const setText = (selector, value) => {
-        const node = document.querySelector(selector);
-        if (node && node.textContent !== String(value)) node.textContent = String(value);
-      };
 
       setText('#state', op.state || 'UNKNOWN');
       const lamp = document.querySelector('#state-lamp');
@@ -45,8 +52,26 @@
       if (sourceMeta && t.source_mode === 'LIVE') {
         sourceMeta.textContent = `DEVICE ${meta.device_id || '—'} · SAMPLES ${meta.total_samples || 0} · GAPS ${meta.sequence_gaps || 0} · AGE ${meta.age_ms ?? '—'} ms`;
       }
+
+      const deviceById = Object.fromEntries((data?.devices || []).map(d => [d.id, d]));
+      document.querySelectorAll('#integrations-table tr').forEach(row => {
+        const id = row.querySelector('code')?.textContent?.trim();
+        const device = deviceById[id];
+        if (!device) return;
+        const badges = row.querySelectorAll('.badge');
+        if (badges[1]) setBadge(badges[1], device.health || 'UNKNOWN');
+      });
+
+      const channelById = Object.fromEntries((data?.channels || []).map(c => [c.id, c]));
+      document.querySelectorAll('#channel-integrations-table tr').forEach(row => {
+        const id = row.querySelector('code')?.textContent?.trim();
+        const channel = channelById[id];
+        if (!channel) return;
+        const badges = row.querySelectorAll('.badge');
+        if (badges[0]) setBadge(badges[0], channel.quality || 'UNKNOWN');
+      });
     } catch (_) {
-      // Full renderer remains authoritative if a live-only field is unavailable.
+      // A structural render will recover any markup that changed.
     }
   };
 
@@ -56,19 +81,19 @@
         mode: data?.operation?.mode,
         state: data?.operation?.state,
         stations: (data?.stations || []).map(x => [x.code, x.decision, x.operator_name]),
-        devices: (data?.devices || []).map(x => [x.id, x.enabled, x.health, x.recording, x.endpoint, x.protocol]),
-        integrations: (data?.integrations || []).map(x => [x.device_id, x.enabled, x.adapter_type, x.endpoint, x.last_test_status, x.last_test_at]),
-        channels: (data?.channels || []).map(x => [x.id, x.enabled, x.source_id, x.quality, x.warning, x.critical]),
+        devices: (data?.devices || []).map(x => [x.id, x.enabled, x.name, x.endpoint, x.protocol, x.required]),
+        integrations: (data?.integrations || []).map(x => [x.device_id, x.enabled, x.adapter_type, x.endpoint]),
+        channels: (data?.channels || []).map(x => [x.id, x.enabled, x.source_id, x.warning, x.critical, x.sample_rate]),
         channel_integrations: (data?.channel_integrations || []).map(x => [x.channel_id, x.raw_field, x.calibration_slope, x.calibration_intercept, x.required_for_commit]),
         steps: (data?.steps || []).map(x => [x.sequence, x.status]),
-        alarms: (data?.alarms || []).map(x => [x.id, x.state, x.priority]),
+        alarms: (data?.alarms || []).map(x => [x.id, x.state, x.priority, x.message]),
         events: (data?.events || []).slice(0, 8).map(x => x.sequence),
         replays: (data?.replays || []).map(x => [x.id, x.active, x.row_count]),
         diagnostic: [data?.latest_diagnostic?.id, data?.latest_diagnostic?.overall_status],
         backups: (data?.backups || []).map(x => [x.name || x.filename, x.created_at])
       });
     } catch (_) {
-      return String(Date.now());
+      return 'invalid';
     }
   };
 
@@ -76,18 +101,16 @@
     liveFieldsOnly();
     const signature = structureSignature();
     const structureChanged = signature !== lastStructure;
-    const fullRenderDue = now() - lastFullRender >= 2000;
+
+    if (!structureChanged) return;
 
     if (isInteractive()) {
-      pendingFullRender = pendingFullRender || structureChanged || fullRenderDue;
+      pendingFullRender = true;
       return;
     }
 
-    if (!structureChanged && !fullRenderDue && !pendingFullRender) return;
-
     const result = originalRender.apply(this, args);
-    lastStructure = signature;
-    lastFullRender = now();
+    lastStructure = structureSignature();
     pendingFullRender = false;
     return result;
   };
@@ -99,6 +122,8 @@
     if (event.target?.matches?.('button,input,select,textarea,[contenteditable="true"]')) markInteraction(900);
   }, true);
   document.addEventListener('submit', () => markInteraction(1400), true);
+
+  lastStructure = structureSignature();
 
   setInterval(() => {
     if (pendingFullRender && !isInteractive()) render();
