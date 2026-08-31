@@ -20,9 +20,7 @@
     );
   };
 
-  // Camera stream identity must describe the stream topology, not changing live
-  // metrics such as FPS/latency/time offset. Otherwise every telemetry update
-  // destroys the <img> element and forces a new MJPEG connection.
+  // Stream identity must not depend on changing metrics such as FPS or latency.
   if (originalCameraPanelSignature) {
     cameraPanelSignature = function stableCameraPanelSignature() {
       return `${data.operation.mode}:${cameraColumns}:` + (data.devices || [])
@@ -42,26 +40,32 @@
     };
   }
 
+  // IMPORTANT: this signature contains configuration/topology only.
+  // Telemetry, health, alarms, events, timestamps and live quality MUST NOT
+  // trigger replacement of #workspace. Those values change continuously.
   const structureSignature = () => JSON.stringify({
     layout: (layout || []).map(x => [x.panel, x.order, x.span]),
     locked,
     phaseAware,
-    state: data?.operation?.state,
+    phase: data?.operation?.state,
     mode: data?.operation?.mode,
-    recording: data?.recording?.state,
-    run: (data?.runs || []).map(r => [r.id, r.active, r.status, r.configuration_revision]),
+    release: [data?.runtime_context?.context_state, data?.runtime_context?.release_code],
+    runs: (data?.runs || []).map(r => [r.id, r.active, r.configuration_revision]),
     steps: (data?.steps || []).map(s => [s.sequence, s.status]),
     stations: (data?.stations || []).map(s => [s.code, s.decision, s.operator_name]),
-    alarms: (data?.alarms || []).map(a => [a.id, a.state, a.priority, a.message]),
-    incidents: (data?.incidents || []).map(i => [i.id, i.status, i.severity, i.title]),
-    events: (data?.events || []).slice(0, 10).map(e => e.sequence),
-    devices: (data?.devices || []).map(d => [d.id, d.enabled, d.name, d.endpoint, d.protocol]),
+    devices: (data?.devices || []).map(d => [d.id, d.enabled, d.name, d.endpoint, d.protocol, d.device_type]),
     integrations: (data?.integrations || []).map(i => [i.device_id, i.enabled, i.adapter_type, i.endpoint, i.secret_configured]),
-    channels: (data?.channels || []).map(c => [c.id, c.enabled, c.source_id, c.warning, c.critical])
+    channels: (data?.channels || []).map(c => [c.id, c.enabled, c.source_id, c.warning, c.critical, c.sample_rate])
   });
 
   const setText = (node, value) => {
     if (node && node.textContent !== String(value)) node.textContent = String(value);
+  };
+  const setBadge = (node, value) => {
+    if (!node) return;
+    const text = String(value || 'UNKNOWN');
+    if (node.textContent !== text) node.textContent = text;
+    node.className = `badge ${text.toLowerCase().replaceAll('_','-')}`;
   };
 
   function patchMissionPanel() {
@@ -105,6 +109,24 @@
     if (values[1]) setText(values[1], sampleCount);
   }
 
+  function patchChannelsPanel() {
+    const panel = document.querySelector('[data-panel="channels"]');
+    if (!panel) return;
+    const runtime = data.telemetry?.channels || {};
+    panel.querySelectorAll('tbody tr').forEach(row => {
+      const id = row.querySelector('code')?.textContent?.trim();
+      const item = runtime[id];
+      if (!id || !item) return;
+      const cells = row.querySelectorAll('td');
+      if (cells[1]) setText(cells[1], `${item.value ?? '—'} ${item.unit || ''}`.trim());
+      if (cells[2]) {
+        let badgeNode = cells[2].querySelector('.badge');
+        if (badgeNode) setBadge(badgeNode, item.quality || 'NO_DATA');
+      }
+      if (cells[3]) setText(cells[3], `${item.age_ms ?? '—'} ms`);
+    });
+  }
+
   function patchCameraPanel() {
     const panel = document.querySelector('[data-panel="cameras"]');
     if (!panel) return;
@@ -114,10 +136,18 @@
       const status = tile.querySelector('[data-camera-status]');
       if (status) setText(status, camera.health || 'UNKNOWN');
       const metrics = tile.querySelector('[data-camera-metrics]');
-      if (metrics) {
-        setText(metrics, `${camera.width || '—'}×${camera.height || '—'} · ${camera.fps || '—'} FPS · ${camera.latency_ms || '—'} ms`);
-      }
+      if (metrics) setText(metrics, `${camera.width || '—'}×${camera.height || '—'} · ${camera.fps || '—'} FPS · ${camera.latency_ms || '—'} ms`);
     }
+  }
+
+  function patchAlarmBanner() {
+    const banner = document.querySelector('#alarm-banner');
+    if (!banner) return;
+    const active = (data.alarms || []).filter(a => a.state !== 'CLOSED');
+    const critical = active.filter(a => a.priority === 'P1');
+    banner.className = 'alarm-banner ' + (critical.length ? 'critical' : active.length ? 'warning' : '');
+    const label = banner.querySelector('span');
+    if (label) setText(label, critical.length ? `${critical.length} CRITICAL ALARM${critical.length > 1 ? 'S' : ''} — OPERATOR ACTION REQUIRED` : active.length ? `${active.length} ACTIVE ALARM${active.length > 1 ? 'S' : ''}` : 'NO CRITICAL ALARMS');
   }
 
   function patchLiveOnly() {
@@ -127,20 +157,21 @@
       patchCommandPanel();
       patchNetworkPanel();
       patchStoragePanel();
+      patchChannelsPanel();
       patchCameraPanel();
+      patchAlarmBanner();
       if (typeof drawPlots === 'function') drawPlots();
     } catch (_) {
-      // A later structural render will recover any panel whose markup differs.
+      // Keep the live stream running even if an optional panel is absent.
     }
   }
 
   renderWorkspace = function stableWorkspaceRender(...args) {
+    patchLiveOnly();
     const signature = structureSignature();
     const changed = signature !== lastStructure;
-
-    patchLiveOnly();
-
     if (!changed) return;
+
     if (isInteractive()) {
       pendingFullRender = true;
       return;
@@ -160,7 +191,6 @@
   }, true);
   document.addEventListener('submit', () => markInteraction(1200), true);
 
-  // Establish the signature for the already-rendered initial workspace.
   lastStructure = structureSignature();
 
   setInterval(() => {
