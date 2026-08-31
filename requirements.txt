@@ -1,7 +1,8 @@
 opencv-python-headless==4.8.1.78; platform_system == "Darwin"
 opencv-python-headless==4.10.0.84; platform_system != "Darwin"
 pandas>=2.1
-numpy>=1.26
+numpy>=1.26,<2; platform_system == "Darwin"
+numpy>=1.26; platform_system != "Darwin"
 matplotlib>=3.8
 Pillow>=10.0
 openpyxl>=3.1
