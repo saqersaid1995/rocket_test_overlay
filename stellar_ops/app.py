@@ -14,10 +14,11 @@ from .deployment_guard import (
     deployment_assessment,
     mutation_guard,
 )
-from .http_telemetry import ensure_esp32_pressure_integration
+from .edge_runtime import ensure_edge_gateway
 from .observability import begin_request, finish_request, process_metrics
 from .media import media
 from .operations import operations
+from .pressure_edge import ensure_pressure_edge_integration
 from .runtime_context import get_runtime_context
 from .telemetry_runtime import recording_status
 
@@ -31,17 +32,18 @@ app.before_request(begin_request)
 
 @app.before_request
 def ensure_physical_pressure_telemetry():
-    """Keep the ESP32 pressure source registered and its poller alive.
+    """Keep PT-01 bound to the inbound Ethernet edge path.
 
-    The default endpoint is the W5100 address validated on the field laptop:
-    http://192.168.1.50/reading. It can be overridden without a code change via
-    STELLAR_OPS_ESP32_PRESSURE_ENDPOINT.
+    The ESP32 commissioning UI stays local on Wi-Fi. Operational telemetry is
+    pushed to Stellar Ops over SMTCS-EDGE/1 TCP on port 9100; no HTTP polling is
+    used in the operational path.
     """
     init_control_db()
     try:
-        ensure_esp32_pressure_integration(CONTROL_DB, OPERATION_ID)
-    except RuntimeError as exc:
-        app.logger.warning("ESP32 pressure telemetry registration failed: %s", exc)
+        ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
+        ensure_edge_gateway(CONTROL_DB)
+    except (RuntimeError, OSError) as exc:
+        app.logger.warning("Pressure Ethernet telemetry setup failed: %s", exc)
 
 
 app.before_request(lambda: mutation_guard(app, CONTROL_DB))
@@ -72,7 +74,7 @@ def health():
         ).fetchone()
         db_hold_reason = operation["active_hold"] if operation else None
         edge = db.execute(
-            "SELECT status,last_seen,total_samples,sequence_gaps "
+            "SELECT device_id,status,last_seen,total_samples,sequence_gaps "
             "FROM edge_sessions ORDER BY last_seen DESC LIMIT 1"
         ).fetchone()
         run = db.execute(
@@ -145,6 +147,10 @@ def health():
         },
         "recording": recording,
         "edge": dict(edge) if edge else {"status": "NO_DEVICE"},
+        "edge_listener": {
+            "host": os.environ.get("STELLAR_OPS_EDGE_HOST", "0.0.0.0"),
+            "port": int(os.environ.get("STELLAR_OPS_EDGE_PORT", "9100")),
+        },
         "security": {
             "development_secret": app.config["SECRET_KEY"] == "development-only-change-me"
         },
@@ -162,7 +168,8 @@ def liveness():
 
 if __name__ == "__main__":
     init_control_db()
-    ensure_esp32_pressure_integration(CONTROL_DB, OPERATION_ID)
+    ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
+    ensure_edge_gateway(CONTROL_DB)
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", "5001")),
