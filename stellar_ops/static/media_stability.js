@@ -2,7 +2,55 @@
   if (typeof refresh !== 'function' || typeof render !== 'function') return;
 
   const originalRender = render;
+  const originalNavigate = typeof navigate === 'function' ? navigate : null;
   let lastStructure = '';
+
+  const stopBrowserStreams = () => {
+    document.querySelectorAll('img[src*="/stream.mjpg"]').forEach(img => {
+      img.removeAttribute('src');
+      try { img.src = ''; } catch (_) {}
+    });
+  };
+
+  // Live scene-bank thumbnails used to open one permanent MJPEG HTTP request per
+  // scene even when several scenes pointed at the same camera. Preview and Program
+  // are the only continuous monitors needed on the switcher. The scene bank is a
+  // control surface, so keep it lightweight and show state instead of another feed.
+  if (typeof sourceDeck === 'function') {
+    sourceDeck = function stableSourceDeck() {
+      const liveScenes = (D.broadcast_scenes || []).filter(s => s.scene_type === 'LIVE');
+      return `<section class="source-deck"><header><b>CAMERAS & LIVE SCENES</b><small>SELECT DIRECTLY TO PREVIEW</small></header><div>${liveScenes.map(s => {
+        const source = (s.sources || []).find(x => x.kind === 'camera');
+        const camera = (D.camera_profiles || []).find(c => c.device_id === source?.source);
+        const state = camera?.runtime_live ? 'LIVE' : esc(camera?.runtime_status || 'OFFLINE');
+        return `<button class="source-shot ${s.id === D.broadcast.preview_scene_id ? 'preview' : ''}" data-preview="${s.id}"><span class="source-offline">${state}</span><strong>${esc(s.name)}</strong><small>${esc(camera?.device_id || 'NO CAMERA')}</small></button>`;
+      }).join('')}</div></section>`;
+    };
+  }
+
+  // Internal Broadcast tabs must tear down the old page's HTTP streams before
+  // building the next view. Otherwise detached MJPEG requests can stay alive long
+  // enough to consume the browser's per-host HTTP/1.1 connection pool.
+  if (originalNavigate) {
+    navigate = function stableNavigate(next) {
+      stopBrowserStreams();
+      return originalNavigate(next);
+    };
+  }
+
+  // Global navigation leaves /media entirely. pagehide runs too late when the
+  // browser is already starved of free HTTP connections, so release streams on the
+  // click itself and navigate on the next task after the sockets have been aborted.
+  document.addEventListener('click', event => {
+    const link = event.target?.closest?.('a[href]');
+    if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
+    let url;
+    try { url = new URL(link.href, location.href); } catch (_) { return; }
+    if (url.origin !== location.origin || url.href === location.href) return;
+    event.preventDefault();
+    stopBrowserStreams();
+    setTimeout(() => { location.href = url.href; }, 25);
+  }, true);
 
   const stableStructure = () => {
     try {
@@ -93,5 +141,6 @@
     return result;
   };
 
+  window.addEventListener('beforeunload', stopBrowserStreams, {capture: true});
   lastStructure = stableStructure();
 })();
