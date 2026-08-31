@@ -20,6 +20,63 @@
     );
   };
 
+  // The main workspace script calls refreshWorkspaceSelectors() for every live
+  // snapshot. Its original implementation rewrites select.innerHTML each time,
+  // which destroys/recreates <option> nodes and makes an open native dropdown
+  // close/reopen/flicker. Replace it with a topology-aware updater that only
+  // touches a select when its actual option set changed.
+  if (typeof refreshWorkspaceSelectors === 'function') {
+    let profileOptionsKey = '';
+    let savedOptionsKey = '';
+
+    refreshWorkspaceSelectors = function stableRefreshWorkspaceSelectors() {
+      if (popoutPanel) return;
+      const profile = document.querySelector('#console-profile');
+      const saved = document.querySelector('#saved-workspace');
+      if (!profile || !saved) return;
+
+      const workspaces = data?.workspaces || [];
+      const roles = [...new Set(workspaces.map(w => w.console_role))];
+      const currentRole = profile.value;
+      const nextProfileKey = JSON.stringify(roles);
+
+      if (nextProfileKey !== profileOptionsKey) {
+        const fragment = document.createDocumentFragment();
+        roles.forEach(role => {
+          const option = document.createElement('option');
+          option.value = role;
+          option.textContent = role;
+          fragment.appendChild(option);
+        });
+        profile.replaceChildren(fragment);
+        profileOptionsKey = nextProfileKey;
+        if (roles.includes(currentRole)) profile.value = currentRole;
+      }
+
+      const effectiveRole = roles.includes(profile.value) ? profile.value : (roles[0] || '');
+      if (effectiveRole && profile.value !== effectiveRole) profile.value = effectiveRole;
+
+      const currentWorkspaceId = saved.value;
+      const candidates = workspaces.filter(w => w.console_role === effectiveRole);
+      const nextSavedKey = JSON.stringify(candidates.map(w => [w.id, w.name]));
+
+      if (nextSavedKey !== savedOptionsKey) {
+        const fragment = document.createDocumentFragment();
+        candidates.forEach(workspace => {
+          const option = document.createElement('option');
+          option.value = String(workspace.id);
+          option.textContent = workspace.name;
+          fragment.appendChild(option);
+        });
+        saved.replaceChildren(fragment);
+        savedOptionsKey = nextSavedKey;
+        if (candidates.some(w => String(w.id) === currentWorkspaceId)) {
+          saved.value = currentWorkspaceId;
+        }
+      }
+    };
+  }
+
   // Stream identity must not depend on changing metrics such as FPS or latency.
   if (originalCameraPanelSignature) {
     cameraPanelSignature = function stableCameraPanelSignature() {
@@ -120,7 +177,7 @@
       const cells = row.querySelectorAll('td');
       if (cells[1]) setText(cells[1], `${item.value ?? '—'} ${item.unit || ''}`.trim());
       if (cells[2]) {
-        let badgeNode = cells[2].querySelector('.badge');
+        const badgeNode = cells[2].querySelector('.badge');
         if (badgeNode) setBadge(badgeNode, item.quality || 'NO_DATA');
       }
       if (cells[3]) setText(cells[3], `${item.age_ms ?? '—'} ms`);
