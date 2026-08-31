@@ -17,6 +17,7 @@ from .deployment_guard import (
 from .edge_runtime import ensure_edge_gateway
 from .observability import begin_request, finish_request, process_metrics
 from .media import media
+from .media_stream_runtime import install_media_stream_optimizations
 from .operations import operations
 from .pressure_edge import ensure_pressure_edge_integration
 from .runtime_context import get_runtime_context
@@ -24,6 +25,7 @@ from .telemetry_runtime import recording_status
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = os.environ.get("STELLAR_OPS_SECRET", "development-only-change-me")
+install_media_stream_optimizations()
 app.register_blueprint(control)
 app.register_blueprint(media)
 app.register_blueprint(operations)
