@@ -17,6 +17,7 @@ from .deployment_guard import (
 from .edge_runtime import ensure_edge_gateway
 from .observability import begin_request, finish_request, process_metrics
 from .media import media
+from .media_frame_preview import media_frame_preview
 from .media_stream_runtime import install_media_stream_optimizations
 from .operations import operations
 from .pressure_edge import ensure_pressure_edge_integration
@@ -28,6 +29,7 @@ app.config["SECRET_KEY"] = os.environ.get("STELLAR_OPS_SECRET", "development-onl
 install_media_stream_optimizations()
 app.register_blueprint(control)
 app.register_blueprint(media)
+app.register_blueprint(media_frame_preview)
 app.register_blueprint(operations)
 app.before_request(begin_request)
 
