@@ -7,6 +7,7 @@ import time
 from flask import Flask, redirect, url_for
 
 from .audit_integrity import verify_audit_ledger
+from .bench_ignition import bench_ignition
 from .build_info import system_identity
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
 from .deployment_guard import (
@@ -30,6 +31,7 @@ install_media_stream_optimizations()
 app.register_blueprint(control)
 app.register_blueprint(media)
 app.register_blueprint(media_frame_preview)
+app.register_blueprint(bench_ignition)
 app.register_blueprint(operations)
 app.before_request(begin_request)
 
