@@ -64,35 +64,141 @@ def _result(mode: str, values: dict, elapsed=0.0, meta=None) -> dict:
             "continuity": "SAFE", "channels": values, "meta": meta or {}}
 
 
-def live_snapshot(db, operation_id: str) -> dict:
-    session = db.execute("""SELECT s.* FROM edge_sessions s JOIN device_integrations i ON i.device_id=s.device_id
-      WHERE i.operation_id=? AND i.enabled=1 AND i.adapter_type='SMTCS_EDGE_TCP'
-      ORDER BY s.last_seen DESC LIMIT 1""", (operation_id,)).fetchone()
-    maps = _channel_maps(db, operation_id)
+def _live_source(db, operation_id: str, source_id: str):
+    """Return the latest LIVE source state for one registered hardware device.
+
+    A channel must only consume samples from its configured source device. This
+    prevents PT-01 pressure packets from being interpreted as missing LC-01 or
+    TC-01 samples, which previously made unrelated channels flap INVALID.
+    """
+    integration = db.execute(
+        """SELECT * FROM device_integrations
+           WHERE operation_id=? AND device_id=? AND enabled=1
+             AND adapter_type='SMTCS_EDGE_TCP'""",
+        (operation_id, source_id),
+    ).fetchone()
+    if not integration:
+        return None, None, None
+
+    session = db.execute(
+        """SELECT * FROM edge_sessions
+           WHERE device_id=?
+           ORDER BY last_seen DESC LIMIT 1""",
+        (source_id,),
+    ).fetchone()
     if not session:
-        values={m["id"]:{"value":0,"unit":m["unit"],"quality":"DISCONNECTED","age_ms":None} for m in maps}
-        unknown = db.execute("SELECT device_id,last_seen FROM edge_sessions ORDER BY last_seen DESC LIMIT 1").fetchone()
-        meta={"status":"UNREGISTERED_DEVICE" if unknown else "NO_DEVICE","total_samples":0,"sequence_gaps":0}
-        if unknown: meta.update({"device_id":unknown["device_id"],"last_seen":unknown["last_seen"]})
-        return _result("LIVE",values,meta=meta)
-    received_age_ms=max(0,(time.time()-parse_time(session["last_seen"]))*1000)
-    batch = db.execute("SELECT * FROM edge_batches WHERE device_id=? AND boot_id=? ORDER BY sequence DESC LIMIT 1",
-                       (session["device_id"],session["boot_id"])).fetchone()
-    raw=json.loads(batch["channels_json"]) if batch else {}
-    values={}
+        return integration, None, None
+
+    batch = db.execute(
+        """SELECT * FROM edge_batches
+           WHERE device_id=? AND boot_id=?
+           ORDER BY sequence DESC LIMIT 1""",
+        (session["device_id"], session["boot_id"]),
+    ).fetchone()
+    return integration, session, batch
+
+
+def live_snapshot(db, operation_id: str) -> dict:
+    maps = _channel_maps(db, operation_id)
+    values = {}
+    source_states = {}
+    newest_session = None
+    newest_session_ts = -1.0
+    elapsed = 0.0
+
     for m in maps:
-        samples=raw.get(m["raw_field"],[]); quality="GOOD"
-        if session["status"]=="DISCONNECTED": quality="DISCONNECTED"
-        elif received_age_ms>m["stale_timeout_ms"]: quality="STALE"
-        elif not samples: quality="INVALID"
-        value=(float(samples[-1])*m["calibration_slope"]+m["calibration_intercept"]) if samples else 0
-        if m["critical"] is not None and value>=m["critical"]: quality="OUT_OF_RANGE"
-        values[m["id"]]={"value":value,"raw":samples[-1] if samples else None,"unit":m["unit"],"quality":quality,
-                         "age_ms":round(received_age_ms,1),"source":session["device_id"]}
-    elapsed=(batch["first_sample_us"]+(batch["sample_count"]-1)*batch["sample_period_us"])/1_000_000 if batch else 0
-    return _result("LIVE",values,elapsed,{"status":session["status"],"device_id":session["device_id"],
-      "boot_id":session["boot_id"],"last_sequence":session["last_sequence"],"total_samples":session["total_samples"],
-      "sequence_gaps":session["sequence_gaps"],"age_ms":round(received_age_ms,1)})
+        source_id = m["source_id"]
+        if source_id not in source_states:
+            source_states[source_id] = _live_source(db, operation_id, source_id)
+        integration, session, batch = source_states[source_id]
+
+        if not integration:
+            values[m["id"]] = {
+                "value": 0,
+                "raw": None,
+                "unit": m["unit"],
+                "quality": "DISCONNECTED",
+                "age_ms": None,
+                "source": source_id,
+            }
+            continue
+
+        if not session:
+            values[m["id"]] = {
+                "value": 0,
+                "raw": None,
+                "unit": m["unit"],
+                "quality": "DISCONNECTED",
+                "age_ms": None,
+                "source": source_id,
+            }
+            continue
+
+        session_ts = parse_time(session["last_seen"])
+        if session_ts > newest_session_ts:
+            newest_session = session
+            newest_session_ts = session_ts
+
+        received_age_ms = max(0, (time.time() - session_ts) * 1000)
+        raw = json.loads(batch["channels_json"]) if batch else {}
+        samples = raw.get(m["raw_field"], [])
+
+        if session["status"] == "DISCONNECTED":
+            quality = "DISCONNECTED"
+        elif received_age_ms > m["stale_timeout_ms"]:
+            quality = "STALE"
+        elif not batch or not samples:
+            quality = "INVALID"
+        else:
+            quality = "GOOD"
+
+        value = (
+            float(samples[-1]) * m["calibration_slope"] + m["calibration_intercept"]
+            if samples else 0
+        )
+        if m["critical"] is not None and value >= m["critical"]:
+            quality = "OUT_OF_RANGE"
+
+        values[m["id"]] = {
+            "value": value,
+            "raw": samples[-1] if samples else None,
+            "unit": m["unit"],
+            "quality": quality,
+            "age_ms": round(received_age_ms, 1),
+            "source": source_id,
+        }
+
+        if batch:
+            channel_elapsed = (
+                batch["first_sample_us"]
+                + (batch["sample_count"] - 1) * batch["sample_period_us"]
+            ) / 1_000_000
+            elapsed = max(elapsed, channel_elapsed)
+
+    if not newest_session:
+        unknown = db.execute(
+            "SELECT device_id,last_seen FROM edge_sessions ORDER BY last_seen DESC LIMIT 1"
+        ).fetchone()
+        meta = {
+            "status": "UNREGISTERED_DEVICE" if unknown else "NO_DEVICE",
+            "total_samples": 0,
+            "sequence_gaps": 0,
+        }
+        if unknown:
+            meta.update({"device_id": unknown["device_id"], "last_seen": unknown["last_seen"]})
+        return _result("LIVE", values, elapsed, meta)
+
+    received_age_ms = max(0, (time.time() - newest_session_ts) * 1000)
+    meta = {
+        "status": newest_session["status"],
+        "device_id": newest_session["device_id"],
+        "boot_id": newest_session["boot_id"],
+        "last_sequence": newest_session["last_sequence"],
+        "total_samples": newest_session["total_samples"],
+        "sequence_gaps": newest_session["sequence_gaps"],
+        "age_ms": round(received_age_ms, 1),
+    }
+    return _result("LIVE", values, elapsed, meta)
 
 
 def replay_snapshot(db, operation_id: str) -> dict:
