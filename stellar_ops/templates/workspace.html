@@ -22,7 +22,7 @@
 <div class="alarm-banner" id="alarm-banner"><span>NO CRITICAL ALARMS</span><button id="open-alarms">OPEN ALARM CENTER</button></div>
 
 <nav class="toolbar">
-    <select id="console-profile" title="Console profile"></select>
+  <select id="console-profile" title="Console profile"></select>
   <select id="saved-workspace" title="Saved workspace"></select>
   <button id="edit-layout">EDIT LAYOUT</button>
   <button id="save-layout">SAVE</button>
@@ -30,12 +30,12 @@
   <button id="phase-aware" class="active">PHASE AUTO</button>
   <button id="add-panel">+ PANEL</button>
   <button id="open-incidents">INCIDENT CENTER</button>
-    <div class="time-conductor">
+  <div class="time-conductor">
     <button data-time="LIVE" class="active">LIVE</button>
     <button data-time="PAUSE">PAUSE VIEW</button>
     <button data-time="REPLAY">REPLAY</button>
     <select id="time-window" aria-label="Telemetry time window"><option value="30">30 SEC</option><option value="120">2 MIN</option><option value="600">10 MIN</option><option value="0">FULL RUN</option></select>
-    <button id="jump-ignition">IGNITION</button>
+    <button id="jump-ignition" title="Bench simulation only — no physical output">IGNITION TEST</button>
     <span id="mission-time">T−00:00:10.000</span>
   </div>
   <button id="kiosk">KIOSK</button>
@@ -51,8 +51,6 @@
   <form method="dialog"><header>ADD WORKSPACE PANEL<button value="cancel" aria-label="Close panel catalog">×</button></header><div id="panel-catalog"></div></form>
 </dialog>
 
-
-
 <dialog id="alarm-dialog"><div class="dialog-shell"><header>ALARM & LIMITS CENTER<button data-close="alarm-dialog" aria-label="Close alarm center">×</button></header><div id="alarm-center"></div></div></dialog>
 <dialog id="incident-dialog"><div class="dialog-shell"><header>OPERATIONAL INCIDENT CENTER<button data-close="incident-dialog" aria-label="Close incident center">×</button></header><form id="incident-form" class="incident-form"><select name="severity" aria-label="Incident severity" required><option value="P2">P2 — HIGH</option><option value="P1">P1 — CRITICAL</option><option value="P3">P3 — MEDIUM</option><option value="P4">P4 — LOW</option></select><select name="category" aria-label="Incident category" required><option>SAFETY</option><option>PROPULSION</option><option>INSTRUMENTATION</option><option>VIDEO</option><option>NETWORK</option><option>PROCEDURE</option><option>FACILITY</option><option>OTHER</option></select><input name="title" aria-label="Incident title" placeholder="Incident title" required><input name="owner" aria-label="Incident owner" value="TEST DIRECTOR" placeholder="Owner" required><textarea name="description" aria-label="Incident description" placeholder="What happened, current impact and immediate facts" required></textarea><button type="submit">OPEN INCIDENT</button></form><div id="incident-center"></div></div></dialog>
 <dialog id="text-entry-dialog">
@@ -67,5 +65,6 @@
 <script>window.__INITIAL__={{initial|tojson}};</script>
 <script src="{{url_for('static',filename='workspace.js')}}"></script>
 <script src="{{url_for('static',filename='workspace_stability.js')}}"></script>
+<script src="{{url_for('static',filename='bench_ignition.js')}}"></script>
 </body>
 </html>
