@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import socket
+import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from urllib.parse import urlparse
 
@@ -19,7 +23,6 @@ class ConnectionResult:
 
 
 def _tcp_probe(host: str, port: int, timeout: float = 1.5) -> ConnectionResult:
-    import time
     started = time.monotonic()
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -32,7 +35,6 @@ def _tcp_probe(host: str, port: int, timeout: float = 1.5) -> ConnectionResult:
 def _ntp_probe(host: str, timeout: float = 1.5) -> ConnectionResult:
     if host.upper() == "LOCAL":
         return ConnectionResult(True, "LOCAL_CLOCK", "Using the host UTC clock; external NTP is not configured", 0.0)
-    import time
     started = time.monotonic()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
@@ -46,11 +48,39 @@ def _ntp_probe(host: str, timeout: float = 1.5) -> ConnectionResult:
         return ConnectionResult(False, "UNREACHABLE", f"Could not query NTP host {host}: {exc}")
 
 
+def _http_json_probe(endpoint: str, timeout: float = 1.5) -> ConnectionResult:
+    value = endpoint.strip()
+    if not value:
+        return ConnectionResult(False, "INVALID_CONFIG", "HTTP telemetry endpoint is required")
+    if "://" not in value:
+        value = f"http://{value}"
+    if not value.rstrip("/").endswith("/reading"):
+        value = value.rstrip("/") + "/reading"
+    started = time.monotonic()
+    try:
+        request = urllib.request.Request(value, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                return ConnectionResult(False, "INVALID_RESPONSE", f"HTTP telemetry returned status {response.status}")
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            return ConnectionResult(False, "INVALID_RESPONSE", "HTTP telemetry response is not a JSON object")
+        missing = [key for key in ("pressure", "voltage", "time") if key not in payload]
+        if missing:
+            return ConnectionResult(False, "INVALID_RESPONSE", f"HTTP telemetry is missing fields: {', '.join(missing)}")
+        latency = round((time.monotonic() - started) * 1000, 1)
+        return ConnectionResult(True, "STREAMING", f"Valid pressure telemetry received from {value}", latency)
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+        return ConnectionResult(False, "UNREACHABLE", f"Could not read HTTP telemetry from {value}: {exc}")
+
+
 def test_adapter(adapter_type: str, endpoint: str) -> ConnectionResult:
     adapter = adapter_type.upper()
     endpoint = endpoint.strip()
     if adapter == "SIMULATOR":
         return ConnectionResult(True, "SIMULATED", "Simulator adapter is available; no physical device was contacted", 0.0)
+    if adapter in {"HTTP_JSON", "ESP32_HTTP"}:
+        return _http_json_probe(endpoint)
     if adapter in {"MODBUS_TCP", "TCP", "OPC_UA", "SMTCS_EDGE_TCP"}:
         if ":" not in endpoint:
             return ConnectionResult(False, "INVALID_CONFIG", "Endpoint must be HOST:PORT")
