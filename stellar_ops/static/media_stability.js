@@ -2,20 +2,11 @@
   if (typeof refresh !== 'function' || typeof render !== 'function') return;
 
   const originalRender = render;
-  const originalNavigate = typeof navigate === 'function' ? navigate : null;
   let lastStructure = '';
 
-  const stopBrowserStreams = () => {
-    document.querySelectorAll('img[src*="/stream.mjpg"]').forEach(img => {
-      img.removeAttribute('src');
-      try { img.src = ''; } catch (_) {}
-    });
-  };
-
-  // Live scene-bank thumbnails used to open one permanent MJPEG HTTP request per
-  // scene even when several scenes pointed at the same camera. Preview and Program
-  // are the only continuous monitors needed on the switcher. The scene bank is a
-  // control surface, so keep it lightweight and show state instead of another feed.
+  // Scene-bank buttons are controls, not confidence monitors. Keeping an MJPEG
+  // <img> in every scene button can exhaust the browser's per-host connection
+  // pool. Preview and Program remain the only continuous broadcast monitors.
   if (typeof sourceDeck === 'function') {
     sourceDeck = function stableSourceDeck() {
       const liveScenes = (D.broadcast_scenes || []).filter(s => s.scene_type === 'LIVE');
@@ -27,30 +18,6 @@
       }).join('')}</div></section>`;
     };
   }
-
-  // Internal Broadcast tabs must tear down the old page's HTTP streams before
-  // building the next view. Otherwise detached MJPEG requests can stay alive long
-  // enough to consume the browser's per-host HTTP/1.1 connection pool.
-  if (originalNavigate) {
-    navigate = function stableNavigate(next) {
-      stopBrowserStreams();
-      return originalNavigate(next);
-    };
-  }
-
-  // Global navigation leaves /media entirely. pagehide runs too late when the
-  // browser is already starved of free HTTP connections, so release streams on the
-  // click itself and navigate on the next task after the sockets have been aborted.
-  document.addEventListener('click', event => {
-    const link = event.target?.closest?.('a[href]');
-    if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
-    let url;
-    try { url = new URL(link.href, location.href); } catch (_) { return; }
-    if (url.origin !== location.origin || url.href === location.href) return;
-    event.preventDefault();
-    stopBrowserStreams();
-    setTimeout(() => { location.href = url.href; }, 25);
-  }, true);
 
   const stableStructure = () => {
     try {
@@ -114,6 +81,7 @@
     refreshPending = true;
     try {
       const r = await fetch('/api/media/snapshot', {cache: 'no-store'});
+      if (!r.ok) throw new Error(`Media snapshot ${r.status}`);
       D = await r.json();
       samples.push(D.telemetry?.channels || {});
       if (samples.length > 240) samples.shift();
@@ -121,6 +89,8 @@
       const signature = stableStructure();
       const changed = signature !== lastStructure;
 
+      // Normal telemetry/camera-health refreshes must never rebuild the DOM or
+      // recreate Preview/Program MJPEG requests.
       if (!changed || operatorIsEditing()) {
         patchLiveOnly();
         return;
@@ -141,6 +111,8 @@
     return result;
   };
 
-  window.addEventListener('beforeunload', stopBrowserStreams, {capture: true});
+  // Do not intercept normal navigation. Once the scene-bank duplicate streams
+  // are removed there are only two persistent broadcast requests, so Chrome has
+  // free connections for System Configuration / Mission Control navigation.
   lastStructure = stableStructure();
 })();
