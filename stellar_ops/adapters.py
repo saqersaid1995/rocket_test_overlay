@@ -58,7 +58,7 @@ def _http_json_probe(endpoint: str, timeout: float = 1.5) -> ConnectionResult:
         value = value.rstrip("/") + "/reading"
     started = time.monotonic()
     try:
-        request = urllib.request.Request(value, headers={"Accept": "application/json"})
+        request = urllib.request.Request(value, headers={"Accept": "application/json", "Cache-Control": "no-cache"})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 return ConnectionResult(False, "INVALID_RESPONSE", f"HTTP telemetry returned status {response.status}")
@@ -80,6 +80,8 @@ def test_adapter(adapter_type: str, endpoint: str) -> ConnectionResult:
     if adapter == "SIMULATOR":
         return ConnectionResult(True, "SIMULATED", "Simulator adapter is available; no physical device was contacted", 0.0)
     if adapter in {"HTTP_JSON", "ESP32_HTTP"}:
+        return _http_json_probe(endpoint)
+    if adapter == "SMTCS_EDGE_TCP" and endpoint.lower().startswith(("http://", "https://")):
         return _http_json_probe(endpoint)
     if adapter in {"MODBUS_TCP", "TCP", "OPC_UA", "SMTCS_EDGE_TCP"}:
         if ":" not in endpoint:
