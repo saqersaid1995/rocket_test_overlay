@@ -16,7 +16,7 @@ from .database import connect_database
 
 DEFAULT_DEVICE_ID = "PT-01"
 DEFAULT_ENDPOINT = "http://192.168.1.50/reading"
-DEFAULT_POLL_INTERVAL_S = 0.5
+DEFAULT_POLL_INTERVAL_S = 0.2
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class HttpTelemetryConfig:
     endpoint: str
     firmware: str = "esp32-pressure-http/1"
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
-    stale_after_s: float = 2.0
+    stale_after_s: float = 1.0
     timeout_s: float = 0.4
 
 
@@ -91,6 +91,8 @@ def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
     endpoint = _normalize_endpoint(configured_endpoint())
     device_id = configured_device_id()
     poll_interval = configured_poll_interval_s()
+    stale_timeout_ms = max(1000, int(poll_interval * 5 * 1000))
+    effective_rate_hz = max(1, int(round(1.0 / poll_interval)))
     db = connect_database(db_path)
     try:
         _ensure_edge_schema(db)
@@ -105,9 +107,6 @@ def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
                WHERE operation_id=? AND id=?""",
             (endpoint, operation_id, device_id),
         )
-        # Keep adapter_type on the existing SMTCS edge lane so the current LIVE
-        # telemetry runtime consumes these normalized batches without a second
-        # parallel telemetry path. config_json records the physical transport.
         db.execute(
             """INSERT INTO device_integrations(
                  operation_id,device_id,adapter_type,config_json,enabled,last_test_at,last_test_status,last_test_message)
@@ -124,14 +123,14 @@ def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
             ),
         )
         db.execute(
-            """UPDATE channel_integrations SET raw_field='pressure_bar'
+            """UPDATE channel_integrations SET raw_field='pressure_bar', stale_timeout_ms=?
                WHERE operation_id=? AND channel_id='motor.chamber_pressure'""",
-            (operation_id,),
+            (stale_timeout_ms, operation_id),
         )
         db.execute(
-            """UPDATE channels SET source_id=?, quality='NO_DATA'
+            """UPDATE channels SET source_id=?, quality='NO_DATA', sample_rate=?
                WHERE operation_id=? AND id='motor.chamber_pressure'""",
-            (device_id, operation_id),
+            (device_id, effective_rate_hz, operation_id),
         )
         db.commit()
     finally:
@@ -144,6 +143,8 @@ def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
         "adapter_type": "SMTCS_EDGE_TCP",
         "physical_transport": "HTTP_JSON",
         "poll_interval_s": poll_interval,
+        "effective_rate_hz": effective_rate_hz,
+        "stale_timeout_ms": stale_timeout_ms,
     }
 
 
