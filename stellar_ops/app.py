@@ -14,6 +14,7 @@ from .deployment_guard import (
     deployment_assessment,
     mutation_guard,
 )
+from .http_telemetry import ensure_esp32_pressure_integration
 from .observability import begin_request, finish_request, process_metrics
 from .media import media
 from .operations import operations
@@ -26,6 +27,23 @@ app.register_blueprint(control)
 app.register_blueprint(media)
 app.register_blueprint(operations)
 app.before_request(begin_request)
+
+
+@app.before_request
+def ensure_physical_pressure_telemetry():
+    """Keep the ESP32 pressure source registered and its poller alive.
+
+    The default endpoint is the W5100 address validated on the field laptop:
+    http://192.168.1.50/reading. It can be overridden without a code change via
+    STELLAR_OPS_ESP32_PRESSURE_ENDPOINT.
+    """
+    init_control_db()
+    try:
+        ensure_esp32_pressure_integration(CONTROL_DB, OPERATION_ID)
+    except RuntimeError as exc:
+        app.logger.warning("ESP32 pressure telemetry registration failed: %s", exc)
+
+
 app.before_request(lambda: mutation_guard(app, CONTROL_DB))
 app.after_request(finish_request)
 app.after_request(apply_security_headers)
@@ -144,6 +162,7 @@ def liveness():
 
 if __name__ == "__main__":
     init_control_db()
+    ensure_esp32_pressure_integration(CONTROL_DB, OPERATION_ID)
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", "5001")),
