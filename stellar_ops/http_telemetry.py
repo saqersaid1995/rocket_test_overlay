@@ -82,14 +82,15 @@ def _ensure_edge_schema(db: sqlite3.Connection) -> None:
 
 
 def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
-    """Make the existing PT-01 device a live ESP32 HTTP telemetry source.
+    """Bind the existing PT-01 Device Registry entry to the ESP32 `/reading` endpoint.
 
-    This does not change the ESP32 firmware or its SD logging. It only tells
-    Stellar Ops how to reach the already-running `/reading` endpoint and maps
-    its JSON fields into the existing telemetry channel model.
+    Samples are normalized into the existing edge_sessions/edge_batches tables, so
+    the current LIVE telemetry runtime, alarms, graphs, recording metadata and
+    replay/evidence paths continue to use one canonical data model.
     """
     endpoint = _normalize_endpoint(configured_endpoint())
     device_id = configured_device_id()
+    poll_interval = configured_poll_interval_s()
     db = connect_database(db_path)
     try:
         _ensure_edge_schema(db)
@@ -104,23 +105,29 @@ def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
                WHERE operation_id=? AND id=?""",
             (endpoint, operation_id, device_id),
         )
+        # Keep adapter_type on the existing SMTCS edge lane so the current LIVE
+        # telemetry runtime consumes these normalized batches without a second
+        # parallel telemetry path. config_json records the physical transport.
         db.execute(
             """INSERT INTO device_integrations(
                  operation_id,device_id,adapter_type,config_json,enabled,last_test_at,last_test_status,last_test_message)
-               VALUES(?,?, 'HTTP_JSON', ?,1,NULL,'NOT_TESTED',NULL)
+               VALUES(?,?, 'SMTCS_EDGE_TCP', ?,1,NULL,'NOT_TESTED',NULL)
                ON CONFLICT(operation_id,device_id) DO UPDATE SET
-                 adapter_type='HTTP_JSON',config_json=excluded.config_json,enabled=1""",
-            (operation_id, device_id, json.dumps({"endpoint": endpoint}, separators=(",", ":"))),
+                 adapter_type='SMTCS_EDGE_TCP',config_json=excluded.config_json,enabled=1""",
+            (
+                operation_id,
+                device_id,
+                json.dumps(
+                    {"endpoint": endpoint, "transport": "HTTP_JSON", "poll_interval_s": poll_interval},
+                    separators=(",", ":"),
+                ),
+            ),
         )
-
-        # Preserve all existing pressure calibration behavior in Stellar Ops;
-        # map only the raw field name to the JSON field produced by the ESP32.
         db.execute(
             """UPDATE channel_integrations SET raw_field='pressure_bar'
                WHERE operation_id=? AND channel_id='motor.chamber_pressure'""",
             (operation_id,),
         )
-        # PT-01 is now the actual source for chamber pressure.
         db.execute(
             """UPDATE channels SET source_id=?, quality='NO_DATA'
                WHERE operation_id=? AND id='motor.chamber_pressure'""",
@@ -130,17 +137,13 @@ def ensure_esp32_pressure_integration(db_path, operation_id: str) -> dict:
     finally:
         db.close()
 
-    ensure_http_poller(
-        db_path,
-        device_id=device_id,
-        endpoint=endpoint,
-        poll_interval_s=configured_poll_interval_s(),
-    )
+    ensure_http_poller(db_path, device_id=device_id, endpoint=endpoint, poll_interval_s=poll_interval)
     return {
         "device_id": device_id,
         "endpoint": endpoint,
-        "adapter_type": "HTTP_JSON",
-        "poll_interval_s": configured_poll_interval_s(),
+        "adapter_type": "SMTCS_EDGE_TCP",
+        "physical_transport": "HTTP_JSON",
+        "poll_interval_s": poll_interval,
     }
 
 
