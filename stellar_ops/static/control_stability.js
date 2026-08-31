@@ -62,34 +62,40 @@
         if (badges[1]) setBadge(badges[1], device.health || 'UNKNOWN');
       });
 
-      const channelById = Object.fromEntries((data?.channels || []).map(c => [c.id, c]));
+      const runtimeChannels = data?.telemetry?.channels || {};
       document.querySelectorAll('#channel-integrations-table tr').forEach(row => {
         const id = row.querySelector('code')?.textContent?.trim();
-        const channel = channelById[id];
-        if (!channel) return;
+        const runtime = runtimeChannels[id];
+        if (!runtime) return;
         const badges = row.querySelectorAll('.badge');
-        if (badges[0]) setBadge(badges[0], channel.quality || 'UNKNOWN');
+        if (badges[0]) setBadge(badges[0], runtime.quality || 'UNKNOWN');
+      });
+
+      document.querySelectorAll('#channels-table tr').forEach(row => {
+        const id = row.querySelector('code')?.textContent?.trim();
+        const runtime = runtimeChannels[id];
+        if (!runtime) return;
+        const cells = row.querySelectorAll('td');
+        const qualityBadge = cells[cells.length - 1]?.querySelector('.badge');
+        if (qualityBadge) setBadge(qualityBadge, runtime.quality || 'UNKNOWN');
       });
     } catch (_) {
-      // A structural render will recover any markup that changed.
+      // Keep the live updater non-destructive.
     }
   };
 
+  // Only configuration/topology belongs here. Live quality, device health,
+  // alarms, events and timestamps are intentionally excluded because they can
+  // change many times per second and must never recreate interactive controls.
   const structureSignature = () => {
     try {
       return JSON.stringify({
         mode: data?.operation?.mode,
-        state: data?.operation?.state,
-        stations: (data?.stations || []).map(x => [x.code, x.decision, x.operator_name]),
-        devices: (data?.devices || []).map(x => [x.id, x.enabled, x.name, x.endpoint, x.protocol, x.required]),
+        devices: (data?.devices || []).map(x => [x.id, x.enabled, x.name, x.device_type, x.endpoint, x.protocol, x.required]),
         integrations: (data?.integrations || []).map(x => [x.device_id, x.enabled, x.adapter_type, x.endpoint]),
-        channels: (data?.channels || []).map(x => [x.id, x.enabled, x.source_id, x.warning, x.critical, x.sample_rate]),
-        channel_integrations: (data?.channel_integrations || []).map(x => [x.channel_id, x.raw_field, x.calibration_slope, x.calibration_intercept, x.required_for_commit]),
-        steps: (data?.steps || []).map(x => [x.sequence, x.status]),
-        alarms: (data?.alarms || []).map(x => [x.id, x.state, x.priority, x.message]),
-        events: (data?.events || []).slice(0, 8).map(x => x.sequence),
+        channels: (data?.channels || []).map(x => [x.id, x.enabled, x.name, x.unit, x.source_id, x.warning, x.critical, x.sample_rate]),
+        channel_integrations: (data?.channel_integrations || []).map(x => [x.channel_id, x.raw_field, x.calibration_slope, x.calibration_intercept, x.stale_timeout_ms, x.required_for_commit]),
         replays: (data?.replays || []).map(x => [x.id, x.active, x.row_count]),
-        diagnostic: [data?.latest_diagnostic?.id, data?.latest_diagnostic?.overall_status],
         backups: (data?.backups || []).map(x => [x.name || x.filename, x.created_at])
       });
     } catch (_) {
