@@ -161,11 +161,10 @@ def apply_security_headers(response):
         "base-uri 'self'; form-action 'self'",
     )
     identity = system_identity()
+    is_dev = identity["environment"] != "PRODUCTION"
     if request.path.startswith("/api/") or request.path.startswith("/health"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
-    elif request.path.startswith("/static/") and identity["environment"] != "PRODUCTION":
-        # Development assets change frequently. Do not let the browser keep an
-        # older JavaScript bundle after a git pull/restart.
+    elif is_dev and (request.path.startswith("/static/") or response.mimetype == "text/html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
