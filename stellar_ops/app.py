@@ -6,6 +6,7 @@ import time
 
 from flask import Flask, redirect, url_for
 
+from .airspace import airspace
 from .audit_integrity import verify_audit_ledger
 from .bench_ignition import bench_ignition
 from .build_info import system_identity
@@ -35,6 +36,7 @@ app.register_blueprint(media_frame_preview)
 app.register_blueprint(bench_ignition)
 app.register_blueprint(operations)
 app.register_blueprint(weather)
+app.register_blueprint(airspace)
 app.before_request(begin_request)
 
 
