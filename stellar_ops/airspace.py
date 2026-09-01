@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import ssl
 import time
 import urllib.error
 import urllib.request
+
+import certifi
 from flask import Blueprint, Response, jsonify, request
 
 from .weather import settings as weather_settings
@@ -14,6 +17,8 @@ airspace = Blueprint("airspace", __name__)
 
 TRAFFIC_CACHE_SECONDS = 1
 _TILE_CACHE_SECONDS = 3600
+_PROVIDER_TIMEOUT_SECONDS = 2.5
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 _traffic_cache: dict[str, tuple[float, dict]] = {}
 _tile_cache: dict[str, tuple[float, bytes, str]] = {}
 
@@ -87,7 +92,11 @@ def _read_provider(url: str, provider: str) -> tuple[dict, str]:
             "User-Agent": "Stellar-Ops/2 air-traffic-situational-awareness",
         },
     )
-    with urllib.request.urlopen(req, timeout=3.5) as response:
+    with urllib.request.urlopen(
+        req,
+        timeout=_PROVIDER_TIMEOUT_SECONDS,
+        context=_SSL_CONTEXT,
+    ) as response:
         if response.status != 200:
             raise RuntimeError(f"{provider} returned HTTP {response.status}")
         return json.loads(response.read().decode("utf-8")), provider
@@ -186,7 +195,11 @@ def osm_tile(z: int, x: int, y: int):
     url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     req = urllib.request.Request(url, headers={"User-Agent": "Stellar-Ops/2 (+OpenStreetMap tile proxy)"})
     try:
-        with urllib.request.urlopen(req, timeout=4) as response:
+        with urllib.request.urlopen(
+            req,
+            timeout=4,
+            context=_SSL_CONTEXT,
+        ) as response:
             body = response.read()
             content_type = response.headers.get_content_type() or "image/png"
     except (OSError, urllib.error.URLError):
