@@ -2,6 +2,10 @@
   const button = document.querySelector('#jump-ignition');
   if (!button) return;
 
+  // workspace.js still carries a legacy /api/ignition onclick handler.
+  // Clear it so this button has exactly one owner: the bench-only Ethernet LED test.
+  button.onclick = null;
+
   let busy = false;
   let resetTimer = null;
 
@@ -49,6 +53,7 @@
   button.title = 'Bench LED test over the PT-01 Ethernet edge connection';
   button.addEventListener('click', event => {
     event.preventDefault();
+    event.stopImmediatePropagation();
     pulseBenchIgnition();
   });
 })();
