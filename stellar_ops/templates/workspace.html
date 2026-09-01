@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>SMTCS · Mission Control Workspace</title>
-  <link rel="stylesheet" href="{{url_for('static',filename='global_nav.css')}}">
-  <link rel="stylesheet" href="{{url_for('static',filename='workspace.css')}}">
-  <link rel="stylesheet" href="{{url_for('static',filename='workspace_runtime.css')}}">
-  <link rel="stylesheet" href="{{url_for('static',filename='airspace_panel.css')}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='global_nav.css',v=system_identity.commit)}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='workspace.css',v=system_identity.commit)}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='workspace_runtime.css',v=system_identity.commit)}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='airspace_panel.css',v=system_identity.commit)}}">
   <style>
     body.kiosk .global-shell-header,body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}
     body.popout .global-shell-header,body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}
@@ -107,10 +107,10 @@
 
 <div id="toast"></div>
 <script>window.__INITIAL__={{initial|tojson}};</script>
-<script src="{{url_for('static',filename='workspace.js')}}"></script>
-<script src="{{url_for('static',filename='workspace_stability.js')}}"></script>
-<script src="{{url_for('static',filename='bench_ignition.js')}}"></script>
-<script src="{{url_for('static',filename='weather_panel.js')}}"></script>
-<script src="{{url_for('static',filename='airspace_panel.js')}}"></script>
+<script src="{{url_for('static',filename='workspace.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='workspace_stability.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='bench_ignition.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='weather_panel.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='airspace_panel.js',v=system_identity.commit)}}"></script>
 </body>
 </html>
