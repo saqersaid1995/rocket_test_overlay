@@ -96,7 +96,66 @@ $('#add-panel').onclick=showPanelCatalog;
 $('#save-layout').onclick=async()=>{const name=await requestText({title:'SAVE WORKSPACE',label:'Workspace name',value:activeWorkspace()?.name||'Custom Console',placeholder:'Console workspace name'});if(!name)return;try{await send('/api/control/workspace',{name,console_role:$('#console-profile').value,layout});toast('Workspace saved');await refresh()}catch(e){toast(e.message,true)}};
 $('#text-entry-form').onsubmit=e=>{e.preventDefault();const value=$('#text-entry-value').value.trim();if(value)finishTextRequest(value)};$('#text-entry-cancel').onclick=$('#text-entry-close').onclick=()=>finishTextRequest(null);$('#text-entry-dialog').addEventListener('cancel',e=>{e.preventDefault();finishTextRequest(null)});
 $('#open-alarms').onclick=()=>$('#alarm-dialog').showModal();$('#open-incidents').onclick=()=>$('#incident-dialog').showModal();$('#incident-form').onsubmit=async e=>{e.preventDefault();const payload=Object.fromEntries(new FormData(e.target));try{await send('/api/control/incident',payload);e.target.reset();toast('Operational incident opened');await refresh()}catch(error){toast(error.message,true)}};$$('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
-$$('[data-time]').forEach(b=>b.onclick=()=>setTimeMode(b.dataset.time));$('#jump-ignition').onclick=()=>{timeMode='PAUSE';frozenHistory=plotHistory.slice(Math.max(0,plotHistory.findIndex(p=>p.pressure>1)));renderWorkspace();toast('View positioned at detected pressure rise')};
+
+$$('[data-time]').forEach(b=>b.onclick=()=>setTimeMode(b.dataset.time));
+
+// =====================================================
+// REAL IGNITION CONTROL (ESP32 Relay)
+// =====================================================
+$('#jump-ignition').onclick = async function() {
+    const btn = this;
+
+    // Safety confirmation
+    if (!confirm(
+        "⚠️ SAFETY WARNING!\n\n" +
+        "You are about to send a real IGNITION command to the engine.\n" +
+        "Ensure all personnel and equipment are clear.\n\n" +
+        "Proceed?"
+    )) {
+        return;
+    }
+
+    // Visual feedback
+    const originalText = btn.textContent;
+    btn.textContent = '⏳ SENDING...';
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+
+    try {
+        const response = await fetch('/api/ignition', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+
+        if (data.ok) {
+            btn.textContent = '✅ IGNITION FIRED!';
+            btn.style.borderColor = '#ff6600';
+            btn.style.background = '#331100';
+            btn.style.color = '#ffaa00';
+            if (typeof toast === 'function') toast('🚀 Ignition relay fired!');
+        } else {
+            alert('❌ Ignition failed: ' + data.message);
+            btn.textContent = '❌ FAILED';
+            btn.style.color = 'red';
+        }
+    } catch (error) {
+        alert('❌ Server error: ' + error);
+        btn.textContent = '❌ NETWORK ERROR';
+        btn.style.color = 'red';
+    } finally {
+        // Reset button after 4 seconds
+        setTimeout(() => {
+            btn.textContent = '🚀 IGNITION TEST';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.borderColor = '';
+            btn.style.background = '';
+            btn.style.color = '';
+        }, 4000);
+    }
+};
+
 $('#kiosk').onclick=()=>{document.body.classList.toggle('kiosk');if(document.body.requestFullscreen&&!document.fullscreenElement)document.body.requestFullscreen().catch(()=>{})};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.body.classList.contains('kiosk'))document.body.classList.remove('kiosk')});
 renderWorkspace();startStream();

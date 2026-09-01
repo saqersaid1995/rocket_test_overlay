@@ -172,6 +172,35 @@ def liveness():
     }
 
 
+# =====================================================================
+# 🔥 IGNITION API – sends pulse command to ESP32 relay
+# =====================================================================
+
+@app.route('/api/ignition', methods=['POST'])
+def trigger_ignition():
+    import requests
+
+    # ESP32 Ethernet IP (must match your configuration)
+    ESP32_IP = "192.168.1.50"
+    url = f"http://{ESP32_IP}/relay/pulse"
+
+    try:
+        # Send pulse command (2 seconds duration)
+        response = requests.post(url, json={"duration_ms": 2000}, timeout=2)
+
+        if response.status_code == 200:
+            return {"ok": True, "message": "Ignition command sent to ESP32"}
+        else:
+            return {"ok": False, "message": f"ESP32 error: {response.status_code}"}, 500
+
+    except requests.exceptions.ConnectionError:
+        return {"ok": False, "message": "Cannot reach ESP32. Check IP address."}, 500
+    except Exception as e:
+        return {"ok": False, "message": f"Error: {str(e)}"}, 500
+
+
+# =====================================================================
+
 if __name__ == "__main__":
     init_control_db()
     ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
