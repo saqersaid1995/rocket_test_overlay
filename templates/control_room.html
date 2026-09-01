@@ -1,0 +1,84 @@
+{% extends "_base.html" %}
+{% block title %}Control Room{% endblock %}
+{% block content %}
+<header class="topbar">
+  <div class="brand">
+    <i>RO</i>
+    <div><strong>CONTROL ROOM</strong><span id="missionNameLabel">Loading…</span></div>
+  </div>
+  <div class="topbar-actions">
+    <a class="btn small" id="watchLink" href="#" target="_blank" rel="noopener">Open viewer &#8599;</a>
+    <a class="btn small" href="/">&larr; Hub</a>
+  </div>
+</header>
+
+<div class="control-room">
+  <div class="program-column">
+    <div class="multiview-canvas" id="multiviewCanvas"></div>
+    <div class="mission-clock-bar">
+      <div>
+        <div class="mission-clock" id="missionClock">T- 00:00.00</div>
+        <span class="mission-status-chip" id="statusChip"><i></i><span id="statusLabel">—</span></span>
+      </div>
+      <div class="clock-actions">
+        <button class="btn small warn" id="holdButton">Hold</button>
+        <button class="btn small" id="resumeButton">Resume</button>
+        <button class="btn small danger" id="abortButton">Abort</button>
+      </div>
+    </div>
+    <div class="camera-attach-bar" id="cameraAttachBar"></div>
+  </div>
+
+  <div class="side-panels">
+    <div class="panel">
+      <h3>Live telemetry <small id="telemetryConnected">no data</small></h3>
+      <div id="telemetryRows"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Environment &amp; limits</h3>
+      <div id="environmentRows"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Camera details</h3>
+      <div id="cameraDetailsRows"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Readiness &amp; countdown <small id="checklistReady"></small></h3>
+      <div id="checklistRows"></div>
+      <div class="checklist-add">
+        <input type="text" id="checklistNewLabel" placeholder="New checklist item…">
+        <label><input type="checkbox" id="checklistNewRequired" checked> Required</label>
+        <label><input type="checkbox" id="checklistNewHold"> Hold point</label>
+        <button class="btn small" id="checklistAddButton">+ Add item</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Active template</h3>
+      <div id="templateRows"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Broadcast</h3>
+      <div class="broadcast-row">
+        <button class="btn small primary" id="armButton">Arm session</button>
+        <button class="btn small" id="broadcastStartButton" disabled>Go live</button>
+        <button class="btn small" id="broadcastStopButton" disabled>Stop</button>
+      </div>
+      <div class="broadcast-status" id="broadcastStatus"><span class="dot"></span><span>Not armed</span></div>
+    </div>
+
+    <div class="panel">
+      <h3>Event log</h3>
+      <div class="event-log" id="eventLog"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.LIVE_SESSION_ID = {{ session_id | tojson }};</script>
+<script src="{{ url_for('static', filename='live-control-room.js', v='1') }}"></script>
+{% endblock %}

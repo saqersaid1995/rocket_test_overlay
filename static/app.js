@@ -19,22 +19,20 @@ const selectedTemplateIdInput = document.querySelector("#selectedTemplateId");
 const selectedTemplateVersionInput = document.querySelector("#selectedTemplateVersion");
 const selectedTemplateSha256Input = document.querySelector("#selectedTemplateSha256");
 
-document.body.classList.add("broadcast-mode");
-
 const broadcastThemes = {
   launch: {
-    name: "A · Launch Broadcast",
-    description: "مطابق للتصميم الموجود في rocket_overlay_broadcast.py.",
+    name: "Launch Broadcast",
+    description: "Balanced broadcast layout with arc gauges, a mission clock and a live chart.",
     features: ["ARC GAUGES", "MISSION CLOCK", "LIVE TRACE"],
   },
   mission_control: {
-    name: "B · Mission Control",
-    description: "مطابق للتصميم الموجود في rocket_overlay_broadcast (1).py.",
+    name: "Mission Control",
+    description: "Bar meters, a phase checklist and a strip chart across the bottom.",
     features: ["BAR METERS", "PHASE CHECKLIST", "STRIP CHART"],
   },
   stellar_console: {
-    name: "3 · Stellar Broadcast Console",
-    description: "مطابق للتصميم الأصلي في rocket_overlay_broadcast-3).py.",
+    name: "Stellar Console",
+    description: "Vertical pressure tape, mission console and phase sequencer.",
     features: ["VERTICAL PRESSURE TAPE", "MISSION CONSOLE", "PHASE SEQUENCER"],
   },
 };
@@ -52,9 +50,9 @@ function templatePackageName(template) {
   const name = template?.name;
   if (typeof name === "string" && name.trim()) return name.trim();
   if (name && typeof name === "object") {
-    return String(name.ar || name.en || Object.values(name)[0] || "").trim();
+    return String(name.en || name.ar || Object.values(name)[0] || "").trim();
   }
-  return template?.id || template?.template_id || "قالب ROTPL";
+  return template?.id || template?.template_id || "ROTPL template";
 }
 
 function normalizeTemplatePackage(template) {
@@ -94,9 +92,9 @@ function normalizeTemplatePackage(template) {
 
 function templateValidationMessage(issue) {
   if (typeof issue === "string") return issue;
-  if (!issue || typeof issue !== "object") return String(issue || "خطأ غير معروف");
+  if (!issue || typeof issue !== "object") return String(issue || "Unknown error");
   const location = issue.path || issue.file || issue.field || "";
-  const message = issue.message || issue.error || issue.code || "مشكلة في الحزمة";
+  const message = issue.message || issue.error || issue.code || "Package issue";
   return location ? `${location}: ${message}` : String(message);
 }
 
@@ -160,7 +158,7 @@ function setSelectedTemplatePackage(template, announce = false) {
     document.querySelector("#broadcastEditionName").textContent = name.toUpperCase();
     document.querySelector("#broadcastThemeName").textContent = name;
     document.querySelector("#broadcastThemeDescription").textContent =
-      `حزمة ROTPL إصدار ${selectedTemplatePackage.version} — تستخدم في المعاينة والتصدير.`;
+      `ROTPL package v${selectedTemplatePackage.version} — used for preview and export.`;
     document.querySelector("#broadcastFeatures").innerHTML =
       `<span>ROTPL</span><span>v${escapeHtml(selectedTemplatePackage.version)}</span><span>1920 × 1080</span>`;
   } else {
@@ -173,16 +171,16 @@ function setSelectedTemplatePackage(template, announce = false) {
   clearBroadcastRasterPreview();
   renderBroadcastPreview();
   if (announce && selectedTemplatePackage) {
-    notify(`تم تطبيق قالب ${templatePackageName(selectedTemplatePackage)} إصدار ${selectedTemplatePackage.version}.`);
+    notify(`Applied template ${templatePackageName(selectedTemplatePackage)} v${selectedTemplatePackage.version}.`);
   }
 }
 
 function templateStatusLabel(template, isSelected) {
-  if (isSelected) return "قيد الاستخدام";
-  if (template.blocked) return "محظور — راجع الأخطاء";
-  if (!template.validation.valid) return "غير صالح";
-  if (template.validation.warnings.length) return "جاهز مع تحذيرات";
-  return "جاهز";
+  if (isSelected) return "In use";
+  if (template.blocked) return "Blocked — review errors";
+  if (!template.validation.valid) return "Invalid";
+  if (template.validation.warnings.length) return "Ready with warnings";
+  return "Ready";
 }
 
 function appendTemplateIssueSummary(card, template) {
@@ -193,8 +191,8 @@ function appendTemplateIssueSummary(card, template) {
   details.className = "template-validation-details";
   const summary = document.createElement("summary");
   summary.textContent = errors.length
-    ? `${errors.length} أخطاء تمنع التفعيل`
-    : `${warnings.length} تحذيرات`;
+    ? `${errors.length} errors block activation`
+    : `${warnings.length} warnings`;
   details.append(summary);
   const list = document.createElement("ul");
   [...errors, ...warnings].slice(0, 8).forEach(issue => {
@@ -214,9 +212,9 @@ function renderInstalledTemplatePackages() {
     const empty = document.createElement("div");
     empty.className = "template-list-empty";
     const title = document.createElement("strong");
-    title.textContent = "لا توجد قوالب ROTPL مثبتة";
+    title.textContent = "No ROTPL templates installed";
     const help = document.createElement("span");
-    help.textContent = "ارفع stellar-kinetics.rotpl ليظهر هنا بعد التحقق.";
+    help.textContent = "Upload a .rotpl package to see it here after validation.";
     empty.append(title, help);
     installedTemplatesHost.append(empty);
     return;
@@ -246,7 +244,7 @@ function renderInstalledTemplatePackages() {
     title.textContent = templatePackageName(template);
     const meta = document.createElement("span");
     const bindings = Number(template.bindings_count);
-    meta.textContent = `v${template.version}${Number.isFinite(bindings) ? ` · ${bindings} متغيرًا` : ""}`;
+    meta.textContent = `v${template.version}${Number.isFinite(bindings) ? ` · ${bindings} bindings` : ""}`;
     const status = document.createElement("small");
     status.textContent = templateStatusLabel(template, isSelected);
     copy.append(title, meta, status);
@@ -255,10 +253,10 @@ function renderInstalledTemplatePackages() {
     action.type = "button";
     action.className = "template-use-button";
     action.disabled = isSelected || !template.validation.valid;
-    action.textContent = isSelected ? "مفعّل" : (template.validation.valid ? "استخدام" : "مرفوض");
+    action.textContent = isSelected ? "Active" : (template.validation.valid ? "Use" : "Rejected");
     action.setAttribute(
       "aria-label",
-      `${action.textContent} ${templatePackageName(template)} إصدار ${template.version}`
+      `${action.textContent} ${templatePackageName(template)} version ${template.version}`
     );
     action.addEventListener("click", () => activateTemplatePackage(template));
 
@@ -275,7 +273,7 @@ async function loadTemplatePackages({ preferKey = "" } = {}) {
   try {
     const response = await fetch("/api/templates", { headers: { "Accept": "application/json" } });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "تعذر تحميل القوالب المثبتة.");
+    if (!response.ok) throw new Error(payload.error || "Could not load installed templates.");
     if (sequence !== templatesRequestSequence) return;
     installedTemplatePackages = (Array.isArray(payload.templates) ? payload.templates : [])
       .map(normalizeTemplatePackage).filter(Boolean);
@@ -313,7 +311,7 @@ async function activateTemplatePackage(template) {
   const normalized = normalizeTemplatePackage(template);
   if (!normalized?.validation.valid) return;
   installedTemplatesHost?.setAttribute("aria-busy", "true");
-  setTemplateFeedback(`جارٍ تفعيل ${templatePackageName(normalized)}…`, "info");
+  setTemplateFeedback(`Activating ${templatePackageName(normalized)}…`, "info");
   try {
     const response = await fetch(`/api/templates/${encodeURIComponent(normalized.id)}/activate`, {
       method: "POST",
@@ -321,12 +319,12 @@ async function activateTemplatePackage(template) {
       body: JSON.stringify({ version: normalized.version }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "تعذر تفعيل القالب.");
+    if (!response.ok) throw new Error(payload.error || "Could not activate the template.");
     const active = normalizeTemplatePackage(payload.active || payload.template || normalized) || normalized;
     if (!active.validation.valid) active.validation = normalized.validation;
     setSelectedTemplatePackage({ ...normalized, ...active, validation: normalized.validation }, true);
     setTemplateFeedback(
-      `تم تفعيل ${templatePackageName(normalized)} إصدار ${normalized.version} للمعاينة والتصدير.`,
+      `Activated ${templatePackageName(normalized)} v${normalized.version} for preview and export.`,
       "success"
     );
   } catch (error) {
@@ -348,19 +346,19 @@ function uploadTemplatePackage(file) {
     request.upload.addEventListener("progress", event => {
       if (!event.lengthComputable) return;
       const percent = Math.round(event.loaded / event.total * 100);
-      updateTemplateUploadProgress(percent, percent < 100 ? "جارٍ رفع الحزمة…" : "جارٍ فحص الحزمة…");
+      updateTemplateUploadProgress(percent, percent < 100 ? "Uploading package…" : "Validating package…");
     });
     request.addEventListener("load", () => {
       let payload = {};
       try { payload = JSON.parse(request.responseText || "{}"); } catch {}
       if (request.status >= 200 && request.status < 300) resolve(payload);
       else reject(Object.assign(
-        new Error(payload.error || `تعذر رفع القالب (${request.status}).`),
+        new Error(payload.error || `Could not upload the template (${request.status}).`),
         { issues: payload.validation?.errors || payload.errors || [] }
       ));
     });
-    request.addEventListener("error", () => reject(new Error("انقطع الاتصال أثناء رفع القالب.")));
-    request.addEventListener("abort", () => reject(new Error("تم إلغاء رفع القالب.")));
+    request.addEventListener("error", () => reject(new Error("Connection lost while uploading the template.")));
+    request.addEventListener("abort", () => reject(new Error("Template upload was canceled.")));
     request.send(body);
   });
 }
@@ -369,7 +367,7 @@ async function handleTemplatePackageUpload() {
   const file = templatePackageInput?.files?.[0];
   if (!file) return;
   if (!file.name.toLowerCase().endsWith(".rotpl")) {
-    setTemplateFeedback("الملف غير مدعوم. اختر حزمة تنتهي بالامتداد .rotpl.", "error");
+    setTemplateFeedback("Unsupported file. Choose a package ending in .rotpl.", "error");
     templatePackageInput.value = "";
     return;
   }
@@ -377,35 +375,35 @@ async function handleTemplatePackageUpload() {
   uploadLabel?.classList.add("busy");
   templatePackageInput.disabled = true;
   setTemplateFeedback("", "info");
-  updateTemplateUploadProgress(0, `جارٍ تجهيز ${file.name}…`);
+  updateTemplateUploadProgress(0, `Preparing ${file.name}…`);
   try {
     const payload = await uploadTemplatePackage(file);
     const rawTemplate = payload.template || payload;
     const uploaded = normalizeTemplatePackage(rawTemplate);
     const validation = rawTemplate?.validation || payload.validation || {};
-    updateTemplateUploadProgress(100, "اكتمل الرفع والفحص");
+    updateTemplateUploadProgress(100, "Upload and validation complete");
     if (validation.valid === true && validation.activatable !== false && !uploaded?.blocked) {
       setTemplateFeedback(
-        "الحزمة سليمة وجاهزة. راجع التحذيرات ثم اضغط «استخدام» لتفعيلها.",
+        "The package is valid and ready. Review any warnings, then click “Use” to activate it.",
         validation.warnings?.length ? "warning" : "success",
         validation.warnings || []
       );
     } else if (validation.valid === true) {
       setTemplateFeedback(
-        "الحزمة سليمة بنيويًا، لكن تفعيلها محظور حتى تُستكمل المتطلبات التالية:",
+        "The package is structurally valid, but activation is blocked until the following are resolved:",
         "error",
         validation.blocked_reasons || uploaded?.validation?.errors || []
       );
     } else {
       setTemplateFeedback(
-        "تم رفع الحزمة، لكنها لم تجتز الفحص ولن يمكن تفعيلها.",
+        "The package was uploaded but failed validation and cannot be activated.",
         "error",
         validation.errors || []
       );
     }
     await loadTemplatePackages({ preferKey: "" });
   } catch (error) {
-    updateTemplateUploadProgress(0, "فشل رفع القالب");
+    updateTemplateUploadProgress(0, "Template upload failed");
     setTemplateFeedback(error.message, "error", error.issues || []);
     notify(error.message);
   } finally {
@@ -440,13 +438,13 @@ function applyBroadcastTheme(theme, announce = false) {
     ?.classList.toggle("hidden", selected === "stellar_console");
   localStorage.setItem("rocket-overlay-broadcast-theme", selected);
   renderBroadcastPreview();
-  if (announce) notify(`تم تطبيق ثيم ${details.name} على المعاينة والتصدير.`);
+  if (announce) notify(`Applied ${details.name} theme to the preview and export.`);
 }
 
 const names = {
-  video: "الفيديو", chart: "المخطط", title: "العنوان", timecode: "الوقت والمزامنة",
-  pressure_card: "بطاقة الضغط", thrust_card: "بطاقة الدفع", status: "حالة الاختبار",
-  identity: "بيانات الاختبار", logo: "الشعار"
+  video: "Video", chart: "Chart", title: "Title", timecode: "Timecode",
+  pressure_card: "Pressure card", thrust_card: "Thrust card", status: "Status",
+  identity: "Identity", logo: "Logo"
 };
 let scene = null;
 let initialScene = null;
@@ -488,7 +486,7 @@ function notify(message) {
   window.setTimeout(() => toast.style.display = "none", 4200);
 }
 function fileName(input, id) {
-  document.querySelector(id).textContent = input.files[0]?.name || "لم يتم اختيار ملف";
+  document.querySelector(id).textContent = input.files[0]?.name || "No file selected";
 }
 function snapshot() {
   if (!scene || propertyEditing) return;
@@ -527,7 +525,7 @@ async function initialize() {
       saveDraft();
     }
   } catch {
-    notify("تعذر تحميل التصميم الافتراضي.");
+    notify("Could not load the default layout.");
     return;
   }
   renderScene();
@@ -545,6 +543,7 @@ videoInput.addEventListener("change", () => {
   video.src = previewUrl; video.style.display = "block";
   stage.classList.add("has-source");
   document.querySelector("#emptyPreview").classList.add("hidden");
+  decodeAudioWaveform(videoInput.files[0]);
 });
 videoInput2.addEventListener("change", () => fileName(videoInput2, "#videoName2"));
 videoInput3.addEventListener("change", () => fileName(videoInput3, "#videoName3"));
@@ -555,10 +554,18 @@ function setCameraSource(input, target, urlKey) {
   if (urlKey === 2) previewUrl2 = nextUrl; else previewUrl3 = nextUrl;
   if (nextUrl) target.src = nextUrl; else target.removeAttribute("src");
   updateCameraPreview();
+  updateTimelineUI();
 }
 videoInput2.addEventListener("change", () => setCameraSource(videoInput2, video2, 2));
 videoInput3.addEventListener("change", () => setCameraSource(videoInput3, video3, 3));
-document.querySelector("#cameraMode").addEventListener("change", updateCameraPreview);
+document.querySelector("#cameraMode").addEventListener("change", () => {
+  updateCameraPreview();
+  if (document.querySelector("#cameraMode").value === "program" && !programSegments.length) {
+    resetProgramSegments();
+  }
+  serializeCameraProgram();
+  renderProgramLane();
+});
 document.querySelector("#cameraPreviewMode").addEventListener("change", updateCameraPreview);
 
 function cameraSourceTime(cameraNumber) {
@@ -584,12 +591,14 @@ function updateCameraPreview() {
   if (previewChoice !== "layout") {
     const chosen = cameras[Number(previewChoice) - 1];
     if (!chosen?.src) {
-      notify(`اختر ملف الكاميرا ${previewChoice} أولًا.`);
+      notify(`Choose the CAM ${previewChoice} file first.`);
       document.querySelector("#cameraPreviewMode").value = "layout";
+      syncViewTabs();
     } else {
       chosen.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
       applyCameraFocus(chosen, Number(previewChoice));
       syncSecondaryCameras();
+      syncViewTabs();
       return;
     }
   }
@@ -615,11 +624,22 @@ function updateCameraPreview() {
     const visible = chosen.src ? chosen : video;
     visible.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
     applyCameraFocus(visible, cameras.indexOf(visible) + 1);
+  } else if (mode === "program" && active.length > 1) {
+    // Mirrors camera_layout_frame()'s "program" branch in the render
+    // pipeline, so the live PROGRAM preview matches what gets exported.
+    const segment = programSegments.find(
+      s => video.currentTime >= s.start && video.currentTime < s.end
+    );
+    const chosen = cameras[(segment ? segment.camera : 1) - 1];
+    const visible = chosen?.src ? chosen : video;
+    visible.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
+    applyCameraFocus(visible, cameras.indexOf(visible) + 1);
   } else {
     video.style.cssText = "display:block;position:absolute;object-fit:cover;inset:0;width:100%;height:100%;";
     applyCameraFocus(video, 1);
   }
   syncSecondaryCameras();
+  syncViewTabs();
 }
 function applyCameraFocus(camera, number) {
   const prefix = number === 1 ? "" : `camera_${number}_`;
@@ -681,12 +701,16 @@ video.addEventListener("loadedmetadata", () => {
   configureResolutionOptions(video.videoWidth, video.videoHeight);
   stage.style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
   syncSourceQualityMode();
+  resetCutSegments();
+  resetProgramSegments();
   updateIgnitionMarker(); updateCameraPreview(); renderPreview();
 });
 function updatePlaybackPreview() {
   if (!video.duration) return;
   document.querySelector("#timelineRange").value = video.currentTime / video.duration * 1000;
   updateCameraPreview(); renderPreview();
+  const playhead = document.querySelector("#timelinePlayhead");
+  if (playhead) playhead.style.left = `${clamp(video.currentTime / video.duration * 100, 0, 100)}%`;
 }
 
 function stopVideoFrameLoop() {
@@ -773,7 +797,10 @@ form.elements.ignition_video_s.addEventListener("input", () => {
   renderPreview();
 });
 ["camera_2_ignition_s","camera_3_ignition_s","camera_3_switch_delay_s"].forEach(name =>
-  form.elements[name].addEventListener("input", updateCameraPreview)
+  form.elements[name].addEventListener("input", () => {
+    updateCameraPreview();
+    updateTimelineUI();
+  })
 );
 [
   "crop_x","crop_y","crop_zoom",
@@ -808,10 +835,58 @@ document.querySelectorAll('input[name="broadcast_theme"]').forEach(input =>
 );
 templatePackageInput?.addEventListener("change", handleTemplatePackageUpload);
 document.querySelector("#refreshTemplates")?.addEventListener("click", () => {
-  setTemplateFeedback("جارٍ تحديث قائمة القوالب…", "info");
+  setTemplateFeedback("Refreshing template list…", "info");
   void loadTemplatePackages().then(success => {
     if (success) setTemplateFeedback();
   });
+});
+document.querySelector("#headerExportButton")?.addEventListener("click", () => {
+  document.querySelector("#renderButton").click();
+});
+
+// Safe-area guide is a preview-only framing aid; it never reaches the
+// backend and is never burned into the exported video.
+document.querySelector("#showSafeArea")?.addEventListener("change", event => {
+  document.querySelector("#safeArea")?.classList.toggle("hidden", !event.target.checked);
+});
+
+// Export presets are a client-side convenience: every field they touch
+// already exists and is independently real (Config.output_style,
+// Config.resolution/width+height, Config.delivery_codec,
+// Config.preserve_source_quality) — a preset just sets several of them at
+// once. Archive routes through the existing #preserveSourceQuality checkbox
+// so it keeps respecting the same HDR-passthrough gating (source
+// resolution, single camera, no crop/enhance) as when a user checks it by
+// hand.
+const EXPORT_PRESETS = {
+  engineering: { outputStyle: "engineering", resolution: "source", codec: "h264", archive: false },
+  presentation: { outputStyle: "presentation", resolution: "source", codec: "h264", archive: false },
+  archive: { outputStyle: "archive", resolution: "source", codec: "h264", archive: true },
+  social: { outputStyle: "social", resolution: "1080x1920", codec: "h264", archive: false },
+};
+function applyExportPreset(name) {
+  const preset = EXPORT_PRESETS[name];
+  if (!preset) return;
+  form.elements.output_style.value = preset.outputStyle;
+  const archiveCheckbox = document.querySelector("#preserveSourceQuality");
+  if (archiveCheckbox.checked !== preset.archive) {
+    archiveCheckbox.checked = preset.archive;
+    archiveCheckbox.dispatchEvent(new Event("change"));
+  }
+  if (!preset.archive) {
+    // syncSourceQualityMode() already forces "source" while archive mode is
+    // on, so only apply the preset's own resolution/codec otherwise.
+    const resolutionSelect = document.querySelector("#resolution");
+    resolutionSelect.value = preset.resolution;
+    resolutionSelect.dispatchEvent(new Event("change"));
+    form.elements.delivery_codec.value = preset.codec;
+  }
+  document.querySelectorAll(".export-preset").forEach(button => {
+    button.classList.toggle("active", button.dataset.preset === name);
+  });
+}
+document.querySelectorAll(".export-preset").forEach(button => {
+  button.addEventListener("click", () => applyExportPreset(button.dataset.preset));
 });
 
 async function inspectData() {
@@ -843,7 +918,7 @@ async function inspectData() {
     telemetryDiagnosticsData = payload.telemetry_diagnostics || null;
     for (const kind of ["time", "pressure", "thrust"]) {
       const select = document.querySelector(`#${kind}Column`);
-      const optional = kind === "thrust" ? '<option value="__none__">غير متوفر — ضغط فقط</option>' : "";
+      const optional = kind === "thrust" ? '<option value="__none__">Not available — pressure only</option>' : "";
       select.innerHTML = optional + payload.columns.map(column =>
         `<option value="${escapeHtml(column)}">${escapeHtml(column)}</option>`).join("");
       select.value = payload.detected[kind] || (kind === "thrust" ? "__none__" : payload.columns[0]);
@@ -855,14 +930,15 @@ async function inspectData() {
       telemetryZeroAuto = true;
     }
     renderTelemetryDiagnostics();
+    renderTelemetryTrack();
     if (broadcastPreviewSessionId && logoInput.files[0]) {
       await syncBroadcastPreviewLogo(false);
     }
     renderPreview();
     const thrustNotice = telemetryDiagnosticsData?.has_thrust
-      ? "تم ربط الضغط والدفع."
-      : "تم ربط الضغط؛ قناة الدفع غير موجودة وستظهر N/A.";
-    notify(`تم تحليل القياسات واكتشاف نقطة الاشتعال تلقائيًا. ${thrustNotice}`);
+      ? "Pressure and thrust are linked."
+      : "Pressure is linked; no thrust channel found, it will show N/A.";
+    notify(`Telemetry analyzed and ignition point auto-detected. ${thrustNotice}`);
   } catch (error) {
     if (error.name !== "AbortError") {
       telemetryDiagnosticsData = { status: "error", reason: error.message };
@@ -892,13 +968,13 @@ function renderTelemetryDiagnostics(runtimeError = "") {
   const status = runtimeError ? "error" : diagnostics.status;
   panel.dataset.tone = status === "error" ? "error" : (hasThrust ? "ready" : "warning");
   document.querySelector("#telemetryHealth").textContent = runtimeError
-    ? `تعذر تحديث المعاينة: ${runtimeError}`
+    ? `Could not refresh the preview: ${runtimeError}`
     : status === "ready"
-      ? "تم ربط القياسات بنجاح"
-      : "جارٍ تحليل وربط القياسات";
+      ? "Telemetry linked successfully"
+      : "Analyzing and linking telemetry";
   const timeColumn = form.elements.time_column.value || diagnostics.time_column || "—";
   const pressureColumn = form.elements.pressure_column.value || diagnostics.pressure_column || "—";
-  const thrustColumn = hasThrust ? form.elements.thrust_column.value : "N/A (غير موجود)";
+  const thrustColumn = hasThrust ? form.elements.thrust_column.value : "N/A (not found)";
   document.querySelector("#telemetryMapping").textContent =
     `TIME ← ${timeColumn}   |   PRESSURE ← ${pressureColumn}   |   THRUST ← ${thrustColumn}`;
   const sourceStart = formatTelemetryNumber(diagnostics.first_timestamp_s);
@@ -915,7 +991,7 @@ function renderTelemetryDiagnostics(runtimeError = "") {
     : "—";
   const peakThrust = hasThrust
     ? `${formatTelemetryNumber(diagnostics.peak_thrust, 1)} ${form.elements.thrust_unit.value || "N"}`
-    : "N/A — لا يوجد عمود دفع في الملف";
+    : "N/A — no thrust column in the file";
   document.querySelector("#telemetryChannels").textContent =
     `LIVE PRESSURE ${livePressure}   |   PEAK ${peakPressure} ${form.elements.pressure_unit.value || "bar"}   |   THRUST ${peakThrust}`;
 }
@@ -980,8 +1056,13 @@ function hexAlpha(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
+// The scene/property editor (drag/resize/undo-redo overlay-element placement)
+// has no panel in the new UI; these functions stay in place but are unreachable
+// (no matching DOM), guarded so renderScene()/initialize() keep working.
 function renderLayers() {
-  const list = document.querySelector("#layersList"); list.innerHTML = "";
+  const list = document.querySelector("#layersList");
+  if (!list) return;
+  list.innerHTML = "";
   [...scene.elements].sort((a,b)=>(b.z||0)-(a.z||0)).forEach(element => {
     const button = document.createElement("button");
     button.type = "button";
@@ -996,9 +1077,12 @@ function selectElement(id) {
   document.querySelectorAll(".scene-element").forEach(node => node.classList.toggle("selected", node.dataset.id === id));
   renderLayers();
   const element = selected();
-  document.querySelector("#noSelection").classList.toggle("hidden", !!element);
-  document.querySelector("#propertyEditor").classList.toggle("hidden", !element);
-  document.querySelector("#selectedName").textContent = element ? names[element.type] : "اختر عنصرًا";
+  const noSelection = document.querySelector("#noSelection");
+  const propertyEditor = document.querySelector("#propertyEditor");
+  if (!noSelection || !propertyEditor) return;
+  noSelection.classList.toggle("hidden", !!element);
+  propertyEditor.classList.toggle("hidden", !element);
+  document.querySelector("#selectedName").textContent = element ? names[element.type] : "Select an element";
   if (!element) return;
   setPropertyValues(element);
 }
@@ -1045,6 +1129,7 @@ function snap(value) {
 }
 
 function bindProperties() {
+  if (!document.querySelector("#propX")) return; // no property editor panel in this UI
   const geometry = { propX:"x", propY:"y", propW:"width", propH:"height" };
   Object.entries(geometry).forEach(([id,key]) => {
     const input = document.querySelector(`#${id}`);
@@ -1116,8 +1201,8 @@ function setPropertyValues(element) {
   document.querySelector("#propBackground").value = element.background || "#0f172a";
   document.querySelector("#propBackgroundOpacity").value = (element.backgroundOpacity ?? 0) * 100;
   document.querySelector("#backgroundOpacityValue").textContent = `${Math.round((element.backgroundOpacity ?? 0)*100)}%`;
-  document.querySelector("#toggleVisible").textContent = element.visible === false ? "إظهار" : "إخفاء";
-  document.querySelector("#toggleLock").textContent = element.locked ? "فتح القفل" : "قفل";
+  document.querySelector("#toggleVisible").textContent = element.visible === false ? "Show" : "Hide";
+  document.querySelector("#toggleLock").textContent = element.locked ? "Unlock" : "Lock";
   const chart = element.type === "chart";
   document.querySelector("#textProperties").classList.toggle("hidden", chart || element.type === "video" || element.type === "logo");
   document.querySelector("#fontSize").value = (element.fontSize ?? 1) * 100;
@@ -1211,7 +1296,7 @@ async function syncBroadcastPreviewLogo(renderAfter = true) {
       });
     }
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "تعذر تجهيز الشعار للمعاينة.");
+    if (!response.ok) throw new Error(payload.error || "Could not prepare the logo for preview.");
     if (previewId !== broadcastPreviewSessionId) return;
     if (renderAfter) {
       invalidateBroadcastRasterWork();
@@ -1320,7 +1405,7 @@ async function loadBroadcastRasterPreview(telemetryTime) {
     });
     if (!response.ok) {
       const problem = await response.json().catch(() => ({}));
-      throw new Error(problem.error || "تعذر إنشاء المعاينة المطابقة.");
+      throw new Error(problem.error || "Could not build the matching preview.");
     }
     if (generation !== broadcastRasterGeneration || previewId !== broadcastPreviewSessionId) return;
     const renderedTelemetry = {
@@ -1608,51 +1693,489 @@ function drawChart(series,time,style) {
 document.querySelector("#playButton").addEventListener("click",()=>video.paused?video.play():video.pause());
 document.querySelector("#timelineRange").addEventListener("input",event=>{if(video.duration)video.currentTime=Number(event.target.value)/1000*video.duration});
 document.querySelector("#jumpIgnition").addEventListener("click",()=>video.currentTime=clamp(Number(form.elements.ignition_video_s.value)||0,0,video.duration||0));
-function updateIgnitionMarker(){const d=video.duration||1,t=Number(form.elements.ignition_video_s.value)||0;document.querySelector("#ignitionMarker").style.left=`${clamp(t/d*100,0,100)}%`}
+function timelineClipGeometry(cameraNumber) {
+  const duration = video.duration || 0;
+  if (!duration) return { leftPct: 0, widthPct: 100 };
+  const primaryIgnition = Number(form.elements.ignition_video_s.value || 0);
+  const cameraIgnition = Number(form.elements[`camera_${cameraNumber}_ignition_s`].value || 0);
+  const startMaster = primaryIgnition - cameraIgnition;
+  const startFraction = clamp(startMaster / duration, 0, 1);
+  const secondaryVideo = cameraNumber === 2 ? video2 : video3;
+  const secondaryDuration = Number.isFinite(secondaryVideo.duration) && secondaryVideo.duration > 0
+    ? secondaryVideo.duration : duration - startMaster;
+  const endFraction = clamp((startMaster + secondaryDuration) / duration, 0, 1);
+  return { leftPct: startFraction * 100, widthPct: Math.max(2, (endFraction - startFraction) * 100) };
+}
+
+function updateClipLabel(cameraNumber, input) {
+  const label = document.querySelector(`#clipLabel${cameraNumber}`);
+  if (!label) return;
+  const file = input.files[0];
+  const ignitionField = cameraNumber === 1
+    ? form.elements.ignition_video_s
+    : form.elements[`camera_${cameraNumber}_ignition_s`];
+  const ignitionValue = Number(ignitionField?.value || 0);
+  label.textContent = file
+    ? `CAM ${cameraNumber} · ${file.name} · IGN ${ignitionValue.toFixed(2)}s`
+    : `CAM ${cameraNumber} · no file assigned`;
+}
+
+function renderTelemetryTrack() {
+  const svg = document.querySelector("#telemetryTrackSvg");
+  if (!svg) return;
+  const duration = video.duration || 0;
+  const series = normalizedSeries();
+  if (!duration || series.length < 2) { svg.innerHTML = ""; return; }
+  const ignition = Number(form.elements.ignition_video_s.value || 0);
+  const maxPressure = Math.max(1, ...series.map(item => item.pressure || 0));
+  const baseline = 39;
+  const coords = series.map(item => {
+    const masterTime = item.time + ignition;
+    const x = clamp(masterTime / duration, 0, 1) * 1000;
+    const y = baseline - clamp(item.pressure / maxPressure, 0, 1) * 36;
+    return [x, y];
+  });
+  // Telemetry rarely covers the video's full duration (recording starts near
+  // ignition, not at the video's pre-roll). Holding the first/last reading
+  // flat out to the row's edges keeps this track visually as continuous as
+  // the audio waveform beside it, instead of leaving a blank gap.
+  if (coords[0][0] > 0) coords.unshift([0, coords[0][1]]);
+  if (coords[coords.length - 1][0] < 1000) coords.push([1000, coords[coords.length - 1][1]]);
+  const points = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const firstX = coords[0][0].toFixed(1);
+  const lastX = coords[coords.length - 1][0].toFixed(1);
+  const fillPoints = `${firstX},${baseline} ${points} ${lastX},${baseline}`;
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="telemetryFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#8dffb8" stop-opacity="0.55"/>
+        <stop offset="100%" stop-color="#8dffb8" stop-opacity="0.02"/>
+      </linearGradient>
+      <filter id="telemetryGlow" x="-20%" y="-100%" width="140%" height="300%">
+        <feGaussianBlur stdDeviation="1.1" result="blur"/>
+        <feMerge>
+          <feMergeNode in="blur"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>
+    </defs>
+    <polygon points="${fillPoints}" fill="url(#telemetryFill)" stroke="none"/>
+    <polyline points="${points}" fill="none" stroke="#8dffb8" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" filter="url(#telemetryGlow)"/>
+  `;
+}
+
+// Client-side waveform preview for the timeline's audio row. Purely a visual
+// scrubbing/sync aid — decoded in the browser from the already-selected primary
+// video File, never sent to the backend and never affects the export payload.
+let audioWaveformPeaks = null;
+let audioWaveformToken = 0;
+async function decodeAudioWaveform(file) {
+  const svg = document.querySelector("#audioWaveformSvg");
+  const lane = document.querySelector(".audio-lane");
+  const hint = document.querySelector("#audioLaneHint");
+  const token = ++audioWaveformToken;
+  audioWaveformPeaks = null;
+  if (svg) svg.innerHTML = "";
+  if (lane) lane.classList.remove("has-waveform");
+  if (hint) hint.textContent = "Decoding audio…";
+  if (!file) return;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error("Web Audio unsupported");
+    const buffer = await file.arrayBuffer();
+    const context = new AudioContextClass();
+    let decoded;
+    try {
+      decoded = await context.decodeAudioData(buffer);
+    } finally {
+      context.close();
+    }
+    if (token !== audioWaveformToken) return;
+    const channel = decoded.getChannelData(0);
+    const buckets = 1000;
+    const samplesPerBucket = Math.max(1, Math.floor(channel.length / buckets));
+    const peaks = new Array(buckets);
+    for (let i = 0; i < buckets; i++) {
+      const start = i * samplesPerBucket;
+      const end = i === buckets - 1 ? channel.length : start + samplesPerBucket;
+      let min = 0, max = 0;
+      for (let j = start; j < end; j++) {
+        const value = channel[j];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      peaks[i] = [min, max];
+    }
+    audioWaveformPeaks = peaks;
+    if (hint) hint.textContent = "";
+    if (lane) lane.classList.add("has-waveform");
+    renderAudioWaveform();
+  } catch (error) {
+    if (token !== audioWaveformToken) return;
+    audioWaveformPeaks = null;
+    if (hint) hint.textContent = "Waveform unavailable for this file";
+  }
+}
+function renderAudioWaveform() {
+  const svg = document.querySelector("#audioWaveformSvg");
+  if (!svg || !audioWaveformPeaks) return;
+  const mid = 20;
+  const bars = audioWaveformPeaks.map(([min, max], i) => {
+    const x = i;
+    const y1 = (mid - max * 18).toFixed(1);
+    const y2 = (mid - min * 18).toFixed(1);
+    return `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="#5fb3d9" stroke-width="1"/>`;
+  }).join("");
+  svg.innerHTML = bars;
+}
+
+// Shared cut list: one ordered set of kept [start, end) ranges in the primary
+// camera's own clock, covering the whole project (every camera, the audio,
+// and the telemetry curve at once). Split only ever subdivides an existing
+// segment and delete only ever hides one, so there is no operation that can
+// reorder segments — pressure/thrust readings therefore never lose their
+// real (uncut) timestamp, which is why reordering isn't offered at all.
+let cutSegments = [];
+let razorActive = false;
+const MIN_SEGMENT_S = 0.05;
+
+function resetCutSegments() {
+  const duration = video.duration || 0;
+  cutSegments = duration ? [{ start: 0, end: duration, deleted: false }] : [];
+  serializeCutList();
+}
+function serializeCutList() {
+  const field = document.querySelector("#cutListField");
+  if (!field) return;
+  const kept = cutSegments
+    .filter(segment => !segment.deleted)
+    .map(segment => [Number(segment.start.toFixed(3)), Number(segment.end.toFixed(3))]);
+  field.value = kept.length ? JSON.stringify(kept) : "";
+}
+function splitAt(masterTime) {
+  const target = cutSegments.find(
+    segment => !segment.deleted && masterTime > segment.start + MIN_SEGMENT_S
+      && masterTime < segment.end - MIN_SEGMENT_S
+  );
+  if (!target) return;
+  const index = cutSegments.indexOf(target);
+  cutSegments.splice(index, 1,
+    { start: target.start, end: masterTime, deleted: false },
+    { start: masterTime, end: target.end, deleted: false },
+  );
+  serializeCutList();
+  updateTimelineUI();
+}
+function deleteSegment(segment) {
+  const remaining = cutSegments.filter(s => !s.deleted && s !== segment);
+  if (!remaining.length) {
+    notify("Cannot delete the last remaining segment.");
+    return;
+  }
+  segment.deleted = true;
+  serializeCutList();
+  updateTimelineUI();
+}
+function renderCutsLane() {
+  const lane = document.querySelector("#cutsLane");
+  if (!lane) return;
+  document.querySelectorAll(".cut-gap-marker").forEach(node => node.remove());
+  const duration = video.duration || 0;
+  if (!duration) { lane.innerHTML = ""; return; }
+  const kept = cutSegments.filter(segment => !segment.deleted);
+  lane.innerHTML = "";
+  kept.forEach(segment => {
+    const leftPct = clamp(segment.start / duration, 0, 1) * 100;
+    const widthPct = Math.max(0.3, clamp((segment.end - segment.start) / duration, 0, 1) * 100);
+    const block = document.createElement("div");
+    block.className = "cut-segment" + (razorActive ? " razor-active" : "");
+    block.style.left = `${leftPct}%`;
+    block.style.width = `${widthPct}%`;
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "segment-delete";
+    deleteButton.textContent = "×";
+    deleteButton.title = "Delete this segment";
+    deleteButton.addEventListener("pointerdown", event => event.stopPropagation());
+    deleteButton.addEventListener("click", event => {
+      event.stopPropagation();
+      deleteSegment(segment);
+    });
+    block.appendChild(deleteButton);
+    lane.appendChild(block);
+  });
+  // Dimmed hatched gaps on the other rows make a cut read as one linked edit
+  // across every track, even though the underlying list is shared/global.
+  const gapContainers = document.querySelectorAll(
+    "#trackLanes > .track-lane:not(.cuts-lane)"
+  );
+  const deletedRanges = cutSegments.filter(segment => segment.deleted);
+  deletedRanges.forEach(segment => {
+    const leftPct = clamp(segment.start / duration, 0, 1) * 100;
+    const widthPct = Math.max(0.3, clamp((segment.end - segment.start) / duration, 0, 1) * 100);
+    gapContainers.forEach(container => {
+      const marker = document.createElement("div");
+      marker.className = "cut-gap-marker";
+      marker.style.left = `${leftPct}%`;
+      marker.style.width = `${widthPct}%`;
+      container.appendChild(marker);
+    });
+  });
+}
+
+// PROGRAM row: assigns which single camera is "on air" during each segment
+// of the final video, only meaningful when camera_mode is "program". Unlike
+// the shared CUTS list, coverage must stay total (every moment shows some
+// camera), so there is no delete — only split (click empty lane) and
+// cycle-camera (click a segment).
+let programSegments = [];
+function resolveActiveCameraNumbers() {
+  const numbers = [1];
+  if (videoInput2.files[0]) numbers.push(2);
+  if (videoInput3.files[0]) numbers.push(3);
+  return numbers;
+}
+function resetProgramSegments() {
+  const duration = video.duration || 0;
+  programSegments = duration ? [{ start: 0, end: duration, camera: 1 }] : [];
+  serializeCameraProgram();
+}
+function serializeCameraProgram() {
+  const field = document.querySelector("#cameraProgramField");
+  if (!field) return;
+  const inProgramMode = document.querySelector("#cameraMode").value === "program";
+  if (!inProgramMode || !programSegments.length) { field.value = ""; return; }
+  field.value = JSON.stringify(
+    programSegments.map(s => [Number(s.start.toFixed(3)), Number(s.end.toFixed(3)), s.camera])
+  );
+}
+function splitProgramAt(masterTime) {
+  const target = programSegments.find(
+    s => masterTime > s.start + MIN_SEGMENT_S && masterTime < s.end - MIN_SEGMENT_S
+  );
+  if (!target) return;
+  const index = programSegments.indexOf(target);
+  programSegments.splice(index, 1,
+    { start: target.start, end: masterTime, camera: target.camera },
+    { start: masterTime, end: target.end, camera: target.camera },
+  );
+  serializeCameraProgram();
+  renderProgramLane();
+}
+function cycleProgramSegmentCamera(segment) {
+  const numbers = resolveActiveCameraNumbers();
+  if (numbers.length < 2) {
+    notify("Add a second camera to build a program cut list.");
+    return;
+  }
+  const currentIndex = numbers.indexOf(segment.camera);
+  segment.camera = numbers[(currentIndex + 1 + numbers.length) % numbers.length];
+  serializeCameraProgram();
+  renderProgramLane();
+}
+function renderProgramLane() {
+  const lane = document.querySelector("#programLane");
+  if (!lane) return;
+  const duration = video.duration || 0;
+  const inProgramMode = document.querySelector("#cameraMode").value === "program";
+  lane.classList.toggle("editable", inProgramMode && Boolean(duration));
+  lane.querySelectorAll(".program-segment").forEach(node => node.remove());
+  if (!inProgramMode || !duration) return;
+  programSegments.forEach(segment => {
+    const leftPct = clamp(segment.start / duration, 0, 1) * 100;
+    const widthPct = Math.max(0.3, clamp((segment.end - segment.start) / duration, 0, 1) * 100);
+    const block = document.createElement("div");
+    block.className = "program-segment";
+    block.dataset.camera = String(segment.camera);
+    block.style.left = `${leftPct}%`;
+    block.style.width = `${widthPct}%`;
+    block.textContent = `CAM ${segment.camera}`;
+    block.title = "Click to change the camera for this segment";
+    block.addEventListener("click", event => {
+      event.stopPropagation();
+      cycleProgramSegmentCamera(segment);
+    });
+    lane.appendChild(block);
+  });
+}
+
+function updateTimelineUI() {
+  const duration = video.duration || 0;
+  const ignitionTime = Number(form.elements.ignition_video_s.value) || 0;
+  const ignitionMarker = document.querySelector("#ignitionMarker");
+  if (ignitionMarker) ignitionMarker.style.left = `${clamp(duration ? ignitionTime / duration * 100 : 0, 0, 100)}%`;
+  const playhead = document.querySelector("#timelinePlayhead");
+  if (playhead) playhead.style.left = `${clamp(duration ? video.currentTime / duration * 100 : 0, 0, 100)}%`;
+  updateClipLabel(1, videoInput);
+  for (const [cameraNumber, input] of [[2, videoInput2], [3, videoInput3]]) {
+    const block = document.querySelector(`#clipBlock${cameraNumber}`);
+    updateClipLabel(cameraNumber, input);
+    if (!block) continue;
+    const hasSource = Boolean(input.files[0]);
+    block.classList.toggle("empty", !hasSource);
+    if (!hasSource) { block.style.left = ""; block.style.width = ""; continue; }
+    const { leftPct, widthPct } = timelineClipGeometry(cameraNumber);
+    block.style.left = `${leftPct}%`;
+    block.style.width = `${widthPct}%`;
+  }
+  renderTelemetryTrack();
+  renderCutsLane();
+  renderProgramLane();
+}
+function updateIgnitionMarker(){ updateTimelineUI(); }
 function formatTime(seconds){if(!Number.isFinite(seconds))return"00:00.00";const m=Math.floor(seconds/60),s=seconds-m*60;return`${String(m).padStart(2,"0")}:${s.toFixed(2).padStart(5,"0")}`}
 
-document.querySelector("#toggleVisible").addEventListener("click",()=>mutateSelected(el=>el.visible=el.visible===false));
-document.querySelector("#toggleLock").addEventListener("click",()=>mutateSelected(el=>el.locked=!el.locked));
-document.querySelector("#moveUp").addEventListener("click",()=>mutateSelected(el=>el.z=(el.z||0)+1));
-document.querySelector("#moveDown").addEventListener("click",()=>mutateSelected(el=>el.z=(el.z||0)-1));
-document.querySelector("#resetElement").addEventListener("click",()=> {
-  const original=initialScene.elements.find(item=>item.id===selectedId); if(!original)return;
-  snapshot(); const index=scene.elements.findIndex(item=>item.id===selectedId); scene.elements[index]=clone(original); renderScene();selectElement(selectedId);saveDraft();
+// PROGRAM/CAM1/2/3 viewer tabs (and the V1/V2/V3 timeline track labels, which
+// offer the same switch) are a reskin of the existing #cameraPreviewMode
+// select — clicking either just sets the select's value and dispatches the
+// same "change" event the select already handles, so updateCameraPreview()
+// stays the single source of truth for what's actually shown.
+function syncViewTabs() {
+  const value = document.querySelector("#cameraPreviewMode")?.value;
+  document.querySelectorAll(".view-tab").forEach(button => {
+    button.classList.toggle("active", button.dataset.view === value);
+  });
+  document.querySelectorAll(".track-label[data-view]").forEach(label => {
+    label.classList.toggle("active", label.dataset.view === value);
+  });
+}
+function selectCameraView(view) {
+  const select = document.querySelector("#cameraPreviewMode");
+  select.value = view;
+  select.dispatchEvent(new Event("change"));
+}
+document.querySelectorAll(".view-tab").forEach(button => {
+  button.addEventListener("click", () => selectCameraView(button.dataset.view));
 });
+document.querySelectorAll(".track-label[data-view]").forEach(label => {
+  label.addEventListener("click", () => selectCameraView(label.dataset.view));
+});
+
+// The 4-step wizard nav: clicking a tab shows only that step's panel.
+// Panels are native <details>, so a user can still expand another one by
+// hand without losing the rest of the form's state; doing so re-highlights
+// the matching nav tab via the "toggle" listener below.
+const WIZARD_STEPS = ["media", "sync", "design", "export"];
+function goToStep(step) {
+  WIZARD_STEPS.forEach(id => {
+    const panel = document.querySelector(`#step-${id}`);
+    if (panel) panel.open = id === step;
+  });
+  document.querySelectorAll(".wizard-nav a").forEach(link => {
+    link.classList.toggle("active", link.dataset.stepLink === step);
+  });
+}
+document.querySelectorAll(".wizard-nav a").forEach(link => {
+  link.addEventListener("click", event => {
+    event.preventDefault();
+    goToStep(link.dataset.stepLink);
+  });
+});
+WIZARD_STEPS.forEach(id => {
+  document.querySelector(`#step-${id}`)?.addEventListener("toggle", event => {
+    if (event.target.open) {
+      document.querySelectorAll(".wizard-nav a").forEach(link => {
+        link.classList.toggle("active", link.dataset.stepLink === id);
+      });
+    }
+  });
+});
+goToStep("sync");
+
+// Dragging a CAM 2/3 clip block along the timeline writes to the same
+// camera_N_ignition_s field the number input controls — same state, just a
+// different way to set it (mirrors the existing crop-pan drag handler).
+let clipDragState = null;
+document.querySelectorAll(".clip-block[data-clip]").forEach(block => {
+  const cameraNumber = Number(block.dataset.clip);
+  if (cameraNumber === 1) return; // primary camera is the fixed timeline reference
+  block.addEventListener("pointerdown", event => {
+    if (block.classList.contains("empty") || !video.duration) return;
+    clipDragState = {
+      pointerId: event.pointerId,
+      cameraNumber,
+      startX: event.clientX,
+      startIgnition: Number(form.elements[`camera_${cameraNumber}_ignition_s`].value || 0),
+    };
+    block.classList.add("dragging");
+    block.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  block.addEventListener("pointermove", event => {
+    if (!clipDragState || event.pointerId !== clipDragState.pointerId) return;
+    const lanes = document.querySelector("#trackLanes");
+    const rect = lanes.getBoundingClientRect();
+    if (!video.duration || !rect.width) return;
+    const deltaFraction = (event.clientX - clipDragState.startX) / rect.width;
+    // Dragging right moves the clip's visible start later in the master
+    // timeline, which means an earlier (smaller) camera-local ignition time.
+    const newIgnition = clamp(
+      clipDragState.startIgnition - deltaFraction * video.duration,
+      0, 24 * 60 * 60
+    );
+    form.elements[`camera_${clipDragState.cameraNumber}_ignition_s`].value = newIgnition.toFixed(2);
+    updateCameraPreview();
+    updateTimelineUI();
+    event.preventDefault();
+  });
+  block.addEventListener("pointerup", event => {
+    if (!clipDragState || event.pointerId !== clipDragState.pointerId) return;
+    block.classList.remove("dragging");
+    block.releasePointerCapture(event.pointerId);
+    clipDragState = null;
+  });
+});
+
+// Razor tool: while active, clicking any track row splits the shared cut
+// list at that point in the master timeline instead of scrubbing or
+// dragging a clip. Registered on the capture phase so it intercepts before
+// #timelineRange's native drag and before a clip-block's own drag handler —
+// except for a segment's own delete button, which always gets its click.
+const razorButton = document.querySelector("#razorTool");
+const razorHint = document.querySelector("#razorHint");
+razorButton.addEventListener("click", () => {
+  razorActive = !razorActive;
+  razorButton.classList.toggle("active", razorActive);
+  if (razorHint) razorHint.classList.toggle("hidden", !razorActive);
+  renderCutsLane();
+  document.querySelector("#programLane")?.classList.toggle("razor-active", razorActive);
+});
+document.querySelector("#trackLanes").addEventListener("pointerdown", event => {
+  // The PROGRAM row always has full coverage (every moment shows some
+  // camera, no gaps), so there is never "empty background" to click for a
+  // split the way the CUTS row has — every point belongs to some segment.
+  // The razor tool therefore does double duty: with it active, a click
+  // anywhere in the PROGRAM row splits that segment (intercepted here,
+  // before the segment's own click handler); with it off, clicking a
+  // segment instead cycles its assigned camera via that handler.
+  if (event.target.closest("#programLane")) {
+    if (!razorActive || document.querySelector("#cameraMode").value !== "program" || !video.duration) return;
+    const rect = document.querySelector("#trackLanes").getBoundingClientRect();
+    if (!rect.width) return;
+    const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    splitProgramAt(fraction * video.duration);
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  if (!razorActive || !video.duration) return;
+  if (event.target.closest(".segment-delete")) return;
+  const rect = document.querySelector("#trackLanes").getBoundingClientRect();
+  if (!rect.width) return;
+  const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+  splitAt(fraction * video.duration);
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
+// Scene-editor toolbar actions (undo/redo/save/export/import/reset) have no
+// buttons in the new UI, so they are intentionally left unwired. The
+// functions they used to call (mutateSelected, restore, saveDraft, etc.)
+// remain defined above/below for a possible future "Advanced" panel.
 function mutateSelected(callback){if(!selected())return;snapshot();callback(selected());renderScene();selectElement(selectedId);saveDraft()}
-document.querySelector("#undoButton").addEventListener("click",()=>{if(!undoStack.length)return;redoStack.push(JSON.stringify(scene));restore(undoStack.pop());saveDraft()});
-document.querySelector("#redoButton").addEventListener("click",()=>{if(!redoStack.length)return;undoStack.push(JSON.stringify(scene));restore(redoStack.pop());saveDraft()});
-document.querySelector("#saveTemplate").addEventListener("click",()=>{saveDraft();notify("تم حفظ التصميم في هذا المتصفح.")});
-document.querySelector("#exportTemplate").addEventListener("click",()=>{
-  const blob=new Blob([JSON.stringify(scene,null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob),link=document.createElement("a");
-  link.href=url;link.download=`rocket-overlay-template-${new Date().toISOString().slice(0,10)}.json`;
-  document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
-  notify("تم تصدير القالب بنجاح.");
-});
-document.querySelector("#importTemplate").addEventListener("change",async event=>{
-  const file=event.target.files[0];if(!file)return;
-  try{
-    const imported=JSON.parse(await file.text());
-    if(!imported||!Array.isArray(imported.elements)||!imported.elements.length)throw new Error("ملف القالب غير صالح.");
-    snapshot();scene=imported;renderScene();selectElement(null);saveDraft();notify("تم استيراد القالب بنجاح.");
-  }catch(error){notify(error.message||"تعذر استيراد القالب.");}
-  event.target.value="";
-});
-document.querySelector("#resetScene").addEventListener("click",()=>{snapshot();scene=clone(initialScene);renderScene();selectElement(null);saveDraft()});
 function saveDraft(){localStorage.setItem("rocket-overlay-scene",JSON.stringify(scene))}
 
-const templates={
-  engineering:{chart:{x:.02,y:.805,width:.96,height:.165,backgroundOpacity:.93,chartType:"area",hudMode:true},pressure:{x:.71,y:.825,width:.125,height:.125},thrust:{x:.845,y:.825,width:.115,height:.125}},
-  overlay:{chart:{x:.03,y:.57,width:.46,height:.35,backgroundOpacity:.68,chartType:"area"},pressure:{x:.51,y:.80,width:.20,height:.12},thrust:{x:.72,y:.80,width:.20,height:.12}},
-  side:{chart:{x:.69,y:.16,width:.28,height:.56,backgroundOpacity:.94,chartType:"line"},pressure:{x:.69,y:.75,width:.135,height:.13},thrust:{x:.835,y:.75,width:.135,height:.13}},
-  clean:{chart:{x:.035,y:.67,width:.44,height:.25,backgroundOpacity:.34,chartType:"line"},pressure:{x:.55,y:.82,width:.18,height:.10},thrust:{x:.75,y:.82,width:.18,height:.10}}
-};
-document.querySelectorAll("[data-template]").forEach(button=>button.addEventListener("click",()=>{
-  snapshot();const preset=templates[button.dataset.template];
-  Object.entries(preset).forEach(([id,values])=>Object.assign(scene.elements.find(item=>item.id===id),values));
-  renderScene();saveDraft();
-}));
 document.querySelector("#stageZoom").addEventListener("input",event=>{const value=Number(event.target.value);document.querySelector("#zoomValue").textContent=`${value}%`;stage.style.width=`${value}%`});
 function configureResolutionOptions(sourceWidth, sourceHeight) {
   const resolution = document.querySelector("#resolution");
@@ -1660,8 +2183,8 @@ function configureResolutionOptions(sourceWidth, sourceHeight) {
   const hint = document.querySelector("#resolutionHint");
   const hasSourceSize = sourceWidth > 0 && sourceHeight > 0;
   sourceOption.textContent = hasSourceSize
-    ? `الدقة الأصلية — ${sourceWidth}×${sourceHeight} (موصى بها)`
-    : "الدقة الأصلية — موصى بها";
+    ? `Source resolution — ${sourceWidth}×${sourceHeight} (recommended)`
+    : "Source resolution — recommended";
 
   const unavailable = [];
   resolution.querySelectorAll("option[data-native-check]").forEach(option => {
@@ -1673,20 +2196,20 @@ function configureResolutionOptions(sourceWidth, sourceHeight) {
       && (width > sourceWidth || height > sourceHeight);
     option.disabled = wouldUpscale;
     option.textContent = wouldUpscale
-      ? `${baseLabel} — تكبير لا يحسن الجودة`
+      ? `${baseLabel} — upscale would not improve quality`
       : baseLabel;
     option.title = wouldUpscale
-      ? `غير متاح: دقة المصدر ${sourceWidth}×${sourceHeight} أصغر من هذا المقاس.`
+      ? `Not available: source resolution ${sourceWidth}×${sourceHeight} is smaller than this size.`
       : "";
     if (wouldUpscale) unavailable.push(baseLabel);
   });
 
   if (!hasSourceSize) {
-    hint.textContent = "اختر الفيديو أولًا لتحديد دقته الأصلية ومنع التكبير غير المفيد.";
+    hint.textContent = "Choose a video first to detect its native resolution and prevent unhelpful upscaling.";
   } else if (unavailable.length) {
-    hint.textContent = `المصدر ${sourceWidth}×${sourceHeight}؛ عُطّل ${unavailable.join(" و")} لأنه تكبير رقمي لا يضيف تفاصيل.`;
+    hint.textContent = `Source is ${sourceWidth}×${sourceHeight}; disabled ${unavailable.join(" and ")} because it would be a digital upscale that adds no detail.`;
   } else {
-    hint.textContent = `سيحافظ خيار الدقة الأصلية على أبعاد المصدر ${sourceWidth}×${sourceHeight}.`;
+    hint.textContent = `Source resolution will keep the source dimensions ${sourceWidth}×${sourceHeight}.`;
   }
 }
 
@@ -1707,10 +2230,20 @@ function syncSourceQualityMode() {
     form.elements.crop_x.value = ".5";
     form.elements.crop_y.value = ".5";
     form.elements.outro_duration_s.value = "0";
+    // Cut editing is SDR-only, mirroring intro/outro above: HDR archival
+    // preservation has no seeking, so an active cut list is force-cleared
+    // here as well as hard-rejected server-side.
+    razorActive = false;
+    razorButton.classList.remove("active");
+    document.querySelector("#programLane")?.classList.remove("razor-active");
+    if (razorHint) razorHint.classList.add("hidden");
+    resetCutSegments();
+    updateTimelineUI();
     updateCameraPreview();
   }
   resolution.disabled = enabled;
   compatibilityCodec.disabled = enabled;
+  razorButton.disabled = enabled;
   processingIds.forEach(id => { document.querySelector(`#${id}`).disabled = enabled; });
   transformNames.forEach(name => { form.elements[name].disabled = enabled; });
 }
@@ -1719,8 +2252,8 @@ document.querySelector("#preserveSourceQuality").addEventListener("change", () =
   syncSourceQualityMode();
   notify(
     document.querySelector("#preserveSourceQuality").checked
-      ? "تم تفعيل الأرشفة HDR/HLG 10-bit: للمصادر المتوافقة فقط، بدقة المصدر وملف كبير جدًا."
-      : "الوضع الافتراضي: SDR Rec.709 عالي الجودة بدقة المصدر، مطابق لإضاءة المعاينة."
+      ? "HDR/HLG 10-bit archiving enabled: compatible sources only, at source resolution, and a very large file."
+      : "Default: SDR Rec.709 high quality at source resolution, matching the preview's lighting."
   );
 });
 
@@ -1743,8 +2276,8 @@ function hidePreviousResults() {
 
 async function startExport(event) {
   event?.preventDefault();
-  if(!videoInput.files[0]||!dataInput.files[0]){notify("اختر الفيديو وملف القياسات أولًا.");return}
-  if(!scene){notify("انتظر اكتمال تحميل المحرر ثم حاول مرة أخرى.");return}
+  if(!videoInput.files[0]||!dataInput.files[0]){notify("Choose the video and telemetry file first.");return}
+  if(!scene){notify("Wait for the editor to finish loading, then try again.");return}
   clearTimeout(pollTimer);
   pollTimer = null;
   hidePreviousResults();
@@ -1757,6 +2290,7 @@ async function startExport(event) {
     body.set("crop_x", ".5");
     body.set("crop_y", ".5");
     body.set("outro_duration_s", "0");
+    body.set("cut_list", "");
   }
   body.delete("scene_config");
   body.set("broadcast_theme", selectedBroadcastTheme());
@@ -1776,26 +2310,32 @@ async function startExport(event) {
   for(const [name,id] of [["keep_audio","keepAudio"],["reveal_chart","revealChart"],["enhance_video","enhanceVideo"],["denoise_video","denoiseVideo"],["stabilize_video","stabilizeVideo"],["thumbnail","thumbnail"]])
     body.set(name,document.querySelector(`#${id}`).checked?"true":"false");
   const button=document.querySelector("#renderButton");button.disabled=true;
-  button.textContent="جارٍ رفع الملفات…";
-  document.querySelector("#progressBox").classList.remove("hidden");updateProgress(0,"جارٍ رفع الملفات — 0%");
+  button.textContent="Uploading files…";
+  document.querySelector("#progressBox").classList.remove("hidden");updateProgress(0,"Uploading files — 0%");
   try{
     await uploadFilesInChunks(body);
     const payload=await uploadJob(body);
     const deliveryMode = preserveSource
-      ? "HDR/HLG 10-bit الأرشيفي"
-      : "SDR Rec.709 عالي الجودة";
+      ? "archival HDR/HLG 10-bit"
+      : "high-quality SDR Rec.709";
     const startMessage = payload.notice
-      ? `${payload.notice} — جارٍ بدء تصدير ${deliveryMode}`
-      : `اكتمل الرفع — جارٍ بدء تصدير ${deliveryMode}`;
+      ? `${payload.notice} — starting ${deliveryMode} export`
+      : `Upload complete — starting ${deliveryMode} export`;
     if (payload.notice) notify(payload.notice);
     updateProgress(0,startMessage);
-    button.textContent="جارٍ معالجة الفيديو…";
+    button.textContent="Processing video…";
     pollJob(payload.id);
   }
-  catch(error){hidePreviousResults();resetRenderButton();updateProgress(0,`خطأ: ${error.message}`);notify(error.message)}
+  catch(error){hidePreviousResults();resetRenderButton();updateProgress(0,`Error: ${error.message}`);notify(error.message)}
 }
 form.addEventListener("submit", startExport);
 document.querySelector("#renderButton").addEventListener("click", startExport);
+async function fingerprintSample(file) {
+  const sampleSize = Math.min(file.size, 1024 * 1024);
+  const buffer = await file.slice(0, sampleSize).arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
 async function uploadFilesInChunks(body) {
   const fields = [
     ["video",videoInput],["video_2",videoInput2],["video_3",videoInput3],
@@ -1806,16 +2346,20 @@ async function uploadFilesInChunks(body) {
   const chunkSize = 2 * 1024 * 1024;
   for (const [field,input] of fields) {
     const file = input.files[0];
+    const partialSha256 = await fingerprintSample(file);
     const initResponse = await fetch("/api/uploads/init", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({field,filename:file.name,size:file.size})
+      body:JSON.stringify({
+        field, filename:file.name, size:file.size,
+        last_modified:file.lastModified, partial_sha256:partialSha256,
+      })
     });
     const initPayload = await initResponse.json();
-    if (!initResponse.ok) throw new Error(initPayload.error||"تعذر بدء رفع الملف.");
+    if (!initResponse.ok) throw new Error(initPayload.error||"Could not start the file upload.");
     if (initPayload.reused) {
       uploaded += file.size;
-      updateProgress(Math.round(uploaded/total*100),`تم استعادة ${file.name} — دون إعادة رفع`);
+      updateProgress(Math.round(uploaded/total*100),`Restored ${file.name} — no re-upload needed`);
     }
     for (let offset=0; !initPayload.reused && offset<file.size; offset+=chunkSize) {
       const chunk=file.slice(offset,Math.min(file.size,offset+chunkSize));
@@ -1824,10 +2368,10 @@ async function uploadFilesInChunks(body) {
         headers:{"Content-Type":"application/octet-stream"}
       });
       const payload=await response.json();
-      if (!response.ok) throw new Error(payload.error||`تعذر رفع ${file.name}`);
+      if (!response.ok) throw new Error(payload.error||`Could not upload ${file.name}`);
       uploaded += chunk.size;
       const percent=Math.round(uploaded/total*100);
-      updateProgress(percent,`جارٍ رفع الملفات — ${formatBytes(uploaded)} من ${formatBytes(total)}`);
+      updateProgress(percent,`Uploading files — ${formatBytes(uploaded)} of ${formatBytes(total)}`);
     }
     body.delete(field);
     body.set(`${field}_token`,initPayload.upload_id);
@@ -1841,10 +2385,10 @@ function uploadJob(body){
       let payload={};
       try{payload=JSON.parse(request.responseText||"{}")}catch{}
       if(request.status>=200&&request.status<300)resolve(payload);
-      else reject(new Error(payload.error||`تعذر رفع الملفات (${request.status})`));
+      else reject(new Error(payload.error||`Could not upload the files (${request.status})`));
     });
-    request.addEventListener("error",()=>reject(new Error("انقطع الاتصال أثناء رفع الملفات.")));
-    request.addEventListener("abort",()=>reject(new Error("تم إلغاء رفع الملفات.")));
+    request.addEventListener("error",()=>reject(new Error("Connection lost while uploading the files.")));
+    request.addEventListener("abort",()=>reject(new Error("File upload was canceled.")));
     request.send(body);
   });
 }
@@ -1852,9 +2396,9 @@ function formatBytes(bytes){
   if(bytes<1024*1024)return`${(bytes/1024).toFixed(1)} KB`;
   return`${(bytes/1024/1024).toFixed(1)} MB`;
 }
-function updateProgress(value,message){document.querySelector("#progressValue").textContent=`${value}%`;document.querySelector("#progressBar").style.width=`${value}%`;document.querySelector("#progressMessage").textContent=message;document.querySelector("#systemStatus").textContent=value===100?"اكتمل":"جارٍ المعالجة"}
-function resetRenderButton(){const button=document.querySelector("#renderButton");button.disabled=false;button.textContent="▶ تصدير الفيديو النهائي"}
-function pollJob(id){clearTimeout(pollTimer);fetch(`/api/jobs/${id}`).then(r=>r.json()).then(job=>{updateProgress(job.progress||0,job.message);if(job.status==="complete"){document.querySelector("#downloadLink").href=job.result_url;const thumb=document.querySelector("#thumbnailLink");if(job.thumbnail_url){thumb.href=job.thumbnail_url;thumb.classList.remove("hidden")}document.querySelector("#resultActions").classList.remove("hidden");resetRenderButton();return}if(job.status==="error"){hidePreviousResults();resetRenderButton();updateProgress(job.progress||0,`خطأ: ${job.message}`);notify(job.message);return}pollTimer=setTimeout(()=>pollJob(id),1000)}).catch(error=>{hidePreviousResults();resetRenderButton();updateProgress(0,`خطأ: ${error.message}`);notify(error.message)})}
+function updateProgress(value,message){document.querySelector("#progressValue").textContent=`${value}%`;document.querySelector("#progressBar").style.width=`${value}%`;document.querySelector("#progressMessage").textContent=message;document.querySelector("#systemStatus").textContent=value===100?"Complete":"Processing"}
+function resetRenderButton(){const button=document.querySelector("#renderButton");button.disabled=false;button.textContent="▶ Render final video"}
+function pollJob(id){clearTimeout(pollTimer);fetch(`/api/jobs/${id}`).then(r=>r.json()).then(job=>{updateProgress(job.progress||0,job.message);if(job.status==="complete"){document.querySelector("#downloadLink").href=job.result_url;const thumb=document.querySelector("#thumbnailLink");if(job.thumbnail_url){thumb.href=job.thumbnail_url;thumb.classList.remove("hidden")}document.querySelector("#resultActions").classList.remove("hidden");resetRenderButton();return}if(job.status==="error"){hidePreviousResults();resetRenderButton();updateProgress(job.progress||0,`Error: ${job.message}`);notify(job.message);return}pollTimer=setTimeout(()=>pollJob(id),1000)}).catch(error=>{hidePreviousResults();resetRenderButton();updateProgress(0,`Error: ${error.message}`);notify(error.message)})}
 
 const storedBroadcastTheme = localStorage.getItem("rocket-overlay-broadcast-theme");
 const savedBroadcastTheme = storedBroadcastTheme === "range_line"

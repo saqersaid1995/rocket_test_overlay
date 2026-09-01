@@ -1,6 +1,8 @@
 import argparse
 import dataclasses
+import hashlib
 import importlib.util
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,7 +36,9 @@ from rocket_overlay import (
     suggest_telemetry_zero_s,
     telemetry_has_thrust,
     determine_test_phase,
+    validate_camera_program,
     validate_config_values,
+    validate_cut_list,
     validate_scene_config,
 )
 
@@ -271,11 +275,98 @@ class ConfigTests(unittest.TestCase):
                 "broadcast_theme": theme,
             }
             self.assertEqual(validate_config_values(values)["broadcast_theme"], theme)
+
+    def test_validate_cut_list_accepts_ascending_non_overlapping_ranges(self):
+        self.assertEqual(
+            validate_cut_list([[0, 1.5], (1.5, 3), [4, 5]]),
+            [(0.0, 1.5), (1.5, 3.0), (4.0, 5.0)],
+        )
+
+    def test_validate_cut_list_rejects_overlap(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[0, 2], [1, 3]])
+
+    def test_validate_cut_list_rejects_unsorted_ranges(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[2, 3], [0, 1]])
+
+    def test_validate_cut_list_rejects_negative_or_inverted_range(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[-1, 1]])
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[2, 1]])
+
+    def test_validate_cut_list_rejects_too_many_ranges(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[i, i + 0.5] for i in range(201)])
+
+    def test_validate_cut_list_rejects_malformed_entries(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list([[0, 1, 2]])
+        with self.assertRaises(RocketOverlayError):
+            validate_cut_list("not a list")
+
+    def test_validate_config_values_blocks_cut_list_with_hdr_preservation(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "cut_list": [[0, 1]],
+            "preserve_source_quality": True,
+        }
+        with self.assertRaises(RocketOverlayError):
+            validate_config_values(values)
+
+    def test_validate_config_values_allows_cut_list_without_hdr(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "cut_list": [[0, 1]],
+        }
+        self.assertEqual(validate_config_values(values)["cut_list"], [[0, 1]])
         with self.assertRaisesRegex(RocketOverlayError, "Broadcast theme"):
             validate_config_values({
                 "video": Path("v"), "data": Path("d"), "output": Path("o"),
                 "broadcast_theme": "unknown",
             })
+
+    def test_validate_camera_program_accepts_ascending_non_overlapping_segments(self):
+        self.assertEqual(
+            validate_camera_program([[0, 1, 1], (1, 2.5, 3), [2.5, 4, 2]]),
+            [(0.0, 1.0, 1), (1.0, 2.5, 3), (2.5, 4.0, 2)],
+        )
+
+    def test_validate_camera_program_rejects_overlap(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 2, 1], [1, 3, 2]])
+
+    def test_validate_camera_program_rejects_invalid_camera_index(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 1, 4]])
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 1, 0]])
+
+    def test_validate_camera_program_rejects_malformed_entries(self):
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program([[0, 1]])
+        with self.assertRaises(RocketOverlayError):
+            validate_camera_program("not a list")
+
+    def test_validate_config_values_requires_program_mode_for_camera_program(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "camera_program": [[0, 1, 1]],
+            "camera_mode": "switch",
+        }
+        with self.assertRaisesRegex(RocketOverlayError, "camera mode"):
+            validate_config_values(values)
+
+    def test_validate_config_values_allows_camera_program_in_program_mode(self):
+        values = {
+            "video": Path("v"), "data": Path("d"), "output": Path("o"),
+            "camera_program": [[0, 1, 1]],
+            "camera_mode": "program",
+        }
+        self.assertEqual(
+            validate_config_values(values)["camera_program"], [[0, 1, 1]]
+        )
 
     def test_nominal_fps_probe_uses_ffmpeg_tbr_for_vfr_sources(self):
         probe_nominal_fps.cache_clear()
@@ -576,6 +667,38 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(split.shape, first.shape)
         self.assertLess(float(split[:, :80].mean()), float(split[:, 80:].mean()))
 
+    def test_program_mode_selects_camera_by_time_segment(self):
+        first = np.full((100, 160, 3), (10, 20, 30), dtype=np.uint8)
+        second = np.full((100, 160, 3), (40, 50, 60), dtype=np.uint8)
+        third = np.full((100, 160, 3), (70, 80, 90), dtype=np.uint8)
+        program = [(0.0, 1.0, 1), (1.0, 2.0, 3), (2.0, 3.0, 2)]
+        early = camera_layout_frame(
+            [first, second, third], "program", 0.5, 0.0, 2.0,
+            camera_program=program,
+        )
+        middle = camera_layout_frame(
+            [first, second, third], "program", 1.5, 0.0, 2.0,
+            camera_program=program,
+        )
+        late = camera_layout_frame(
+            [first, second, third], "program", 2.5, 0.0, 2.0,
+            camera_program=program,
+        )
+        outside = camera_layout_frame(
+            [first, second, third], "program", 5.0, 0.0, 2.0,
+            camera_program=program,
+        )
+        self.assertTrue(np.array_equal(early, first))
+        self.assertTrue(np.array_equal(middle, third))
+        self.assertTrue(np.array_equal(late, second))
+        # Time outside every segment (and an empty/None program) falls back
+        # to the primary camera, never crashes.
+        self.assertTrue(np.array_equal(outside, first))
+        no_program = camera_layout_frame(
+            [first, second, third], "program", 1.5, 0.0, 2.0,
+        )
+        self.assertTrue(np.array_equal(no_program, first))
+
     def test_camera_focus_changes_visible_crop(self):
         frame = np.zeros((100, 300, 3), dtype=np.uint8)
         frame[:, :100] = (10, 20, 30)
@@ -615,7 +738,7 @@ class ConfigTests(unittest.TestCase):
 class WebPreviewTests(unittest.TestCase):
     def test_index_exposes_all_broadcast_theme_choices(self):
         with app.test_client() as client:
-            response = client.get("/")
+            response = client.get("/editor")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         for theme in ("launch", "mission_control", "stellar_console"):
@@ -624,12 +747,12 @@ class WebPreviewTests(unittest.TestCase):
             )
             self.assertIn(f'data-theme-layout="{theme}"', html)
         self.assertIn('id="broadcastRasterOverlay"', html)
-        for filename in (
-            "rocket_overlay_broadcast.py",
-            "rocket_overlay_broadcast (1).py",
-            "rocket_overlay_broadcast-3).py",
+        for caption in (
+            "tape gauges",
+            "arc gauges",
+            "meters &middot; phase list",
         ):
-            self.assertIn(filename, html)
+            self.assertIn(caption, html)
         for field in (
             "organization_name", "test_site", "footer_tagline",
             "camera_label", "capture_fps",
@@ -639,7 +762,7 @@ class WebPreviewTests(unittest.TestCase):
         self.assertIn(
             '<input type="checkbox" id="preserveSourceQuality">', html
         )
-        self.assertIn("SDR Rec.709 عالي الجودة بدقة المصدر", html)
+        self.assertIn("SDR Rec.709 high quality at source resolution", html)
 
     def test_same_aspect_upscale_is_capped_to_source_resolution(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -683,7 +806,7 @@ class WebPreviewTests(unittest.TestCase):
             cfg = thread_class.call_args.kwargs["args"][1]
             self.assertEqual((cfg.width, cfg.height), (426, 240))
             self.assertEqual(payload["output_resolution"], "426x240")
-            self.assertIn("تكبير", payload["notice"])
+            self.assertIn("upscale", payload["notice"])
 
     def test_source_resolution_preserves_uploaded_video_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -786,15 +909,24 @@ class WebPreviewTests(unittest.TestCase):
     def test_chunked_upload_bypasses_single_request_size(self):
         video_bytes = b"v" * (5 * 1024 * 1024)
         data_bytes = b"time,pressure\n0,0\n1,1\n"
+        video_last_modified = 1700000000000
+        video_partial_sha256 = hashlib.sha256(video_bytes[:1024 * 1024]).hexdigest()
         with app.test_client() as client:
             tokens = {}
             for field, filename, content in (
                 ("video", "large.mp4", video_bytes),
                 ("data", "data.csv", data_bytes),
             ):
+                init_payload = {"field": field, "filename": filename}
+                if field == "video":
+                    init_payload.update(
+                        size=len(content),
+                        last_modified=video_last_modified,
+                        partial_sha256=video_partial_sha256,
+                    )
                 response = client.post(
                     "/api/uploads/init",
-                    json={"field": field, "filename": filename},
+                    json=init_payload,
                 )
                 self.assertEqual(response.status_code, 200)
                 token = response.get_json()["upload_id"]
@@ -825,9 +957,23 @@ class WebPreviewTests(unittest.TestCase):
             reuse = client.post("/api/uploads/init", json={
                 "field": "video", "filename": "large.mp4",
                 "size": len(video_bytes),
+                "last_modified": video_last_modified,
+                "partial_sha256": video_partial_sha256,
             })
             self.assertEqual(reuse.status_code, 200)
             self.assertTrue(reuse.get_json()["reused"])
+
+            # A different file that merely happens to share the name and size
+            # (different last-modified stamp / content) must NOT be served
+            # from the previous upload.
+            mismatched = client.post("/api/uploads/init", json={
+                "field": "video", "filename": "large.mp4",
+                "size": len(video_bytes),
+                "last_modified": video_last_modified + 1,
+                "partial_sha256": video_partial_sha256,
+            })
+            self.assertEqual(mismatched.status_code, 200)
+            self.assertFalse(mismatched.get_json()["reused"])
 
     def test_inspect_preview_spans_entire_large_dataset(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1090,6 +1236,159 @@ class RenderSmokeTests(unittest.TestCase):
             capture.release()
             self.assertTrue(ok)
             self.assertEqual(frame.shape[:2], (540, 960))
+
+    def test_program_mode_render_switches_camera_by_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [root / "camera1.mp4", root / "camera2.mp4"]
+            colors = [(20, 30, 180), (180, 30, 20)]
+            fps = 5.0
+            for source, color in zip(sources, colors):
+                writer = cv2.VideoWriter(
+                    str(source), cv2.VideoWriter_fourcc(*"mp4v"), fps, (960, 540)
+                )
+                self.assertTrue(writer.isOpened())
+                for _ in range(int(fps) * 4):
+                    writer.write(np.full((540, 960, 3), color, dtype=np.uint8))
+                writer.release()
+            data = root / "data.csv"
+            pd.DataFrame({
+                "time": [0.0, 2.0, 4.0],
+                "pressure": [0.0, 5.0, 0.0],
+            }).to_csv(data, index=False)
+            output = root / "program.mp4"
+            render(Config(
+                video=sources[0], video_2=sources[1],
+                camera_mode="program", camera_2_ignition_s=0.0,
+                camera_program=[(0.0, 2.0, 1), (2.0, 4.0, 2)],
+                data=data, output=output, thrust_column="__none__",
+                width=960, height=540, intro_duration_s=0.0,
+                outro_duration_s=0.0, keep_audio=False, thumbnail=False,
+                scene_config=default_scene_config(),
+            ))
+            capture = cv2.VideoCapture(str(output))
+            frames = []
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frames.append(frame)
+            capture.release()
+            self.assertEqual(len(frames), int(fps) * 4)
+            center = (270, 480)
+            dominant = [int(np.argmax(color)) for color in colors]
+
+            def sampled_dominant(frame):
+                return int(np.argmax(frame[center]))
+
+            self.assertEqual(sampled_dominant(frames[5]), dominant[0])
+            self.assertEqual(sampled_dominant(frames[15]), dominant[1])
+
+    def test_cut_list_skips_source_range(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            fps = 5.0
+            # One distinct solid color per second so kept/removed ranges are
+            # verifiable by content, not just by frame count.
+            colors = [(20, 30, 180), (30, 180, 30), (180, 30, 20)]
+            writer = cv2.VideoWriter(
+                str(source), cv2.VideoWriter_fourcc(*"mp4v"), fps, (960, 540)
+            )
+            self.assertTrue(writer.isOpened())
+            for color in colors:
+                for _ in range(int(fps)):
+                    writer.write(np.full((540, 960, 3), color, dtype=np.uint8))
+            writer.release()
+            data = root / "data.csv"
+            pd.DataFrame({
+                "time": [0.0, 1.0, 2.0],
+                "pressure": [0.0, 5.0, 0.0],
+            }).to_csv(data, index=False)
+            output = root / "cut.mp4"
+            render(Config(
+                video=source, data=data, output=output,
+                thrust_column="__none__", width=960, height=540,
+                intro_duration_s=0.0, outro_duration_s=0.0,
+                keep_audio=False, thumbnail=False,
+                scene_config=default_scene_config(),
+                cut_list=[(0.0, 1.0), (2.0, 3.0)],
+            ))
+            capture = cv2.VideoCapture(str(output))
+            frames = []
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frames.append(frame)
+            capture.release()
+            # Middle second (color index 1) is cut: 15 source frames -> 10 kept.
+            self.assertEqual(len(frames), 10)
+            center = (270, 480)
+            dominant = [int(np.argmax(color)) for color in colors]
+
+            def sampled_dominant(frame):
+                return int(np.argmax(frame[center]))
+
+            self.assertEqual(sampled_dominant(frames[0]), dominant[0])
+            self.assertEqual(sampled_dominant(frames[4]), dominant[0])
+            self.assertEqual(sampled_dominant(frames[5]), dominant[2])
+            self.assertEqual(sampled_dominant(frames[9]), dominant[2])
+
+    def test_render_rejects_cut_list_with_hdr_preservation(self):
+        with self.assertRaises(RocketOverlayError):
+            render(Config(
+                video=Path("missing.mp4"), data=Path("missing.csv"),
+                output=Path("missing-out.mp4"),
+                cut_list=[(0.0, 1.0)],
+                preserve_source_quality=True,
+            ))
+
+    def test_cut_list_audio_matches_kept_video_duration(self):
+        executable = ffmpeg_executable()
+        if executable is None:
+            self.skipTest("FFmpeg is not available in this environment.")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            subprocess.run(
+                [
+                    executable, "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=red:s=960x540:d=3:r=5",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                    "-shortest", str(source),
+                ],
+                check=True,
+            )
+            data = root / "data.csv"
+            pd.DataFrame({
+                "time": [0.0, 1.0, 2.0, 3.0],
+                "pressure": [0.0, 5.0, 5.0, 0.0],
+            }).to_csv(data, index=False)
+            output = root / "cut_audio.mp4"
+            render(Config(
+                video=source, data=data, output=output,
+                thrust_column="__none__", width=960, height=540,
+                intro_duration_s=0.0, outro_duration_s=0.0,
+                keep_audio=True, thumbnail=False,
+                scene_config=default_scene_config(),
+                cut_list=[(0.0, 1.0), (2.0, 3.0)],
+            ))
+            capture = cv2.VideoCapture(str(output))
+            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            capture.release()
+            # Middle second is cut: 3 kept-source-seconds become 2 at 5fps.
+            self.assertEqual(frame_count, 10)
+
+            probe = subprocess.run(
+                [executable, "-hide_banner", "-i", str(output)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            )
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", probe.stderr)
+            self.assertIsNotNone(match)
+            hours, minutes, seconds = match.groups()
+            duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            self.assertAlmostEqual(duration, 2.0, delta=0.3)
 
     def test_pressure_only_render_creates_delivery_assets(self):
         with tempfile.TemporaryDirectory() as directory:

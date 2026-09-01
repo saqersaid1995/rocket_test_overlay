@@ -513,8 +513,20 @@ def _validate_manifest_layout(
                 errors.append(f"Text element {element_id or index} references an unknown font_id.")
             if not _finite_number(element.get("font_size")) or float(element.get("font_size", 0)) <= 0:
                 errors.append(f"Text element {element_id or index} has an invalid font_size.")
+            if "decimals" in element and (
+                not _finite_number(element["decimals"])
+                or not 0 <= float(element["decimals"]) <= 10
+                or float(element["decimals"]) != int(element["decimals"])
+            ):
+                errors.append(f"Text element {element_id or index} has an invalid decimals value.")
         if element_type in {"bar_gauge", "vertical_gauge", "arc_gauge", "phase_list", "chart"} and "bind" not in element:
             errors.append(f"Dynamic element {element_id or index} requires bind.")
+        if element_type == "phase_list" and "max_rows" in element and (
+            not _finite_number(element["max_rows"])
+            or not 1 <= float(element["max_rows"]) <= MAX_LAYOUT_ELEMENTS
+            or float(element["max_rows"]) != int(element["max_rows"])
+        ):
+            errors.append(f"phase_list element {element_id or index} has an invalid max_rows value.")
 
     used_bindings = sorted(_binding_values(layout))
     for binding in used_bindings:

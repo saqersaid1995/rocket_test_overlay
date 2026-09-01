@@ -1,0 +1,89 @@
+{% extends "_base.html" %}
+{% block title %}New Live Session{% endblock %}
+{% block content %}
+<header class="topbar">
+  <div class="brand">
+    <i>RO</i>
+    <div><strong>LIVE STUDIO</strong><span>Mission setup</span></div>
+  </div>
+  <div class="topbar-actions"><a class="btn small" href="/">&larr; Hub</a></div>
+</header>
+<div class="setup-wrap">
+  <h1>New live session</h1>
+  <p class="lede">Fill in the mission data, then continue to the control room to attach
+    cameras and telemetry.</p>
+  <div id="formError" class="form-error"></div>
+
+  <div class="type-toggle" id="typeToggle">
+    <button type="button" data-type="static_fire" class="active">Engine static fire</button>
+    <button type="button" data-type="launch">Rocket launch</button>
+  </div>
+
+  <form id="setupForm">
+    <fieldset>
+      <legend>Mission</legend>
+      <div class="field-grid">
+        <label><span>Mission name</span><input type="text" name="mission_name" required placeholder="HM-3 Qualification Burn"></label>
+        <label><span>Run number</span><input type="text" name="run_number" placeholder="042"></label>
+        <label><span>Site</span><input type="text" name="site" placeholder="Mojave Test Site"></label>
+        <label><span>Team</span><input type="text" name="team" placeholder="Propulsion"></label>
+        <label><span>Organization name</span><input type="text" name="organization_name" placeholder="STELLAR KINETICS"></label>
+        <label><span>Accent color</span><input type="color" name="accent" value="#f59e0b"></label>
+        <label><span>Target ignition / launch time (T-0)</span><input type="datetime-local" name="t0" required></label>
+        <label><span>Hold point (seconds before T-0)</span><input type="number" name="hold_point_s" value="120" min="0" step="1"></label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Environmental limits</legend>
+      <div class="field-grid cols-3">
+        <label><span>Max wind speed (m/s)</span><input type="number" name="max_wind_speed_mps" value="12" min="0" step="0.1"></label>
+        <label><span>Min temperature (&deg;C)</span><input type="number" name="temp_min_c" value="-10" step="0.1"></label>
+        <label><span>Max temperature (&deg;C)</span><input type="number" name="temp_max_c" value="45" step="0.1"></label>
+      </div>
+    </fieldset>
+
+    <fieldset class="mission-type-block active" data-type="static_fire">
+      <legend>Static fire details</legend>
+      <div class="field-grid">
+        <label><span>Engine type</span><input type="text" name="engine_type" placeholder="K-Class Hybrid"></label>
+        <label><span>Oxidizer</span><input type="text" name="oxidizer" placeholder="N2O"></label>
+        <label><span>Fuel</span><input type="text" name="fuel" placeholder="ABS"></label>
+        <label><span>Ablative material</span><input type="text" name="ablative_material" placeholder="Silica-phenolic"></label>
+        <label><span>Expected burn duration (s)</span><input type="number" name="expected_burn_duration_s" value="10" min="0" step="0.1"></label>
+        <label><span>Pressure safety limit (optional)</span><input type="number" name="pressure_limit" step="0.1"></label>
+        <label><span>Pressure unit</span><input type="text" name="pressure_unit" value="bar"></label>
+        <label><span>Thrust unit</span><input type="text" name="thrust_unit" value="N"></label>
+      </div>
+    </fieldset>
+
+    <fieldset class="mission-type-block" data-type="launch">
+      <legend>Launch details</legend>
+      <div class="field-grid">
+        <label><span>Vehicle type</span><input type="text" name="vehicle_type" placeholder="TestBird-1"></label>
+        <label><span>Stage count</span><input type="number" name="stage_count" value="1" min="1" step="1"></label>
+        <label><span>Target altitude (km)</span><input type="number" name="target_altitude_km" value="100" min="0" step="0.1"></label>
+        <label><span>Target orbit</span><input type="text" name="target_orbit" placeholder="LEO"></label>
+        <label><span>Evacuation radius (m)</span><input type="number" name="evacuation_radius_m" value="1500" min="0" step="1"></label>
+        <label><span>Launch window (s)</span><input type="number" name="launch_window_s" value="1800" min="0" step="1"></label>
+        <label><span>Ascent duration (s)</span><input type="number" name="ascent_duration_s" value="480" min="1" step="1"></label>
+        <label><span>Max velocity (m/s)</span><input type="number" name="max_velocity_mps" value="8000" min="1" step="1"></label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Camera / on-screen label</legend>
+      <div class="field-grid">
+        <label><span>Camera label</span><input type="text" name="camera_label" value="CAM 1"></label>
+      </div>
+    </fieldset>
+
+    <div class="form-actions">
+      <button type="submit" class="btn primary" id="submitButton">Create session &rarr;</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='live-setup.js', v='1') }}"></script>
+{% endblock %}

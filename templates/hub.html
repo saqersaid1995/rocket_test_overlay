@@ -1,0 +1,28 @@
+{% extends "_base.html" %}
+{% block title %}Rocket Overlay{% endblock %}
+{% block content %}
+<header class="topbar">
+  <div class="brand">
+    <i>RO</i>
+    <div><strong>ROCKET OVERLAY</strong><span>Broadcast tooling</span></div>
+  </div>
+</header>
+<div class="hub-wrap">
+  <div class="hub-cards">
+    <a class="hub-card" href="/editor">
+      <i>&#9998;</i>
+      <span class="tag">Post-production</span>
+      <h2>Editor</h2>
+      <p>Upload recorded camera footage and a telemetry file, pick a broadcast overlay
+        template, and export a composited video.</p>
+    </a>
+    <a class="hub-card live" href="/live/new">
+      <i>&#9679;</i>
+      <span class="tag">Live</span>
+      <h2>Live Studio</h2>
+      <p>Broadcast a live camera feed with real-time telemetry and the mission
+        readiness/countdown protocol, for engine static-fire tests or rocket launches.</p>
+    </a>
+  </div>
+</div>
+{% endblock %}

@@ -201,7 +201,7 @@ class RotplPreviewIntegrationTests(unittest.TestCase):
                 json=self._payload("b" * 64),
             )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("بصمة", response.get_json()["error"])
+        self.assertIn("digest", response.get_json()["error"])
         build_assets.assert_not_called()
 
     def test_builtin_theme_keeps_existing_compositor_and_requested_size(self) -> None:

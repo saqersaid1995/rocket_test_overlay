@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 os.environ.setdefault(
     "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "rocket_overlay_matplotlib")
@@ -140,6 +140,18 @@ class Config:
     codec: str = "mp4v"
     crf: int = 15
     scene_config: Optional[dict[str, Any]] = None
+    # Ordered kept [start_s, end_s) ranges in the primary camera's own clock.
+    # None/empty means no cuts (identical to today's behavior). Applying a cut
+    # removes that time range from every camera, the audio track, and the
+    # telemetry lookup at once, so telemetry readings never lose their real
+    # physical timestamp. SDR delivery only - see preserve_hlg_source gate.
+    cut_list: Optional[list[tuple[float, float]]] = None
+    # Ordered (start_s, end_s, camera_index) segments in the primary camera's
+    # own clock, used only when camera_mode == "program". camera_index is
+    # 1/2/3, matching the camera_N naming used everywhere else. Only takes
+    # effect for cameras actually attached to the job; time outside any
+    # segment (or with no program at all) falls back to the primary camera.
+    camera_program: Optional[list[tuple[float, float, int]]] = None
     # A registry-resolved declarative package.  The identity fields are kept
     # with each job so the selected immutable template can be audited later.
     template_id: Optional[str] = None
@@ -253,6 +265,22 @@ def validate_config_values(values: dict) -> dict:
     scene = values.get("scene_config")
     if scene is not None:
         validate_scene_config(scene)
+    cut_list = values.get("cut_list")
+    if cut_list:
+        validate_cut_list(cut_list)
+        if values.get("preserve_source_quality"):
+            fail(
+                "Cut editing is not available with source-quality (HDR) "
+                "preservation; disable it or clear the cut list."
+            )
+    camera_program = values.get("camera_program")
+    if camera_program:
+        validate_camera_program(camera_program)
+        if values.get("camera_mode") != "program":
+            fail(
+                "Camera program requires camera mode to be set to program; "
+                "clear the program or switch modes."
+            )
     template_path = values.get("template_path")
     identity = {
         name: values.get(name)
@@ -270,6 +298,64 @@ def validate_config_values(values: dict) -> dict:
     ):
         fail("Template SHA-256 must contain exactly 64 hexadecimal characters.")
     return values
+
+
+def validate_cut_list(cut_list: object) -> list[tuple[float, float]]:
+    """Validate a shared cut list: ascending, non-overlapping kept ranges.
+
+    Only validates shape here (the video's real duration isn't known yet at
+    this point) - render() clamps ranges against the actual duration once the
+    source video is open.
+    """
+    if not isinstance(cut_list, (list, tuple)):
+        fail("Cut list must be a list of [start, end] ranges.")
+    if len(cut_list) > 200:
+        fail("Cut list cannot contain more than 200 ranges.")
+    ranges: list[tuple[float, float]] = []
+    for entry in cut_list:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            fail("Each cut list entry must be a [start, end] pair.")
+        try:
+            start, end = float(entry[0]), float(entry[1])
+        except (TypeError, ValueError):
+            fail("Cut list start/end values must be numbers.")
+        if start < 0 or end <= start:
+            fail("Each cut list range must satisfy 0 <= start < end.")
+        ranges.append((start, end))
+    for previous, current in zip(ranges, ranges[1:]):
+        if current[0] < previous[1]:
+            fail("Cut list ranges must be sorted and non-overlapping.")
+    return ranges
+
+
+def validate_camera_program(value: object) -> list[tuple[float, float, int]]:
+    """Validate a program cut list: ascending, non-overlapping (start, end, camera) triples.
+
+    Only validates shape here - render() clamps against the real duration
+    and drops segments for cameras not actually attached to the job.
+    """
+    if not isinstance(value, (list, tuple)):
+        fail("Camera program must be a list of [start, end, camera] entries.")
+    if len(value) > 200:
+        fail("Camera program cannot contain more than 200 segments.")
+    segments: list[tuple[float, float, int]] = []
+    for entry in value:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            fail("Each camera program entry must be a [start, end, camera] triple.")
+        try:
+            start, end = float(entry[0]), float(entry[1])
+            camera = int(entry[2])
+        except (TypeError, ValueError):
+            fail("Camera program start/end/camera values must be numbers.")
+        if start < 0 or end <= start:
+            fail("Each camera program segment must satisfy 0 <= start < end.")
+        if camera not in (1, 2, 3):
+            fail("Camera program camera index must be 1, 2, or 3.")
+        segments.append((start, end, camera))
+    for previous, current in zip(segments, segments[1:]):
+        if current[0] < previous[1]:
+            fail("Camera program segments must be sorted and non-overlapping.")
+    return segments
 
 
 SCENE_ELEMENT_TYPES = {
@@ -1714,6 +1800,7 @@ class FFmpegRawVideoWriter:
         intro_duration_s: float = 0.0,
         keep_audio: bool = True,
         delivery_codec: str = "h264",
+        cut_list: Optional[list[tuple[float, float]]] = None,
     ) -> None:
         executable = ffmpeg_executable()
         if executable is None:
@@ -1755,20 +1842,61 @@ class FFmpegRawVideoWriter:
             "-r", f"{float(fps):.12g}",
             "-i", "pipe:0",
         ]
+        # A cut list needs its kept ranges trimmed out of the *original*
+        # audio timeline and re-joined, which is incompatible with the
+        # simple constant -itsoffset shift used below - so it gets its own
+        # -filter_complex atrim+concat input path instead.
+        use_cut_audio = bool(keep_audio and cut_list)
+        intro_s = max(0.0, float(intro_duration_s))
         if keep_audio:
-            cmd += [
-                "-thread_queue_size", "512",
-                "-itsoffset", f"{max(0.0, float(intro_duration_s)):.9f}",
-                "-i", str(source_video),
-            ]
+            if use_cut_audio:
+                cmd += [
+                    "-thread_queue_size", "512",
+                    "-i", str(source_video),
+                ]
+                if intro_s > 0:
+                    # A silent lead-in is spliced into the concat chain below
+                    # rather than mixed with -itsoffset on the same input.
+                    cmd += [
+                        "-f", "lavfi", "-t", f"{intro_s:.9f}",
+                        "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                    ]
+            else:
+                cmd += [
+                    "-thread_queue_size", "512",
+                    "-itsoffset", f"{intro_s:.9f}",
+                    "-i", str(source_video),
+                ]
 
         cmd += [
             "-map", "0:v:0",
         ]
         if keep_audio:
-            # Optional mapping keeps silent source files exportable while
-            # preserving the source audio whenever a track is present.
-            cmd += ["-map", "1:a:0?"]
+            if use_cut_audio:
+                segment_labels = []
+                filter_parts = []
+                if intro_s > 0:
+                    filter_parts.append("[2:a]asetpts=PTS-STARTPTS[cut_a_intro]")
+                    segment_labels.append("[cut_a_intro]")
+                for index, (start, end) in enumerate(cut_list):
+                    label = f"cut_a{index}"
+                    filter_parts.append(
+                        f"[1:a]atrim=start={start:.9f}:end={end:.9f},"
+                        f"asetpts=PTS-STARTPTS[{label}]"
+                    )
+                    segment_labels.append(f"[{label}]")
+                filter_parts.append(
+                    "".join(segment_labels)
+                    + f"concat=n={len(segment_labels)}:v=0:a=1[cut_aout]"
+                )
+                cmd += [
+                    "-filter_complex", ";".join(filter_parts),
+                    "-map", "[cut_aout]",
+                ]
+            else:
+                # Optional mapping keeps silent source files exportable while
+                # preserving the source audio whenever a track is present.
+                cmd += ["-map", "1:a:0?"]
         cmd += [
             "-c:v", encoder,
             "-preset", preset,
@@ -1836,11 +1964,11 @@ class FFmpegRawVideoWriter:
             )
         if "Immediate exit requested" in details:
             return RocketOverlayError(
-                "توقف محرك التصدير قبل اكتمال الملف. أُزيل الملف الجزئي؛ "
-                "استخدم الدقة الأصلية ثم أعد المحاولة."
+                "The export encoder stopped before the file finished. The partial "
+                "file was removed; use the source resolution and try again."
             )
         return RocketOverlayError(
-            f"تعذر إكمال ترميز الفيديو عالي الجودة{status}."
+            f"Could not finish encoding the high-quality video{status}."
         )
 
     def write(self, frame: np.ndarray) -> bool:
@@ -2095,7 +2223,7 @@ class FFmpegHLGOverlayWriter:
             print(f"FFmpeg HDR encoding failed:\n{details}", file=sys.stderr)
         status = "" if return_code is None else f" (exit code {return_code})"
         return RocketOverlayError(
-            f"تعذر إكمال تصدير HDR المطابق للمصدر{status}."
+            f"Could not finish the source-matching HDR export{status}."
         )
 
     def write(self, frame: np.ndarray) -> bool:
@@ -2254,6 +2382,7 @@ def camera_layout_frame(
     ignition_s: float,
     third_switch_delay_s: float,
     camera_crops: Optional[list[tuple[float, float, float]]] = None,
+    camera_program: Optional[list[tuple[float, float, int]]] = None,
 ) -> np.ndarray:
     """Combine synchronized sources into one frame for the existing compositor."""
     available_with_index = [
@@ -2284,6 +2413,17 @@ def camera_layout_frame(
                 0 if chosen is frames[0] else
                 (2 if len(frames) >= 3 and chosen is frames[2] else 1)
             )
+        return fitted(chosen, target_w, target_h, chosen_index)
+    if mode == "program":
+        chosen_index = 0
+        for start, end, camera_number in camera_program or []:
+            if start <= video_time < end:
+                chosen_index = camera_number - 1
+                break
+        if chosen_index >= len(frames) or frames[chosen_index] is None:
+            chosen, chosen_index = primary, 0
+        else:
+            chosen = frames[chosen_index]
         return fitted(chosen, target_w, target_h, chosen_index)
     if mode == "split":
         active = available_with_index[:3]
@@ -2366,6 +2506,39 @@ def load_rotpl_template(
     return package, RotplRenderer(package)
 
 
+def iter_kept_video_times(
+    cut_list: Optional[list[tuple[float, float]]], fps: float
+) -> Iterator[float]:
+    """Yield the source video_t for each output frame, in output order.
+
+    ``cut_list`` must already be clamped/validated kept ranges (see
+    ``render()``). With no cut list this reproduces the render loop's
+    long-standing unbounded ``idx / fps`` sequence - the caller stops
+    consuming once decoding/seeking fails. With a cut list, only source
+    times inside the kept ranges are yielded; the caller still derives
+    telemetry_t from each yielded (uncut) video_t, so pressure/thrust
+    readings never lose their real timestamp across a cut.
+    """
+    if not cut_list:
+        index = 0
+        while True:
+            yield index / fps
+            index += 1
+    for start, end in cut_list:
+        frame_total = int(round((end - start) * fps))
+        for i in range(frame_total):
+            yield start + i / fps
+
+
+def kept_duration_frames(
+    cut_list: Optional[list[tuple[float, float]]], fps: float, frame_count: int
+) -> int:
+    """Total output frames once ``cut_list`` is applied (``frame_count`` otherwise)."""
+    if not cut_list:
+        return frame_count
+    return sum(int(round((end - start) * fps)) for start, end in cut_list)
+
+
 def render(
     cfg: Config,
     progress: Optional[Callable[[int, str], None]] = None,
@@ -2381,7 +2554,7 @@ def render(
     for camera_path in (cfg.video_2, cfg.video_3):
         if camera_path is not None and not camera_path.exists():
             fail(f"Camera video not found: {camera_path}")
-    if cfg.camera_mode not in {"single", "switch", "split", "pip"}:
+    if cfg.camera_mode not in {"single", "switch", "split", "pip", "program"}:
         fail(f"Unsupported camera mode: {cfg.camera_mode}")
     if not cfg.data.exists():
         fail(f"Telemetry file not found: {cfg.data}")
@@ -2447,6 +2620,41 @@ def render(
     else:
         fps = capture_fps
     duration = frame_count / fps if frame_count > 0 else 0.0
+
+    # A cut list is SDR-only (like intro/outro), so it's resolved against the
+    # real duration up front - clamped to bounds, empty/invalid ranges
+    # dropped - and threaded through as the single source of truth for which
+    # frames get rendered, for every camera, the audio, and telemetry alike.
+    kept_cut_list: Optional[list[tuple[float, float]]] = None
+    if cfg.cut_list:
+        kept_cut_list = []
+        for start, end in cfg.cut_list:
+            clamped_start = max(0.0, min(start, duration))
+            clamped_end = max(0.0, min(end, duration))
+            if clamped_end > clamped_start:
+                kept_cut_list.append((clamped_start, clamped_end))
+        if not kept_cut_list:
+            for opened_capture in captures:
+                opened_capture.release()
+            fail("Cut list leaves no video to render.")
+
+    # A camera program only matters in "program" mode; resolve it against the
+    # real duration and the cameras actually attached to this job, same as
+    # the cut list above. Segments referencing a camera that isn't attached,
+    # or with no program at all, fall back to the primary camera.
+    resolved_camera_program: Optional[list[tuple[float, float, int]]] = None
+    if cfg.camera_mode == "program" and cfg.camera_program:
+        resolved_camera_program = []
+        for start, end, camera_index in cfg.camera_program:
+            if camera_index > len(captures):
+                continue
+            clamped_start = max(0.0, min(start, duration))
+            clamped_end = max(0.0, min(end, duration))
+            if clamped_end > clamped_start:
+                resolved_camera_program.append(
+                    (clamped_start, clamped_end, camera_index)
+                )
+
     source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     hlg_main10_source = source_is_hlg_main10(cfg.video)
@@ -2463,13 +2671,15 @@ def render(
         and abs(cfg.crop_zoom - 1.0) <= 1e-6
         and cfg.intro_duration_s <= 0
         and cfg.outro_duration_s <= 0
+        and not kept_cut_list
     )
     if cfg.preserve_source_quality and hlg_main10_source and not preserve_hlg_source:
         for opened_capture in captures:
             opened_capture.release()
         fail(
-            "وضع مطابقة جودة المصدر HDR يتطلب الدقة الأصلية وكاميرا واحدة "
-            "من دون قص أو تكبير أو تحسين أو تثبيت أو مقدمة/خاتمة."
+            "HDR source-quality matching requires source resolution, a single "
+            "camera, and no crop, zoom, enhancement, stabilization, intro/outro, "
+            "or cut list."
         )
 
     # The Broadcast Edition compositor is now the delivery source of truth.
@@ -2499,6 +2709,8 @@ def render(
 
     idx = 0
     last_percent = -1
+    total_output_frames = kept_duration_frames(kept_cut_list, fps, frame_count)
+    frame_times = iter_kept_video_times(kept_cut_list, fps)
     intro_frames = int(round(cfg.intro_duration_s * fps))
     outro_frames = int(round(cfg.outro_duration_s * fps))
     previous_gray: Optional[np.ndarray] = None
@@ -2527,20 +2739,24 @@ def render(
                 intro_duration_s=cfg.intro_duration_s,
                 keep_audio=cfg.keep_audio,
                 delivery_codec=cfg.delivery_codec,
+                cut_list=kept_cut_list,
             )
         if intro_frames:
             intro = make_title_frame(cfg, logo)
             for _ in range(intro_frames):
                 writer.write(intro)
         while True:
-            video_t = idx / fps
+            try:
+                video_t = next(frame_times)
+            except StopIteration:
+                break
             if preserve_hlg_source:
                 ok = cap.grab()
                 if not ok:
                     break
                 frame = None
             elif multi_camera:
-                if frame_count > 0 and idx >= frame_count:
+                if total_output_frames > 0 and idx >= total_output_frames:
                     break
                 camera_frames = synchronized_camera_frame(
                     captures, ignition_times, video_t, cfg.ignition_video_s
@@ -2550,9 +2766,11 @@ def render(
                 frame = camera_layout_frame(
                     camera_frames, cfg.camera_mode, video_t,
                     cfg.ignition_video_s, cfg.camera_3_switch_delay_s,
-                    camera_crops,
+                    camera_crops, resolved_camera_program,
                 )
             else:
+                if kept_cut_list is not None:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, video_t * 1000.0)
                 ok, frame = cap.read()
                 if not ok:
                     break
@@ -2652,13 +2870,13 @@ def render(
                     thumbnail_frame = output_frame.copy()
 
             idx += 1
-            if frame_count > 0:
-                percent = int(idx * 100 / frame_count)
+            if total_output_frames > 0:
+                percent = int(idx * 100 / total_output_frames)
                 if percent != last_percent and percent % 5 == 0:
                     print(f"  {percent:3d}%")
                     report(
                         5 + int(percent * 0.88),
-                        f"Rendering frame {idx:,} of {frame_count:,}",
+                        f"Rendering frame {idx:,} of {total_output_frames:,}",
                     )
                     last_percent = percent
 

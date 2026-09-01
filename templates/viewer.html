@@ -1,0 +1,10 @@
+{% extends "_base.html" %}
+{% block title %}Live{% endblock %}
+{% block content %}
+<div class="viewer-wrap">
+  <img id="viewerFrame" alt="Live broadcast" src="/api/live/{{ session_id }}/program/stream">
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='live-viewer.js', v='1') }}"></script>
+{% endblock %}
