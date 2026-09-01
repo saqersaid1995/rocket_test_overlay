@@ -2,17 +2,18 @@
   let snapshot = null;
   let radiusKm = 50;
   let refreshTimer = null;
+  let loading = false;
 
   function escLocal(v){return String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function fmt(v,d=0,s=''){return v===null||v===undefined||Number.isNaN(Number(v))?'—':`${Number(v).toFixed(d)}${s}`;}
-  function statusText(){return snapshot?.status || 'WAITING';}
+  function statusText(){return snapshot?.status || (loading ? 'LOADING' : 'WAITING');}
   function traffic(){return snapshot?.traffic || null;}
 
   function airspacePanel(item){
     const t=traffic();
     const aircraft=t?.aircraft || [];
     const nearest=t?.nearest_distance_km;
-    const body=!snapshot?'<div class="airspace-empty">Loading live ADS-B observations…</div>':(!snapshot.ok||!t)?`<div class="airspace-empty"><b>${escLocal(snapshot.status||'UNAVAILABLE')}</b> · ${escLocal(snapshot.message||'Traffic source unavailable')}</div>`:`
+    const body=!snapshot?`<div class="airspace-empty"><b>${loading?'LOADING LIVE TRAFFIC':'WAITING'}</b><span>Retrieving ADS-B / MLAT observations for the operation site. This request is automatically timed out if the external source does not respond.</span></div>`:(!snapshot.ok||!t)?`<div class="airspace-empty"><b>${escLocal(snapshot.status||'UNAVAILABLE')}</b><span>${escLocal(snapshot.message||'Traffic source unavailable')}</span><button type="button" id="airspace-refresh">RETRY</button></div>`:`
       <div class="airspace-toolbar">
         <label>MONITOR RADIUS
           <select id="airspace-radius">
@@ -21,13 +22,13 @@
         </label>
         <button type="button" id="airspace-refresh">REFRESH TRAFFIC</button>
         <div class="airspace-state">
-          <span><small>SOURCE</small><b>${escLocal(t.provider||'ADSB.lol')}</b></span>
+          <span><small>SOURCE</small><b>${escLocal(t.provider||'ADS-B')}</b></span>
           <span><small>STATUS</small><b>${escLocal(statusText())}</b></span>
           <span><small>SITE</small><b>${escLocal(snapshot.site?.site_name||'Operation Site')}</b></span>
         </div>
       </div>
       <div class="airspace-layout">
-        <div class="airspace-map" id="airspace-map"><div class="map-label map-radius">RADIUS ${radiusKm} km</div><div class="map-label map-attribution">© OpenStreetMap contributors · ADS-B: ADSB.lol</div></div>
+        <div class="airspace-map" id="airspace-map"><div class="map-label map-radius">RADIUS ${radiusKm} km</div><div class="map-label map-attribution">© OpenStreetMap contributors · ADS-B observational data</div></div>
         <div class="airspace-side">
           <div class="airspace-summary">
             <div class="metric"><small>OBSERVED TARGETS</small><strong>${aircraft.length}</strong><em>within ${radiusKm} km</em></div>
@@ -78,10 +79,23 @@
   }
 
   async function loadTraffic(force=false){
+    if(loading)return;
+    loading=true;
+    if(document.querySelector('[data-panel="airspace"]'))renderWorkspace();
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),10000);
     try{
-      const r=await fetch(`/api/airspace/traffic?radius_km=${radiusKm}${force?'&refresh=1':''}`,{cache:'no-store'});
+      const r=await fetch(`/api/airspace/traffic?radius_km=${radiusKm}${force?'&refresh=1':''}`,{cache:'no-store',signal:controller.signal});
+      const type=r.headers.get('content-type')||'';
+      if(!type.includes('application/json'))throw new Error(`Traffic API returned HTTP ${r.status}`);
       snapshot=await r.json();
-    }catch(e){snapshot={ok:false,status:'UNAVAILABLE',message:e.message};}
+      if(!r.ok&&snapshot?.ok!==true) snapshot={...snapshot,ok:false,status:snapshot.status||`HTTP ${r.status}`};
+    }catch(e){
+      snapshot={ok:false,status:e.name==='AbortError'?'TIMEOUT':'UNAVAILABLE',message:e.name==='AbortError'?'Live traffic request exceeded 10 seconds. Retry or check internet connectivity.':e.message};
+    }finally{
+      clearTimeout(timeout);
+      loading=false;
+    }
     if(document.querySelector('[data-panel="airspace"]')){renderWorkspace();setTimeout(drawMap,0);}
   }
 
