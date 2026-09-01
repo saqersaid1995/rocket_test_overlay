@@ -5,6 +5,7 @@ import json
 import os
 import socketserver
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,13 +42,28 @@ class EdgeHandler(socketserver.StreamRequestHandler):
     device_id: str | None = None
     boot_id: str | None = None
 
+    def setup(self) -> None:
+        super().setup()
+        self._write_lock = threading.RLock()
+
+    def send_frame(self, payload: dict) -> None:
+        frame = encode_frame({
+            "protocol": "SMTCS-EDGE/1",
+            "device_id": self.device_id or "GATEWAY",
+            "boot_id": self.boot_id or "GATEWAY",
+            **payload,
+        })
+        with self._write_lock:
+            self.wfile.write(frame)
+            self.wfile.flush()
+
     def reply(self, payload: dict) -> None:
-        self.wfile.write(encode_frame({"protocol": "SMTCS-EDGE/1", "device_id": self.device_id or "GATEWAY",
-                                      "boot_id": self.boot_id or "GATEWAY", **payload}))
+        self.send_frame(payload)
 
     def handle(self) -> None:
         db = database(self.server.db_path)
         remote = f"{self.client_address[0]}:{self.client_address[1]}"
+        registered = False
         try:
             for frame in self.rfile:
                 try:
@@ -60,11 +76,16 @@ class EdgeHandler(socketserver.StreamRequestHandler):
                           remote_addr=excluded.remote_addr,firmware=excluded.firmware,last_seen=excluded.last_seen,
                           disconnected_at=NULL,status='CONNECTED'""",
                           (self.device_id,self.boot_id,remote,msg.get("firmware"),stamp,stamp)); db.commit()
+                        self.server.register_connection(self.device_id, self)
+                        registered = True
                         self.reply({"type":"ACK","ack_sequence":-1,"gateway_time_utc":stamp})
                     elif msg["type"] == "HEARTBEAT":
                         db.execute("UPDATE edge_sessions SET last_seen=?,status='CONNECTED' WHERE device_id=? AND boot_id=?",
                                    (now(),self.device_id,self.boot_id)); db.commit()
                         self.reply({"type":"ACK","ack_sequence":msg.get("sequence",-1),"gateway_time_utc":now()})
+                    elif msg["type"] in {"ACK", "NACK"}:
+                        db.execute("UPDATE edge_sessions SET last_seen=?,status='CONNECTED' WHERE device_id=? AND boot_id=?",
+                                   (now(),self.device_id,self.boot_id)); db.commit()
                     else:
                         session=db.execute("SELECT last_sequence FROM edge_sessions WHERE device_id=? AND boot_id=?",
                                            (self.device_id,self.boot_id)).fetchone()
@@ -84,8 +105,13 @@ class EdgeHandler(socketserver.StreamRequestHandler):
                         db.commit()
                         self.reply({"type":"ACK","ack_sequence":msg["sequence"],"gateway_time_utc":now()})
                 except ProtocolError as exc:
-                    self.reply({"type":"NACK","reason":str(exc),"gateway_time_utc":now()})
+                    try:
+                        self.reply({"type":"NACK","reason":str(exc),"gateway_time_utc":now()})
+                    except OSError:
+                        break
         finally:
+            if registered and self.device_id:
+                self.server.unregister_connection(self.device_id, self)
             if self.device_id and self.boot_id:
                 db.execute("UPDATE edge_sessions SET disconnected_at=?,last_seen=?,status='DISCONNECTED' WHERE device_id=? AND boot_id=?",
                            (now(),now(),self.device_id,self.boot_id)); db.commit()
@@ -95,7 +121,39 @@ class EdgeHandler(socketserver.StreamRequestHandler):
 class Gateway(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
-    def __init__(self,address,db_path): self.db_path=db_path; super().__init__(address,EdgeHandler)
+
+    def __init__(self,address,db_path):
+        self.db_path=db_path
+        self._connections: dict[str, EdgeHandler] = {}
+        self._connections_lock = threading.RLock()
+        super().__init__(address,EdgeHandler)
+
+    def register_connection(self, device_id: str, handler: EdgeHandler) -> None:
+        with self._connections_lock:
+            self._connections[device_id] = handler
+
+    def unregister_connection(self, device_id: str, handler: EdgeHandler) -> None:
+        with self._connections_lock:
+            if self._connections.get(device_id) is handler:
+                self._connections.pop(device_id, None)
+
+    def send_bench_led_pulse(self, device_id: str = "PT-01", duration_ms: int = 500) -> dict:
+        duration_ms = max(50, min(int(duration_ms), 2000))
+        with self._connections_lock:
+            handler = self._connections.get(device_id)
+        if handler is None:
+            return {"ok": False, "error": f"{device_id} is not connected to the Ethernet edge gateway"}
+        try:
+            handler.send_frame({
+                "type": "BENCH_LED_PULSE",
+                "duration_ms": duration_ms,
+                "bench_only": True,
+                "gateway_time_utc": now(),
+            })
+            return {"ok": True, "device_id": device_id, "duration_ms": duration_ms}
+        except OSError as exc:
+            self.unregister_connection(device_id, handler)
+            return {"ok": False, "error": f"Ethernet command send failed: {exc}"}
 
 
 def main() -> None:
