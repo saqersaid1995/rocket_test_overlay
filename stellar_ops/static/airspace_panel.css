@@ -1,0 +1,30 @@
+.airspace-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #143445;background:#07141b}
+.airspace-toolbar label{display:flex;align-items:center;gap:6px;font-size:9px;letter-spacing:.08em;color:#6c8794}
+.airspace-toolbar select,.airspace-toolbar button{height:27px;border-radius:0;font-size:9px}
+.airspace-toolbar .airspace-state{margin-left:auto;display:flex;gap:18px;align-items:center}
+.airspace-state span{display:flex;flex-direction:column;gap:2px;min-width:90px}
+.airspace-state small{font-size:8px;letter-spacing:.08em;color:#4d7d93}
+.airspace-state b{font-size:11px;color:#d9eef7}
+.airspace-layout{display:grid;grid-template-columns:minmax(420px,1.6fr) minmax(300px,1fr);min-height:340px}
+.airspace-map{position:relative;overflow:hidden;min-height:340px;background:#02080b;border-right:1px solid #143445;isolation:isolate}
+.airspace-map .osm-tile{position:absolute;width:256px;height:256px;max-width:none;user-select:none;pointer-events:none;z-index:1}
+.airspace-map .airspace-ring{position:absolute;border:1px solid rgba(41,200,240,.6);border-radius:50%;transform:translate(-50%,-50%);z-index:3;pointer-events:none;box-shadow:0 0 0 1px rgba(41,200,240,.08) inset}
+.airspace-map .site-marker{position:absolute;width:12px;height:12px;border:2px solid #29c8f0;background:#061117;transform:translate(-50%,-50%) rotate(45deg);z-index:5;box-shadow:0 0 10px rgba(41,200,240,.6)}
+.airspace-map .aircraft-marker{position:absolute;z-index:6;transform:translate(-50%,-50%);border:0;background:transparent;color:#f3d15f;padding:0;cursor:pointer;font-size:16px;line-height:1;text-shadow:0 0 4px #000}
+.airspace-map .aircraft-marker.near{color:#ff815d}.airspace-map .aircraft-marker.critical{color:#ff4757}
+.airspace-map .map-label{position:absolute;z-index:8;padding:3px 5px;background:rgba(3,10,14,.82);border:1px solid #143445;color:#8aa5b2;font-size:8px;pointer-events:none}
+.airspace-map .map-attribution{right:4px;bottom:4px}.airspace-map .map-radius{left:4px;bottom:4px}
+.airspace-side{min-width:0;display:flex;flex-direction:column}
+.airspace-summary{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid #143445}
+.airspace-summary .metric{padding:10px;border-right:1px solid #143445}.airspace-summary .metric:last-child{border-right:0}
+.airspace-summary small{display:block;font-size:8px;letter-spacing:.08em;color:#4d7d93}.airspace-summary strong{display:block;margin-top:5px;font-size:17px;color:#d9eef7}.airspace-summary em{display:block;margin-top:2px;font-size:8px;color:#6c8794;font-style:normal}
+.airspace-table-wrap{overflow:auto;max-height:235px}
+.airspace-table{width:100%;border-collapse:collapse;font-size:9px}
+.airspace-table th{position:sticky;top:0;background:#07141b;color:#4d7d93;text-align:left;font-size:8px;letter-spacing:.06em;padding:6px;border-bottom:1px solid #143445;z-index:2}
+.airspace-table td{padding:7px 6px;border-bottom:1px solid #102a37;color:#bdd2dc;white-space:nowrap}.airspace-table tr:hover td{background:#081820}
+.airspace-table code{color:#29c8f0}.airspace-table .distance-critical{color:#ff4757;font-weight:700}.airspace-table .distance-near{color:#ffb24a;font-weight:700}
+.airspace-warning{padding:7px 9px;border-top:1px solid #143445;color:#9ab0ba;font-size:8px;line-height:1.45}.airspace-warning b{color:#ffb24a}
+.airspace-empty{padding:22px;color:#6c8794;font-size:10px}
+.aircraft-popover{position:absolute;z-index:20;min-width:190px;background:#061117;border:1px solid #276079;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);font-size:9px;color:#bdd2dc}
+.aircraft-popover b{display:block;color:#e4f4fa;font-size:11px;margin-bottom:5px}.aircraft-popover div{display:flex;justify-content:space-between;gap:12px;padding:2px 0}.aircraft-popover span:first-child{color:#587f91}
+@media(max-width:1100px){.airspace-layout{grid-template-columns:1fr}.airspace-map{border-right:0;border-bottom:1px solid #143445}.airspace-toolbar .airspace-state{display:none}}
