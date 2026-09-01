@@ -12,7 +12,7 @@ from .weather import settings as weather_settings
 
 airspace = Blueprint("airspace", __name__)
 
-TRAFFIC_CACHE_SECONDS = 8
+TRAFFIC_CACHE_SECONDS = 1
 _TILE_CACHE_SECONDS = 3600
 _traffic_cache: dict[str, tuple[float, dict]] = {}
 _tile_cache: dict[str, tuple[float, bytes, str]] = {}
