@@ -2,58 +2,63 @@
   const button = document.querySelector('#jump-ignition');
   if (!button) return;
 
-  // workspace.js still carries a legacy /api/ignition onclick handler.
-  // Clear it so this button has exactly one owner: the bench-only Ethernet LED test.
+  // Clear any legacy owner so this button is bench-LED-only.
   button.onclick = null;
 
   let busy = false;
-  let resetTimer = null;
+  let active = false;
 
-  const setVisual = (label, active = false) => {
-    button.textContent = label;
-    button.classList.toggle('active', active);
+  const setVisual = () => {
     button.disabled = busy;
+    button.classList.toggle('active', active);
+    button.textContent = active ? 'LED OFF' : 'IGNITION TEST';
+    button.title = active
+      ? 'Bench LED is ON — click to turn it OFF'
+      : 'Bench LED test over the PT-01 Ethernet edge connection';
   };
 
-  async function pulseBenchIgnition() {
+  async function readStatus() {
+    try {
+      const response = await fetch('/api/bench/ignition', {cache: 'no-store'});
+      const payload = await response.json();
+      if (response.ok) active = Boolean(payload.active);
+    } catch (_) {
+      // Keep the current UI state if status cannot be read.
+    }
+    setVisual();
+  }
+
+  async function setBenchLed(nextState) {
     if (busy) return;
     busy = true;
-    button.disabled = true;
-    button.textContent = 'LED TEST…';
+    setVisual();
 
     try {
-      const response = await fetch('/api/bench/ignition/pulse', {
+      const response = await fetch(`/api/bench/ignition/${nextState ? 'on' : 'off'}`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: '{}'
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Ethernet bench LED test failed');
+      if (!response.ok) throw new Error(payload.error || 'Ethernet bench LED command failed');
 
-      setVisual('LED ACTIVE', true);
+      active = Boolean(payload.active);
       if (typeof toast === 'function') {
-        toast('Bench LED pulse sent to PT-01 over Ethernet');
+        toast(active ? 'Bench LED ON over Ethernet' : 'Bench LED OFF');
       }
-
-      clearTimeout(resetTimer);
-      resetTimer = setTimeout(() => {
-        busy = false;
-        button.disabled = false;
-        setVisual('IGNITION TEST', false);
-      }, Math.max(600, Number(payload.pulse_ms || 500) + 150));
     } catch (error) {
-      busy = false;
-      button.disabled = false;
-      setVisual('IGNITION TEST', false);
       if (typeof toast === 'function') toast(error.message, true);
+    } finally {
+      busy = false;
+      setVisual();
     }
   }
 
-  button.textContent = 'IGNITION TEST';
-  button.title = 'Bench LED test over the PT-01 Ethernet edge connection';
   button.addEventListener('click', event => {
     event.preventDefault();
     event.stopImmediatePropagation();
-    pulseBenchIgnition();
+    setBenchLed(!active);
   });
+
+  readStatus();
 })();
