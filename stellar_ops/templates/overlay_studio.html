@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SMTCS · Broadcast Overlay Studio</title>
+  <link rel="stylesheet" href="{{url_for('static',filename='global_nav.css')}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='media.css')}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='overlay_studio.css')}}">
+</head>
+<body>
+{% set active_area = 'displays' %}
+{% set section_label = 'DISPLAYS & BROADCAST' %}
+{% include "partials/global_nav.html" %}
+<header class="mast context-mast">
+  <div class="context-title"><small>EXTERNAL BROADCAST SYSTEM</small><strong>OVERLAY STUDIO</strong></div>
+  <div><small>OPERATION</small><strong id="operation">—</strong></div>
+  <div><small>PHASE</small><strong id="phase">—</strong></div>
+  <div><small>ACTIVE LAYOUT</small><strong id="active-layout">—</strong></div>
+  <div><small>PACKAGES</small><strong id="package-count">—</strong></div>
+  <div><small>{{system_identity.environment}}</small><strong>V{{system_identity.version}}</strong></div>
+</header>
+<div class="studio-shell">
+  <aside>
+    <section><small>MEDIA SYSTEM</small><a href="/media?view=overview"><i>01</i> Control Room</a><a href="/media?view=sources"><i>02</i> Camera Sources</a></section>
+    <section><small>PUBLIC GRAPHICS</small><a class="active" href="/media/overlays"><i>03</i> Overlay Studio</a><a href="/media?view=broadcast-setup"><i>04</i> Scenes &amp; Destinations</a><a href="/media?view=live"><i>05</i> Live Production</a></section>
+  </aside>
+  <main>
+    <div class="page-title">
+      <div><span>PUBLIC BROADCAST / ROTPL REGISTRY</span><h1>Broadcast Overlay Studio</h1><p>Register layouts, assign one to every mission phase, then run automatically or override manually.</p></div>
+      <span class="status" id="validation-status">REGISTRY READY</span>
+    </div>
+    <div class="studio-grid">
+      <section class="panel preview-panel">
+        <header><div><b>LAYOUT PREVIEW PLAYER</b><small>SIMULATED CAMERA + LIVE ROTPL RENDER · NO DEVICE REQUIRED</small></div><span class="status" id="preview-status">SIMULATION</span></header>
+        <div class="body">
+          <div class="preview-toolbar">
+            <label><small>MISSION PHASE</small><select id="preview-phase"></select></label>
+            <label><small>LAYOUT PACKAGE</small><select id="preview-package"></select></label>
+            <label><small>BACKGROUND</small><select id="preview-mode"><option value="VIDEO">SIMULATED CAMERA</option><option value="REFERENCE">TEMPLATE REFERENCE</option><option value="OVERLAY">OVERLAY ONLY</option></select></label>
+            <button class="action" id="preview-play" type="button">PAUSE</button>
+            <button class="mini-action" id="preview-reset" type="button">RESET</button>
+            <button class="mini-action" id="preview-fullscreen" type="button">FULL SCREEN</button>
+          </div>
+          <div class="preview-stage" id="preview-stage"><img id="preview-image" alt="Rendered broadcast layout preview"><div class="preview-loading" id="preview-loading">RENDERING LAYOUT…</div></div>
+          <div class="preview-telemetry">
+            <label><small>MISSION TIME <output id="preview-time-value">T+00:01.2</output></small><input id="preview-time" type="range" min="-5" max="12" step="0.1" value="1.2"></label>
+            <label><small>PRESSURE <output id="preview-pressure-value">42.0 bar</output></small><input id="preview-pressure" type="range" min="0" max="80" step="0.5" value="42"></label>
+            <label><small>THRUST <output id="preview-thrust-value">720 N</output></small><input id="preview-thrust" type="range" min="0" max="1200" step="10" value="720"></label>
+          </div>
+          <p class="preview-note">SIMULATION PREVIEW — nothing here starts a camera, recording or external stream.</p>
+        </div>
+      </section>
+      <section class="panel upload-panel">
+        <header><div><b>UPLOAD ROTPL PACKAGE</b><small>BUNDLED FILES LOAD AUTOMATICALLY · UPLOAD MORE HERE</small></div></header>
+        <div class="body">
+          <form id="package-form">
+            <label class="drop-zone" for="package-input"><b>SELECT .ROTPL PACKAGE</b><span>manifest.json + layout.json + assets</span><input id="package-input" name="package" type="file" accept=".rotpl,.zip" required></label>
+            <div id="selected-package">No package selected</div>
+            <button class="action" type="submit">VALIDATE &amp; REGISTER PACKAGE</button>
+          </form>
+          <div class="rules"><span>10 MB compressed limit</span><span>25 MB extracted limit</span><span>SHA-256 fingerprint</span><span>Public-data classification check</span></div>
+        </div>
+      </section>
+      <section class="panel channel-panel">
+        <header><div><b>REGISTER CUSTOM CHANNEL</b><small>NO CODE CHANGE REQUIRED</small></div></header>
+        <div class="body">
+          <form id="channel-form" class="form-grid">
+            <label><small>CHANNEL ID</small><input name="channel_id" required placeholder="navigation.altitude_agl"></label>
+            <label><small>DISPLAY NAME</small><input name="label" required placeholder="Altitude AGL"></label>
+            <label><small>CANONICAL UNIT</small><input name="canonical_unit" required placeholder="m"></label>
+            <label><small>CATEGORY</small><input name="category" value="CUSTOM"></label>
+            <label><small>DATA TYPE</small><select name="data_type"><option>number</option><option>boolean</option><option>text</option><option>enum</option><option>timestamp</option><option>geo</option><option>vector</option><option>quaternion</option><option>event</option><option>series</option></select></label>
+            <label><small>CLASSIFICATION</small><select name="classification"><option>PUBLIC</option><option>DELAYED_PUBLIC</option><option selected>INTERNAL</option><option>RESTRICTED</option></select></label>
+            <label><small>SOURCE KIND</small><select name="source_kind"><option>MEASURED</option><option>DERIVED</option><option>ESTIMATED</option><option>EVENT</option><option>SYSTEM</option></select></label>
+            <button class="action" type="submit">REGISTER CHANNEL</button>
+          </form>
+        </div>
+      </section>
+      <section class="panel packages-panel">
+        <header><div><b>REGISTERED PACKAGES</b><small>EXACT VERSION + CHECKSUM</small></div></header>
+        <div class="body" id="packages"></div>
+      </section>
+      <section class="panel selection-panel">
+        <header><div><b>LIVE LAYOUT SELECTION</b><small>AUTO BY PHASE · MANUAL OVERRIDE</small></div><span class="status" id="selection-mode-tag">AUTO</span></header>
+        <div class="body">
+          <form id="selection-form" class="selection-form">
+            <label><small>MODE</small><select id="selection-mode" name="mode"><option>AUTO</option><option>MANUAL</option></select></label>
+            <label><small>MANUAL PACKAGE</small><select id="manual-package" name="package_id"></select></label>
+            <button class="action" type="submit">APPLY SELECTION</button>
+          </form>
+          <div class="active-card" id="active-card"></div>
+        </div>
+      </section>
+      <section class="panel phases-panel">
+        <header><div><b>MISSION PHASE LAYOUTS</b><small>EACH PHASE MAY USE A DIFFERENT ROTPL PACKAGE</small></div><span id="phase-coverage"></span></header>
+        <div class="body"><div class="table-wrap phase-table"><table><thead><tr><th>PHASE</th><th>LAYOUT PACKAGE</th><th>TRANSITION</th><th>ACTION</th></tr></thead><tbody id="phase-assignments"></tbody></table></div></div>
+      </section>
+      <section class="panel catalog-panel">
+        <header><div><b>TELEMETRY CHANNEL REGISTRY</b><small>MEASURED · DERIVED · ESTIMATED · EVENTS</small></div><input id="catalog-filter" placeholder="Filter channels"></header>
+        <div class="body"><div class="catalog-summary" id="catalog-summary"></div><div class="table-wrap"><table><thead><tr><th>CHANNEL</th><th>MEASUREMENT</th><th>TYPE</th><th>UNIT</th><th>SOURCE</th><th>CLASS</th></tr></thead><tbody id="catalog"></tbody></table></div></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="toast"></div>
+<script>window.__OVERLAY_STUDIO__={{initial|tojson}};</script>
+<script src="{{url_for('static',filename='overlay_studio.js')}}"></script>
+</body>
+</html>

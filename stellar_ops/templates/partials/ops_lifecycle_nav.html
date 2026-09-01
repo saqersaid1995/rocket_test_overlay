@@ -1,0 +1,42 @@
+{% macro nav_link(path, label) -%}
+<a href="{{path}}" class="{{'active' if request.path == path else ''}}" {% if request.path == path %}aria-current="page"{% endif %}>{{label}}</a>
+{%- endmacro %}
+<nav class="lifecycle-nav" aria-label="Operation lifecycle">
+  <a class="lifecycle-home {{'active' if request.path == '/ops/' ~ operation.id else ''}}" href="/ops/{{operation.id}}">
+    <small>OPERATION</small><b>Overview</b>
+  </a>
+  <section><small>01 · DEFINITION</small><div>
+    {{nav_link('/ops/' ~ operation.id ~ '/planning', 'Preparation Plan')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/article', 'Test Article')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/baseline', 'Configuration Baseline')}}
+  </div></section>
+  <section><small>02 · OPERATION ASSURANCE</small><div>
+    {{nav_link('/ops/' ~ operation.id ~ '/team', 'Team & Authority')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/procedure', 'Procedure')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/safety', 'Safety Assurance')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/instrumentation', 'Instrumentation')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/video', 'Video & Recording')}}
+  </div></section>
+  <section><small>03 · RELEASE PREPARATION</small><div>
+    {{nav_link('/ops/' ~ operation.id ~ '/handbook', 'Handbook')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/work-packages', 'Execution Packs')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/readiness', 'Readiness Review')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/briefing', 'Crew Briefing')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/rehearsal', 'Rehearsal')}}
+  </div></section>
+  <section><small>04 · EXECUTION</small><div>
+    {{nav_link('/ops/' ~ operation.id ~ '/execution', 'Execution Release')}}
+    {% if operation.runtime_context and operation.runtime_context.context_state == 'RELEASED' %}
+      {{nav_link('/workspace', 'Mission Control')}}
+    {% else %}
+      <span class="lifecycle-disabled" aria-disabled="true" title="A current execution release is required">Mission Control · Locked</span>
+    {% endif %}
+  </div></section>
+  <section><small>05 · CLOSE-OUT</small><div>
+    {{nav_link('/ops/' ~ operation.id ~ '/review', 'Run Review & Closure')}}
+  </div></section>
+  <section><small>CROSS-LIFECYCLE CONTROL</small><div>
+    {{nav_link('/ops/' ~ operation.id ~ '/changes', 'Change Control')}}
+    {{nav_link('/ops/' ~ operation.id ~ '/documents', 'Documents & Evidence')}}
+  </div></section>
+</nav>

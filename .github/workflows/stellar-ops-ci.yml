@@ -1,0 +1,37 @@
+name: Stellar Ops V2 CI
+
+on:
+  push:
+    branches:
+      - development/stellar-ops-v2
+  pull_request:
+    branches:
+      - development/stellar-ops-v2
+      - main
+
+concurrency:
+  group: stellar-ops-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stellar-ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      STELLAR_OPS_ENV: DEVELOPMENT
+      STELLAR_OPS_SECRET: ci-only-not-for-deployment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Install Chromium for browser acceptance
+        run: python -m playwright install --with-deps chromium
+      - name: Run commercial quality gate
+        run: python -m stellar_ops.quality_gate

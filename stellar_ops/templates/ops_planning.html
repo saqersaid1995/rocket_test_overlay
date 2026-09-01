@@ -1,0 +1,76 @@
+{% extends "ops_base.html" %}{% block title %}SMTCS · Preparation Planning{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{url_for('static',filename='planning.css')}}">{% endblock %}
+{% block content %}
+<main class="planning-shell" data-operation-id="{{operation.id}}">
+  <header class="planning-title">
+    <div><small>CONTROLLED PREPARATION / PLANNING FOUNDATION</small><h1>Integrated Preparation Plan</h1><p>{{operation.code}} · {{operation.title}}</p></div>
+    <div class="title-actions"><a href="/ops/{{operation.id}}">BACK TO OPERATION</a><a href="/ops/{{operation.id}}/work-packages">WORK PACKAGES</a><a href="/ops/{{operation.id}}/documents">DOCUMENT EXPORTS</a><span>{{operation.planning_progress}}% ACCEPTED</span></div>
+  </header>
+
+  {% if operation.is_training %}<section class="training-band"><b>TRAINING EXAMPLE</b><span>This plan demonstrates how departments, operational roles, named personnel, evidence and dependencies connect before a static fire.</span></section>{% endif %}
+
+  <section class="control-strip">
+    <div><small>OPERATION START · T0</small><b>{{operation.planned_start or 'NOT SCHEDULED'}}</b></div>
+    <div><small>CONTROLLED TASKS</small><b>{{operation.planning_tasks|length}}</b></div>
+    <div><small>ACCEPTED</small><b>{{operation.planning_tasks|selectattr('status','equalto','ACCEPTED')|list|length}}</b></div>
+    <div><small>BLOCKED</small><b>{{operation.planning_tasks|selectattr('status','equalto','BLOCKED')|list|length}}</b></div>
+    <div><small>SAFETY CRITICAL</small><b>{{operation.planning_tasks|selectattr('safety_critical')|list|length}}</b></div>
+    <button id="generate-plan">{{'REGENERATE FROM T0' if operation.planning_tasks else 'GENERATE CONTROLLED PLAN'}}</button>
+  </section>
+
+  {% if operation.planning_tasks %}
+  <section class="milestone-rail">
+    <header><b>CONTROL MILESTONES</b><small>DATES GENERATED FROM THE OPERATION START</small></header>
+    <div>{% for milestone in operation.planning_milestones %}<article><i></i><small>{{milestone.milestone_code}}</small><b>{{milestone.name}}</b><time>{{milestone.scheduled_at[:16].replace('T',' · ')}}</time><span>{{milestone.owner_role}} · {{milestone.status}}</span></article>{% endfor %}</div>
+  </section>
+
+  <section class="planning-layout">
+    <aside class="department-index">
+      <header><b>DEPARTMENTS</b><small>ACCOUNTABLE FUNCTIONS</small></header>
+      <button class="active" data-filter="ALL"><span>ALL</span><b>{{operation.planning_tasks|length}}</b></button>
+      {% for department in departments %}{% set department_tasks=operation.planning_tasks|selectattr('department_code','equalto',department.code)|list %}{% if department_tasks %}
+      <button data-filter="{{department.code}}"><span><b>{{department.code}}</b>{{department.name}}</span><em>{{department_tasks|length}}</em></button>
+      {% endif %}{% endfor %}
+      <article><small>ROLE LOGIC</small><p><b>R</b> performs the work.<br><b>A</b> owns the result.<br><b>V</b> independently verifies it.</p></article>
+    </aside>
+
+    <div class="task-register">
+      <header><div><b>PREPARATION TASK REGISTER</b><small>TIME · OWNERSHIP · DEPENDENCY · ACCEPTANCE</small></div><div class="legend"><i class="critical"></i>CRITICAL <i class="normal"></i>STANDARD</div></header>
+      {% for task in operation.planning_tasks %}
+      <article class="task {{task.status.lower()}} {% if task.is_overdue %}overdue{% endif %}" data-department="{{task.department_code}}" data-task="{{task.task_code}}">
+        <header>
+          <div class="task-id"><code>{{task.task_code}}</code><span>{{task.department_code}}</span></div>
+          <div class="task-name"><b>{{task.title}}</b><small>{{task.task_type}} · {{task.phase}}{% if task.safety_critical %} · SAFETY CRITICAL{% endif %}</small></div>
+          <div class="task-time"><b>T{{task.t_minus if task.t_minus is not none else '?'}}h</b><time>{{task.due_at[:16].replace('T',' · ')}}</time></div>
+          <span class="task-state">{{task.status.replace('_',' ')}}</span>
+        </header>
+        <div class="task-body">
+          <p>{{task.description}}</p>
+          <section class="role-chain">
+            <div><small>RESPONSIBLE · R</small><b>{{task.responsible_role}}</b><input class="assigned" value="{{task.assigned_person}}"></div>
+            <div><small>ACCOUNTABLE · A</small><b>{{task.accountable_role}}</b></div>
+            <div><small>VERIFIER · V</small><b>{{task.verifier_role}}</b></div>
+            <div><small>DURATION</small><b>{{task.duration_hours}} h</b></div>
+          </section>
+          <section class="task-contract">
+            <div><small>REQUIRED INPUTS</small><p>{{task.required_inputs}}</p></div>
+            <div><small>ACCEPTANCE CRITERIA</small><p>{{task.acceptance_criteria}}</p></div>
+            <div><small>REQUIRED EVIDENCE</small><p>{{task.required_evidence}}</p></div>
+          </section>
+          <footer>
+            <span><small>PREDECESSORS</small>{{task.dependencies|join(' · ') if task.dependencies else 'NONE'}}</span>
+            <label>STATUS<select class="status">{% for state in ['NOT_STARTED','IN_PROGRESS','BLOCKED','READY_FOR_REVIEW','ACCEPTED','CANCELLED'] %}<option {% if state==task.status %}selected{% endif %}>{{state}}</option>{% endfor %}</select></label>
+            <label class="blocker-label">BLOCKER<input class="blocker" value="{{task.blocker}}" placeholder="Required when BLOCKED"></label>
+            <button class="save-task">UPDATE TASK</button>
+          </footer>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <section class="empty-plan"><b>NO PREPARATION PLAN GENERATED</b><p>Set a planned operation start, assign the team where available, then generate the controlled plan. Dates will be calculated backward from T0.</p></section>
+  {% endif %}
+  <footer class="planning-footer"><span id="planning-message"></span><p>Planning drives controlled department, individual and master document packages through Document Export Center.</p></footer>
+</main>
+{% endblock %}{% block scripts %}<script src="{{url_for('static',filename='planning.js')}}"></script>{% endblock %}

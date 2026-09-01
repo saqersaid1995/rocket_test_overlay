@@ -1,0 +1,16 @@
+<header class="global-shell-header">
+  <a class="global-shell-brand" href="/ops" aria-label="Stellar Mission and Test Control operations home">
+    <b>SK</b>
+    <span>STELLAR MISSION &amp; TEST CONTROL<small>INTEGRATED OPERATIONS PLATFORM</small></span>
+  </a>
+  <nav class="global-shell-nav" aria-label="Primary application navigation">
+    <a href="/ops" class="{{ 'active' if active_area == 'operations' else '' }}" {% if active_area == 'operations' %}aria-current="page"{% endif %}>OPERATIONS</a>
+    <a href="/workspace" class="{{ 'active' if active_area == 'mission-control' else '' }}" {% if active_area == 'mission-control' %}aria-current="page"{% endif %}>MISSION CONTROL</a>
+    <a href="/media" class="{{ 'active' if active_area == 'displays' else '' }}" {% if active_area == 'displays' %}aria-current="page"{% endif %}>DISPLAYS &amp; BROADCAST</a>
+    <a href="/control" class="{{ 'active' if active_area == 'configuration' else '' }}" {% if active_area == 'configuration' %}aria-current="page"{% endif %}>SYSTEM CONFIGURATION</a>
+  </nav>
+  <div class="global-shell-identity">
+    <small>{{ system_identity.environment }} · V{{ system_identity.version }}</small>
+    <b>{{ section_label }}</b>
+  </div>
+</header>

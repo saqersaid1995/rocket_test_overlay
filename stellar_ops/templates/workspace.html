@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SMTCS · Mission Control Workspace</title>
+  <link rel="stylesheet" href="{{url_for('static',filename='global_nav.css')}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='workspace.css')}}">
+  <link rel="stylesheet" href="{{url_for('static',filename='workspace_runtime.css')}}">
+  <style>body.kiosk .global-shell-header,body.kiosk .topbar,body.kiosk .toolbar,body.kiosk>footer{display:none}body.popout .global-shell-header,body.popout .topbar,body.popout .alarm-banner,body.popout .toolbar,body.popout>footer{display:none}</style>
+</head>
+<body>
+{% set active_area = 'mission-control' %}{% set section_label = 'MISSION CONTROL' %}{% include "partials/global_nav.html" %}
+<header class="topbar context-topbar">
+  <div class="run-identity"><small>ACTIVE RUN</small><strong id="active-run">—</strong></div>
+  <div class="phase"><small>OPERATION PHASE</small><strong id="phase">—</strong></div>
+  <div class="source"><small>TELEMETRY SOURCE</small><strong id="source">—</strong></div>
+  <div class="utc"><small>UTC</small><strong id="utc">—</strong></div>
+  <div class="source"><small>{{system_identity.environment}}</small><strong>V{{system_identity.version}}</strong></div>
+</header>
+
+<div class="alarm-banner" id="alarm-banner"><span>NO CRITICAL ALARMS</span><button id="open-alarms">OPEN ALARM CENTER</button></div>
+
+<nav class="toolbar">
+  <select id="console-profile" title="Console profile"></select>
+  <select id="saved-workspace" title="Saved workspace"></select>
+  <button id="edit-layout">EDIT LAYOUT</button>
+  <button id="save-layout">SAVE</button>
+  <button id="lock-layout">LOCKED</button>
+  <button id="phase-aware" class="active">PHASE AUTO</button>
+  <button id="add-panel">+ PANEL</button>
+  <button id="open-incidents">INCIDENT CENTER</button>
+  <div class="time-conductor">
+    <button data-time="LIVE" class="active">LIVE</button>
+    <button data-time="PAUSE">PAUSE VIEW</button>
+    <button data-time="REPLAY">REPLAY</button>
+    <select id="time-window" aria-label="Telemetry time window"><option value="30">30 SEC</option><option value="120">2 MIN</option><option value="600">10 MIN</option><option value="0">FULL RUN</option></select>
+    <button id="jump-ignition" title="Bench simulation only — no physical output">IGNITION TEST</button>
+    <span id="mission-time">T−00:00:10.000</span>
+  </div>
+  <button id="kiosk">KIOSK</button>
+</nav>
+
+<main id="workspace" class="workspace locked"></main>
+
+<footer>
+  <span><i class="ok"></i>CORE</span><span id="footer-daq">DAQ —</span><span id="footer-video">VIDEO —</span><span id="footer-storage">HISTORIAN READY</span><span id="footer-clock">CLOCK UTC</span><span id="layout-state">LAYOUT LOCKED</span>
+</footer>
+
+<dialog id="panel-dialog">
+  <form method="dialog"><header>ADD WORKSPACE PANEL<button value="cancel" aria-label="Close panel catalog">×</button></header><div id="panel-catalog"></div></form>
+</dialog>
+
+<dialog id="alarm-dialog"><div class="dialog-shell"><header>ALARM & LIMITS CENTER<button data-close="alarm-dialog" aria-label="Close alarm center">×</button></header><div id="alarm-center"></div></div></dialog>
+<dialog id="incident-dialog"><div class="dialog-shell"><header>OPERATIONAL INCIDENT CENTER<button data-close="incident-dialog" aria-label="Close incident center">×</button></header><form id="incident-form" class="incident-form"><select name="severity" aria-label="Incident severity" required><option value="P2">P2 — HIGH</option><option value="P1">P1 — CRITICAL</option><option value="P3">P3 — MEDIUM</option><option value="P4">P4 — LOW</option></select><select name="category" aria-label="Incident category" required><option>SAFETY</option><option>PROPULSION</option><option>INSTRUMENTATION</option><option>VIDEO</option><option>NETWORK</option><option>PROCEDURE</option><option>FACILITY</option><option>OTHER</option></select><input name="title" aria-label="Incident title" placeholder="Incident title" required><input name="owner" aria-label="Incident owner" value="TEST DIRECTOR" placeholder="Owner" required><textarea name="description" aria-label="Incident description" placeholder="What happened, current impact and immediate facts" required></textarea><button type="submit">OPEN INCIDENT</button></form><div id="incident-center"></div></div></dialog>
+<dialog id="text-entry-dialog">
+  <form id="text-entry-form" class="text-entry-form">
+    <header><span id="text-entry-title">REQUIRED INPUT</span><button type="button" id="text-entry-close" aria-label="Cancel">×</button></header>
+    <label for="text-entry-value" id="text-entry-label">Reason</label>
+    <textarea id="text-entry-value" name="value" required></textarea>
+    <div class="dialog-actions"><button type="button" id="text-entry-cancel">CANCEL</button><button type="submit" id="text-entry-submit">CONTINUE</button></div>
+  </form>
+</dialog>
+<div id="toast"></div>
+<script>window.__INITIAL__={{initial|tojson}};</script>
+<script src="{{url_for('static',filename='workspace.js')}}"></script>
+<script src="{{url_for('static',filename='workspace_stability.js')}}"></script>
+<script src="{{url_for('static',filename='bench_ignition.js')}}"></script>
+</body>
+</html>

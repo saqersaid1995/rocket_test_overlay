@@ -1,11 +1,40 @@
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
+
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
 config.yaml
+*.pem
+*.key
+
+# Stellar Ops runtime data
+stellar_ops/data/*.db
+stellar_ops/data/*.db-*
+stellar_ops/data/exports/*
+!stellar_ops/data/exports/.gitignore
+stellar_ops/data/evidence/
+stellar_ops/data/recordings/
+stellar_ops/data/replay/
+stellar_ops/data/backups/
+stellar_ops/data/*.pre-restore-*
+
+# Legacy overlay runtime data
 input/
 output/
 workspace/
 server.log
 server.pid
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
