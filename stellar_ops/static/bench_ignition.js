@@ -15,7 +15,7 @@
     if (busy) return;
     busy = true;
     button.disabled = true;
-    button.textContent = 'BENCH TEST…';
+    button.textContent = 'LED TEST…';
 
     try {
       const response = await fetch('/api/bench/ignition/pulse', {
@@ -24,11 +24,11 @@
         body: '{}'
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Bench ignition test failed');
+      if (!response.ok) throw new Error(payload.error || 'Ethernet bench LED test failed');
 
-      setVisual('BENCH ACTIVE', true);
+      setVisual('LED ACTIVE', true);
       if (typeof toast === 'function') {
-        toast('Bench ignition simulation pulse accepted — no physical output driven');
+        toast('Bench LED pulse sent to PT-01 over Ethernet');
       }
 
       clearTimeout(resetTimer);
@@ -46,7 +46,7 @@
   }
 
   button.textContent = 'IGNITION TEST';
-  button.title = 'Bench simulation only — no physical relay output';
+  button.title = 'Bench LED test over the PT-01 Ethernet edge connection';
   button.addEventListener('click', event => {
     event.preventDefault();
     pulseBenchIgnition();
