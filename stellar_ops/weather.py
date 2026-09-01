@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import threading
 import time
 import urllib.error
@@ -9,6 +10,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import certifi
 from flask import Blueprint, jsonify, request
 
 from .control import OPERATION_ID, connect, init_control_db
@@ -18,6 +20,7 @@ weather = Blueprint("weather", __name__)
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[str, object] = {"key": None, "at": 0.0, "payload": None}
 CACHE_SECONDS = 300
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def utc_now() -> str:
@@ -138,7 +141,7 @@ def _fetch_open_meteo(latitude: float, longitude: float) -> dict:
             "User-Agent": "Stellar-Ops/2 Open-Meteo integration",
         },
     )
-    with urllib.request.urlopen(req, timeout=5) as response:
+    with urllib.request.urlopen(req, timeout=6, context=_SSL_CONTEXT) as response:
         if response.status != 200:
             raise RuntimeError(f"Open-Meteo returned HTTP {response.status}")
         raw = json.loads(response.read().decode("utf-8"))
