@@ -20,6 +20,7 @@
       .airspace-live-host iframe{width:100%;height:100%;border:0;display:block;background:#020609}
       .airspace-live-loading{height:100%;min-height:360px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:7px;color:#6c8794;font-size:10px}
       .airspace-live-loading b{color:#d9eef7;font-size:12px}
+      .airspace-live-loading button,.airspace-live-loading a{padding:6px 10px;border:1px solid #2a5c70;background:#081820;color:#cdeaf6;text-decoration:none;font:inherit;cursor:pointer}
       .airspace-live-warning{padding:7px 10px;border-top:1px solid #143445;background:#07141b;color:#6c8794;font-size:8px;line-height:1.45}
       .airspace-live-warning b{color:#e9ae42}
       @media(max-width:900px){.airspace-live-meta{grid-template-columns:1fr}.airspace-live-meta>span{border-right:0;border-bottom:1px solid #143445}.airspace-live-meta>span:last-child{border-bottom:0}.airspace-live-host{height:420px}}
@@ -56,7 +57,7 @@
       frame.loading='eager';
       frame.allow='fullscreen';
       frame.src=src;
-    } else if(frame.src!==src){
+    } else if(frame.getAttribute('src')!==src){
       frame.src=src;
     }
     if(frame.parentElement!==host){
@@ -67,12 +68,13 @@
   function airspacePanel(item){
     let body;
     if(cfgError){
-      body=`<div class="airspace-live-shell"><div class="airspace-live-loading"><b>LOCATION UNAVAILABLE</b><span>${esc(cfgError)}</span></div></div>`;
+      body=`<div class="airspace-live-shell"><div class="airspace-live-loading"><b>LOCATION UNAVAILABLE</b><span>${esc(cfgError)}</span><button type="button" id="airspace-location-retry">RETRY LOCATION</button></div></div>`;
     } else if(!cfg){
       body='<div class="airspace-live-shell"><div class="airspace-live-loading"><b>LOADING AIRSPACE MAP</b><span>Reading operation-site coordinates…</span></div></div>';
     } else if(cfg.latitude==null || cfg.longitude==null){
       body='<div class="airspace-live-shell"><div class="airspace-live-loading"><b>OPERATION SITE NOT CONFIGURED</b><span>Set the location from the Weather panel first.</span></div></div>';
     } else {
+      const direct=mapUrl();
       body=`<div class="airspace-live-shell">
         <div class="airspace-live-meta">
           <span><small>OPERATION SITE</small><b>${esc(cfg.site_name||'Operation Site')}</b></span>
@@ -80,24 +82,35 @@
           <span><small>AIRSPACE STATUS</small><b>UNVERIFIED</b></span>
         </div>
         <div class="airspace-live-host" id="airspace-live-host"></div>
-        <div class="airspace-live-warning"><b>SITUATIONAL AWARENESS ONLY.</b> Aircraft shown are received ADS-B/MLAT observations. Absence of a target is not an airspace-clearance determination; CAA/AIS/ATC and NOTAM verification remain authoritative.</div>
+        <div class="airspace-live-warning"><b>SITUATIONAL AWARENESS ONLY.</b> Aircraft shown are received ADS-B/MLAT observations. Absence of a target is not an airspace-clearance determination; CAA/AIS/ATC and NOTAM verification remain authoritative. <a href="${esc(direct)}" target="_blank" rel="noopener">OPEN SOURCE MAP</a></div>
       </div>`;
     }
     return panelShell(item,body,'LIVE MAP · EXTERNAL ADS-B / MLAT');
   }
 
   async function loadConfig(){
+    cfgError=null;
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),4000);
     try{
-      const r=await fetch('/api/weather',{cache:'no-store'});
+      const r=await fetch(`/api/site?_=${Date.now()}`,{cache:'no-store',signal:controller.signal,headers:{Accept:'application/json'}});
+      if(!r.ok) throw new Error(`Site API HTTP ${r.status}`);
       const payload=await r.json();
       cfg=payload.settings||null;
-      cfgError=null;
+      if(!cfg) throw new Error('Site API returned no settings');
     }catch(e){
-      cfgError=e.message||String(e);
+      cfg=null;
+      cfgError=e.name==='AbortError'?'Operation-site lookup timed out after 4 seconds.':(e.message||String(e));
+    }finally{
+      clearTimeout(timer);
     }
     renderWorkspace();
     setTimeout(ensureFrame,0);
   }
+
+  document.addEventListener('click',e=>{
+    if(e.target?.id==='airspace-location-retry') loadConfig();
+  });
 
   installStyles();
   PANEL_NAMES.airspace='AIRSPACE & LIVE TRAFFIC';
