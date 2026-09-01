@@ -152,11 +152,12 @@ def apply_security_headers(response):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "img-src 'self' data: blob:; "
+        "img-src 'self' data: blob: https:; "
         "media-src 'self' blob:; "
         "connect-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
+        "frame-src https://globe.airplanes.live; "
         "frame-ancestors 'self'; "
         "base-uri 'self'; form-action 'self'",
     )
