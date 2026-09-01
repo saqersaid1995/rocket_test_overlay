@@ -5,10 +5,29 @@
   if (window.__AIRSPACE_V11__?.destroy) window.__AIRSPACE_V11__.destroy();
   const ctl = new AbortController();
   const signal = ctl.signal;
-  const ctx = window.__AIRSPACE_V11__ = {timer:null,busy:false,destroy(){ctl.abort();if(this.timer)clearInterval(this.timer);delete window.__AIRSPACE_V11__;}};
+  const ctx = window.__AIRSPACE_V11__ = {
+    timer:null,
+    busy:false,
+    subtitleObserver:null,
+    destroy(){
+      ctl.abort();
+      if(this.timer) clearInterval(this.timer);
+      if(this.subtitleObserver) this.subtitleObserver.disconnect();
+      delete window.__AIRSPACE_V11__;
+    }
+  };
+
+  function fixSubtitle(){
+    const p = document.querySelector('[data-panel="airspace"] header small');
+    const text = 'LIVE TRAFFIC · 2 S UPDATE · SITUATIONAL AWARENESS';
+    if (p && p.textContent !== text) p.textContent = text;
+  }
 
   function renderNow(){
-    try { renderWorkspace(); } catch (_) {}
+    try {
+      renderWorkspace();
+      fixSubtitle();
+    } catch (_) {}
   }
 
   async function updateTraffic(){
@@ -73,15 +92,15 @@
   state.message = 'Connecting to live ADS-B / MLAT source…';
   renderNow();
 
-  // Give the v10 panel one paint cycle, then force the first observation.
   setTimeout(updateTraffic, 100);
   ctx.timer = setInterval(updateTraffic, 2000);
 
-  // Keep the panel subtitle truthful even though the renderer originated in v10.
-  const fixSubtitle = () => {
-    const p = document.querySelector('[data-panel="airspace"] header small');
-    if (p) p.textContent = 'LIVE TRAFFIC · 2 S UPDATE · SITUATIONAL AWARENESS';
-  };
-  new MutationObserver(fixSubtitle).observe(document.getElementById('workspace'), {childList:true,subtree:true});
+  // Observe only to repair the subtitle after workspace re-renders. The guard in
+  // fixSubtitle prevents the observer from creating its own mutation loop.
+  const workspace = document.getElementById('workspace');
+  if (workspace) {
+    ctx.subtitleObserver = new MutationObserver(fixSubtitle);
+    ctx.subtitleObserver.observe(workspace, {childList:true,subtree:true});
+  }
   fixSubtitle();
 })();
