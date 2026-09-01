@@ -5,7 +5,6 @@ import math
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from flask import Blueprint, Response, jsonify, request
 
 from .weather import settings as weather_settings
@@ -79,18 +78,50 @@ def _aircraft_item(raw: dict, site_lat: float, site_lon: float) -> dict | None:
     }
 
 
-def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
-    radius_nm = max(1, min(250, int(math.ceil(radius_km / 1.852))))
-    url = f"https://api.adsb.lol/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}"
+def _read_provider(url: str, provider: str) -> tuple[dict, str]:
     req = urllib.request.Request(
         url,
         headers={
             "Accept": "application/json",
-            "User-Agent": "Stellar-Ops/2 air-traffic situational-awareness",
+            "Accept-Encoding": "identity",
+            "User-Agent": "Stellar-Ops/2 air-traffic-situational-awareness",
         },
     )
-    with urllib.request.urlopen(req, timeout=6) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    with urllib.request.urlopen(req, timeout=3.5) as response:
+        if response.status != 200:
+            raise RuntimeError(f"{provider} returned HTTP {response.status}")
+        return json.loads(response.read().decode("utf-8")), provider
+
+
+def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
+    radius_nm = max(1, min(250, int(math.ceil(radius_km / 1.852))))
+    providers = [
+        (
+            "ADSB.lol",
+            f"https://api.adsb.lol/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}",
+            "ODbL 1.0",
+        ),
+        (
+            "ADSB.one",
+            f"https://api.adsb.one/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}",
+            "provider terms apply",
+        ),
+    ]
+
+    payload = None
+    provider = None
+    license_note = None
+    provider_errors = []
+    for name, url, license_value in providers:
+        try:
+            payload, provider = _read_provider(url, name)
+            license_note = license_value
+            break
+        except Exception as exc:  # each source is isolated so the second source can recover
+            provider_errors.append(f"{name}: {exc}")
+
+    if payload is None:
+        raise RuntimeError("; ".join(provider_errors) or "No ADS-B provider responded")
 
     raw_aircraft = payload.get("ac") or payload.get("aircraft") or []
     aircraft = []
@@ -104,8 +135,8 @@ def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
 
     nearest = aircraft[0] if aircraft else None
     return {
-        "provider": "ADSB.lol",
-        "license": "ODbL 1.0",
+        "provider": provider,
+        "license": license_note,
         "observational_only": True,
         "message": "ADS-B/MLAT observations only — absence of targets does not mean airspace is clear.",
         "radius_km": radius_km,
@@ -115,6 +146,7 @@ def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
         "source_message": payload.get("msg"),
         "source_now": payload.get("now"),
         "fetched_at_epoch": time.time(),
+        "provider_errors": provider_errors,
     }
 
 
@@ -143,7 +175,7 @@ def traffic():
 
     try:
         payload = _fetch_traffic(float(lat), float(lon), radius_km)
-    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+    except Exception as exc:
         if cached:
             return jsonify(
                 ok=True,
@@ -153,7 +185,7 @@ def traffic():
                 message=f"Traffic refresh failed; showing cached observations: {exc}",
                 traffic=cached[1],
             )
-        return jsonify(ok=False, status="UNAVAILABLE", site=cfg, message=f"ADS-B source unavailable: {exc}"), 503
+        return jsonify(ok=False, status="UNAVAILABLE", site=cfg, message=f"Live ADS-B sources unavailable: {exc}"), 503
 
     _traffic_cache[key] = (time.time(), payload)
     return jsonify(ok=True, status="OBSERVATIONAL", site=cfg, cached=False, traffic=payload)
@@ -174,10 +206,10 @@ def osm_tile(z: int, x: int, y: int):
     url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     req = urllib.request.Request(url, headers={"User-Agent": "Stellar-Ops/2 (+OpenStreetMap tile proxy)"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=4) as response:
             body = response.read()
             content_type = response.headers.get_content_type() or "image/png"
-    except urllib.error.URLError:
+    except (OSError, urllib.error.URLError):
         return Response(status=502)
     _tile_cache[key] = (time.time(), body, content_type)
     return Response(body, mimetype=content_type, headers={"Cache-Control": "public, max-age=3600"})
