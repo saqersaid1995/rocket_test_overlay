@@ -23,7 +23,7 @@
     shell.className = 'weather-strip';
     shell.innerHTML = `
       <div class="weather-head">
-        <span><small>WEATHER SERVICE</small><strong>OPEN-METEO</strong></span>
+        <span><small>WEATHER</small><strong>OPEN-METEO</strong></span>
         <span id="weather-site"><small>OPERATION SITE</small><strong>NOT CONFIGURED</strong></span>
         <span id="weather-status"><small>STATUS</small><strong>WAITING</strong></span>
         <div class="weather-actions"><button id="weather-refresh" type="button">REFRESH</button><button id="weather-location" type="button">SET LOCATION</button></div>
@@ -54,22 +54,27 @@
     const a = w.wind?.['10m'] || {};
     const levels = ['80m','120m','180m'];
     body.innerHTML = `
-      <div class="weather-metrics">
-        <div><small>WIND 10 m</small><strong>${value(a.speed_kmh,1,' km/h')}</strong><em>${direction(a.direction_deg)} ${compass(a.direction_deg)}</em></div>
-        <div><small>GUST</small><strong>${value(a.gust_kmh,1,' km/h')}</strong><em>forecast</em></div>
-        <div><small>TEMPERATURE</small><strong>${value(w.temperature_c,1,' °C')}</strong><em>${value(w.relative_humidity_percent,0,'% RH')}</em></div>
-        <div><small>PRESSURE</small><strong>${value(w.surface_pressure_hpa,1,' hPa')}</strong><em>surface</em></div>
-        <div><small>VISIBILITY</small><strong>${visibility(w.visibility_m)}</strong><em>${value(w.cloud_cover_percent,0,'% cloud')}</em></div>
-        <div><small>PRECIPITATION</small><strong>${value(w.precipitation_mm,1,' mm')}</strong><em>${value(w.precipitation_probability_percent,0,'% chance')}</em></div>
-      </div>
-      <div class="weather-profile">
-        <span><b>WIND PROFILE</b><small>FORECAST · NOT ON-SITE TELEMETRY</small></span>
+      <table class="weather-table" aria-label="Open-Meteo forecast summary">
+        <thead><tr>
+          <th>WIND 10 m</th><th>GUST</th><th>TEMPERATURE</th><th>PRESSURE</th><th>VISIBILITY</th><th>PRECIPITATION</th>
+        </tr></thead>
+        <tbody><tr>
+          <td>${value(a.speed_kmh,1,' km/h')}<small>${direction(a.direction_deg)} ${compass(a.direction_deg)}</small></td>
+          <td>${value(a.gust_kmh,1,' km/h')}<small>forecast</small></td>
+          <td>${value(w.temperature_c,1,' °C')}<small>${value(w.relative_humidity_percent,0,'% RH')}</small></td>
+          <td>${value(w.surface_pressure_hpa,1,' hPa')}<small>surface</small></td>
+          <td>${visibility(w.visibility_m)}<small>${value(w.cloud_cover_percent,0,'% cloud')}</small></td>
+          <td>${value(w.precipitation_mm,1,' mm')}<small>${value(w.precipitation_probability_percent,0,'% chance')}</small></td>
+        </tr></tbody>
+      </table>
+      <div class="weather-profile-row">
+        <div class="weather-profile-label"><b>WIND PROFILE</b><small>FORECAST · NOT ON-SITE TELEMETRY</small></div>
         ${levels.map(level => {
           const row = w.wind?.[level] || {};
-          return `<span><code>${level}</code><b>${value(row.speed_kmh,1,' km/h')}</b><em>${direction(row.direction_deg)} ${compass(row.direction_deg)}</em></span>`;
+          return `<div class="weather-profile-value"><code>${level}</code><b>${value(row.speed_kmh,1,' km/h')}</b><small>${direction(row.direction_deg)} ${compass(row.direction_deg)}</small></div>`;
         }).join('')}
       </div>
-      <div class="weather-foot">Forecast time ${esc(w.forecast_time_utc || '—')} UTC · Updated ${esc((w.fetched_at_utc || '').slice(11,19) || '—')} UTC · Source Open-Meteo</div>`;
+      <div class="weather-foot">FORECAST ${esc(w.forecast_time_utc || '—')} UTC · UPDATED ${esc((w.fetched_at_utc || '').slice(11,19) || '—')} UTC · SOURCE OPEN-METEO</div>`;
   }
 
   async function loadWeather(force = false) {
