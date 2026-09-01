@@ -96,18 +96,9 @@ def _read_provider(url: str, provider: str) -> tuple[dict, str]:
 def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
     radius_nm = max(1, min(250, int(math.ceil(radius_km / 1.852))))
     providers = [
-        (
-            "ADSB.lol",
-            f"https://api.adsb.lol/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}",
-            "ODbL 1.0",
-        ),
-        (
-            "ADSB.one",
-            f"https://api.adsb.one/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}",
-            "provider terms apply",
-        ),
+        ("ADSB.lol", f"https://api.adsb.lol/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}", "ODbL 1.0"),
+        ("ADSB.one", f"https://api.adsb.one/v2/point/{site_lat:.6f}/{site_lon:.6f}/{radius_nm}", "provider terms apply"),
     ]
-
     payload = None
     provider = None
     license_note = None
@@ -117,12 +108,10 @@ def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
             payload, provider = _read_provider(url, name)
             license_note = license_value
             break
-        except Exception as exc:  # each source is isolated so the second source can recover
+        except Exception as exc:
             provider_errors.append(f"{name}: {exc}")
-
     if payload is None:
         raise RuntimeError("; ".join(provider_errors) or "No ADS-B provider responded")
-
     raw_aircraft = payload.get("ac") or payload.get("aircraft") or []
     aircraft = []
     for raw in raw_aircraft:
@@ -132,7 +121,6 @@ def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
         if item and item["distance_km"] <= radius_km:
             aircraft.append(item)
     aircraft.sort(key=lambda item: item["distance_km"])
-
     nearest = aircraft[0] if aircraft else None
     return {
         "provider": provider,
@@ -152,41 +140,34 @@ def _fetch_traffic(site_lat: float, site_lon: float, radius_km: float) -> dict:
 
 @airspace.get("/api/airspace/traffic")
 def traffic():
-    cfg = weather_settings()
-    lat = cfg.get("latitude")
-    lon = cfg.get("longitude")
+    stored = weather_settings()
+    lat = _number(request.args.get("lat"))
+    lon = _number(request.args.get("lon"))
+    site_name = (request.args.get("site_name") or stored.get("site_name") or "Operation Site").strip()[:120]
+    if lat is None:
+        lat = _number(stored.get("latitude"))
+    if lon is None:
+        lon = _number(stored.get("longitude"))
+    cfg = {"site_name": site_name, "latitude": lat, "longitude": lon}
     if lat is None or lon is None:
-        return jsonify(
-            ok=False,
-            status="NOT_CONFIGURED",
-            message="Set the operation site in the Open-Meteo location settings first.",
-            site=cfg,
-        )
-
+        return jsonify(ok=False, status="NOT_CONFIGURED", message="Operation-site coordinates are required.", site=cfg), 400
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return jsonify(ok=False, status="INVALID_LOCATION", message="Operation-site coordinates are outside the valid range.", site=cfg), 400
     try:
         radius_km = float(request.args.get("radius_km", "50"))
     except ValueError:
         return jsonify(error="radius_km must be numeric"), 400
     radius_km = max(5.0, min(250.0, radius_km))
-    key = f"{float(lat):.5f}:{float(lon):.5f}:{radius_km:.1f}"
+    key = f"{lat:.5f}:{lon:.5f}:{radius_km:.1f}"
     cached = _traffic_cache.get(key)
     if cached and time.time() - cached[0] < TRAFFIC_CACHE_SECONDS:
         return jsonify(ok=True, status="OBSERVATIONAL", site=cfg, cached=True, traffic=cached[1])
-
     try:
-        payload = _fetch_traffic(float(lat), float(lon), radius_km)
+        payload = _fetch_traffic(lat, lon, radius_km)
     except Exception as exc:
         if cached:
-            return jsonify(
-                ok=True,
-                status="STALE_OBSERVATION",
-                site=cfg,
-                cached=True,
-                message=f"Traffic refresh failed; showing cached observations: {exc}",
-                traffic=cached[1],
-            )
+            return jsonify(ok=True, status="STALE_OBSERVATION", site=cfg, cached=True, message=f"Traffic refresh failed; showing cached observations: {exc}", traffic=cached[1])
         return jsonify(ok=False, status="UNAVAILABLE", site=cfg, message=f"Live ADS-B sources unavailable: {exc}"), 503
-
     _traffic_cache[key] = (time.time(), payload)
     return jsonify(ok=True, status="OBSERVATIONAL", site=cfg, cached=False, traffic=payload)
 
@@ -202,7 +183,6 @@ def osm_tile(z: int, x: int, y: int):
     cached = _tile_cache.get(key)
     if cached and time.time() - cached[0] < _TILE_CACHE_SECONDS:
         return Response(cached[1], mimetype=cached[2], headers={"Cache-Control": "public, max-age=3600"})
-
     url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     req = urllib.request.Request(url, headers={"User-Agent": "Stellar-Ops/2 (+OpenStreetMap tile proxy)"})
     try:
