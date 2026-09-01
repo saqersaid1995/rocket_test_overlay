@@ -2,107 +2,38 @@
   let snapshot = null;
   let radiusKm = 50;
   let refreshTimer = null;
-  let loading = false;
-  let requestSerial = 0;
+  let site = null;
 
-  function escLocal(v){return String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function esc(v){return String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function fmt(v,d=0,s=''){return v===null||v===undefined||Number.isNaN(Number(v))?'—':`${Number(v).toFixed(d)}${s}`;}
-  function traffic(){return snapshot?.traffic || null;}
+  function haversine(lat1,lon1,lat2,lon2){const R=6371.0088,p1=lat1*Math.PI/180,p2=lat2*Math.PI/180,dp=(lat2-lat1)*Math.PI/180,dl=(lon2-lon1)*Math.PI/180,a=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
+  function bearing(lat1,lon1,lat2,lon2){const p1=lat1*Math.PI/180,p2=lat2*Math.PI/180,dl=(lon2-lon1)*Math.PI/180,y=Math.sin(dl)*Math.cos(p2),x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);return (Math.atan2(y,x)*180/Math.PI+360)%360;}
+  function normalize(raw){if(raw.lat==null||raw.lon==null)return null;const alt=raw.alt_baro==='ground'?0:Number(raw.alt_baro??raw.alt_geom);const gs=Number(raw.gs);return {hex:String(raw.hex||''),callsign:String(raw.flight||'').trim()||'—',aircraft_type:String(raw.t||'').trim()||'—',registration:String(raw.r||'').trim()||'—',lat:Number(raw.lat),lon:Number(raw.lon),altitude_ft:Number.isFinite(alt)?alt:null,ground_speed_kmh:Number.isFinite(gs)?gs*1.852:null,track_deg:Number.isFinite(Number(raw.track))?Number(raw.track):null,distance_km:haversine(site.latitude,site.longitude,Number(raw.lat),Number(raw.lon)),bearing_deg:bearing(site.latitude,site.longitude,Number(raw.lat),Number(raw.lon))};}
 
   function airspacePanel(item){
-    const t=traffic();
-    const aircraft=t?.aircraft || [];
-    const nearest=t?.nearest_distance_km;
+    const t=snapshot?.traffic, aircraft=t?.aircraft||[], nearest=aircraft[0];
     let body;
-    if (!snapshot) {
-      body=`<div class="airspace-empty"><b>${loading?'LOADING LIVE TRAFFIC':'WAITING'}</b><span>Retrieving ADS-B / MLAT observations for the operation site.</span><button type="button" id="airspace-refresh">${loading?'RETRY NOW':'LOAD TRAFFIC'}</button></div>`;
-    } else if (!snapshot.ok || !t) {
-      body=`<div class="airspace-empty"><b>${escLocal(snapshot.status||'UNAVAILABLE')}</b><span>${escLocal(snapshot.message||'Traffic source unavailable')}</span><button type="button" id="airspace-refresh">RETRY</button></div>`;
-    } else {
-      body=`
-        <div class="airspace-toolbar">
-          <label>MONITOR RADIUS
-            <select id="airspace-radius">
-              ${[10,25,50,100,150].map(v=>`<option value="${v}" ${v===radiusKm?'selected':''}>${v} km</option>`).join('')}
-            </select>
-          </label>
-          <button type="button" id="airspace-refresh">REFRESH TRAFFIC</button>
-          <div class="airspace-state">
-            <span><small>SOURCE</small><b>${escLocal(t.provider||'ADS-B')}</b></span>
-            <span><small>STATUS</small><b>${escLocal(snapshot.status||'OBSERVATIONAL')}</b></span>
-            <span><small>SITE</small><b>${escLocal(snapshot.site?.site_name||'Operation Site')}</b></span>
-          </div>
-        </div>
-        <div class="airspace-layout">
-          <div class="airspace-map" id="airspace-map"><div class="map-label map-radius">RADIUS ${radiusKm} km</div><div class="map-label map-attribution">© OpenStreetMap contributors · ADS-B observational data</div></div>
-          <div class="airspace-side">
-            <div class="airspace-summary">
-              <div class="metric"><small>OBSERVED TARGETS</small><strong>${aircraft.length}</strong><em>within ${radiusKm} km</em></div>
-              <div class="metric"><small>NEAREST</small><strong>${nearest==null?'—':fmt(nearest,1,' km')}</strong><em>${aircraft[0]?.callsign||'no observed target'}</em></div>
-              <div class="metric"><small>AIRSPACE STATUS</small><strong>UNVERIFIED</strong><em>CAA/AIS confirmation required</em></div>
-            </div>
-            <div class="airspace-table-wrap">
-              ${aircraft.length?`<table class="airspace-table"><thead><tr><th>CALLSIGN</th><th>DIST</th><th>ALT</th><th>SPEED</th><th>TRACK</th></tr></thead><tbody>${aircraft.slice(0,30).map(a=>{const c=a.distance_km<=10?'distance-critical':a.distance_km<=25?'distance-near':'';return `<tr><td><code>${escLocal(a.callsign)}</code><br><small>${escLocal(a.aircraft_type||'—')}</small></td><td class="${c}">${fmt(a.distance_km,1,' km')}</td><td>${fmt(a.altitude_ft,0,' ft')}</td><td>${fmt(a.ground_speed_kmh,0,' km/h')}</td><td>${fmt(a.track_deg,0,'°')}</td></tr>`}).join('')}</tbody></table>`:'<div class="airspace-empty">NO ADS-B / MLAT TARGETS OBSERVED IN THIS RADIUS</div>'}
-            </div>
-            <div class="airspace-warning"><b>OBSERVATIONAL ONLY.</b> No observed target does not mean the airspace is clear. Live traffic data must not replace CAA/AIS/ATC coordination or NOTAM verification.</div>
-          </div>
-        </div>`;
-    }
+    if(!site){body='<div class="airspace-empty"><b>WAITING FOR OPERATION SITE</b><span>Loading coordinates from the weather configuration.</span></div>'}
+    else if(!snapshot){body='<div class="airspace-empty"><b>LOADING LIVE TRAFFIC</b><span>Fetching ADS-B data directly from the browser.</span><button type="button" id="airspace-refresh">RETRY NOW</button></div>'}
+    else if(!snapshot.ok){body=`<div class="airspace-empty"><b>${esc(snapshot.status)}</b><span>${esc(snapshot.message)}</span><button type="button" id="airspace-refresh">RETRY</button><a href="https://globe.airplanes.live/?lat=${site.latitude}&lon=${site.longitude}&zoom=9&kiosk" target="_blank" rel="noopener">OPEN LIVE MAP</a></div>`}
+    else body=`
+      <div class="airspace-toolbar"><label>MONITOR RADIUS <select id="airspace-radius">${[10,25,50,100,150].map(v=>`<option value="${v}" ${v===radiusKm?'selected':''}>${v} km</option>`).join('')}</select></label><button id="airspace-refresh" type="button">REFRESH TRAFFIC</button><div class="airspace-state"><span><small>SOURCE</small><b>${esc(t.provider)}</b></span><span><small>STATUS</small><b>OBSERVATIONAL</b></span><span><small>SITE</small><b>${esc(site.site_name||'Operation Site')}</b></span></div></div>
+      <div class="airspace-layout"><div class="airspace-map" id="airspace-map"><div class="map-label map-radius">RADIUS ${radiusKm} km</div><div class="map-label map-attribution">© OpenStreetMap contributors · ADS-B observational data</div></div><div class="airspace-side"><div class="airspace-summary"><div class="metric"><small>OBSERVED TARGETS</small><strong>${aircraft.length}</strong><em>within ${radiusKm} km</em></div><div class="metric"><small>NEAREST</small><strong>${nearest?fmt(nearest.distance_km,1,' km'):'—'}</strong><em>${nearest?.callsign||'no observed target'}</em></div><div class="metric"><small>AIRSPACE STATUS</small><strong>UNVERIFIED</strong><em>CAA/AIS confirmation required</em></div></div><div class="airspace-table-wrap">${aircraft.length?`<table class="airspace-table"><thead><tr><th>CALLSIGN</th><th>DIST</th><th>ALT</th><th>SPEED</th><th>TRACK</th></tr></thead><tbody>${aircraft.slice(0,30).map(a=>`<tr><td><code>${esc(a.callsign)}</code><br><small>${esc(a.aircraft_type)}</small></td><td>${fmt(a.distance_km,1,' km')}</td><td>${fmt(a.altitude_ft,0,' ft')}</td><td>${fmt(a.ground_speed_kmh,0,' km/h')}</td><td>${fmt(a.track_deg,0,'°')}</td></tr>`).join('')}</tbody></table>`:'<div class="airspace-empty">NO ADS-B / MLAT TARGETS OBSERVED IN THIS RADIUS</div>'}</div><div class="airspace-warning"><b>OBSERVATIONAL ONLY.</b> No observed target does not mean the airspace is clear. CAA/AIS/ATC coordination and NOTAM verification remain required.</div></div></div>`;
     return panelShell(item,body,'ADS-B / MLAT · SITUATIONAL AWARENESS');
   }
 
-  function worldPixel(lat,lon,z){const scale=256*Math.pow(2,z),x=(lon+180)/360*scale,sin=Math.sin(lat*Math.PI/180),y=(0.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*scale;return {x,y};}
+  function worldPixel(lat,lon,z){const scale=256*2**z,x=(lon+180)/360*scale,sin=Math.sin(lat*Math.PI/180),y=(0.5-Math.log((1+sin)/(1-sin))/(4*Math.PI))*scale;return{x,y};}
   function zoomForRadius(r){if(r<=12)return 11;if(r<=28)return 10;if(r<=60)return 9;if(r<=120)return 8;return 7;}
+  function drawMap(){const map=document.getElementById('airspace-map'),t=snapshot?.traffic;if(!map||!site||!t)return;map.querySelectorAll('.osm-tile,.airspace-ring,.site-marker,.aircraft-marker').forEach(n=>n.remove());const w=map.clientWidth||720,h=map.clientHeight||340,z=zoomForRadius(radiusKm),center=worldPixel(site.latitude,site.longitude,z),left=center.x-w/2,top=center.y-h/2,minTx=Math.floor(left/256)-1,maxTx=Math.floor((left+w)/256)+1,minTy=Math.floor(top/256)-1,maxTy=Math.floor((top+h)/256)+1,n=2**z;for(let tx=minTx;tx<=maxTx;tx++)for(let ty=minTy;ty<=maxTy;ty++){if(ty<0||ty>=n)continue;const wrapped=((tx%n)+n)%n,img=document.createElement('img');img.className='osm-tile';img.alt='';img.draggable=false;img.src=`https://tile.openstreetmap.org/${z}/${wrapped}/${ty}.png`;img.style.left=`${tx*256-left}px`;img.style.top=`${ty*256-top}px`;map.appendChild(img);}const mpp=156543.03392*Math.cos(site.latitude*Math.PI/180)/2**z,ring=document.createElement('div'),diameter=radiusKm*2000/mpp;ring.className='airspace-ring';ring.style.width=`${diameter}px`;ring.style.height=`${diameter}px`;ring.style.left=`${w/2}px`;ring.style.top=`${h/2}px`;map.appendChild(ring);const sm=document.createElement('div');sm.className='site-marker';sm.style.left=`${w/2}px`;sm.style.top=`${h/2}px`;map.appendChild(sm);t.aircraft.forEach(a=>{const p=worldPixel(a.lat,a.lon,z),x=p.x-left,y=p.y-top;if(x<-20||x>w+20||y<-20||y>h+20)return;const b=document.createElement('button');b.type='button';b.className='aircraft-marker '+(a.distance_km<=10?'critical':a.distance_km<=25?'near':'');b.textContent='✈';b.style.left=`${x}px`;b.style.top=`${y}px`;b.style.rotate=`${Number(a.track_deg||0)}deg`;b.title=`${a.callsign} · ${fmt(a.distance_km,1,' km')}`;map.appendChild(b);});}
 
-  function drawMap(){
-    const map=document.getElementById('airspace-map'),t=traffic(),site=snapshot?.site;
-    if(!map||!t||site?.latitude==null||site?.longitude==null)return;
-    map.querySelectorAll('.osm-tile,.airspace-ring,.site-marker,.aircraft-marker,.aircraft-popover').forEach(n=>n.remove());
-    const w=map.clientWidth||720,h=map.clientHeight||340,z=zoomForRadius(radiusKm),center=worldPixel(Number(site.latitude),Number(site.longitude),z),left=center.x-w/2,top=center.y-h/2;
-    const minTx=Math.floor(left/256)-1,maxTx=Math.floor((left+w)/256)+1,minTy=Math.floor(top/256)-1,maxTy=Math.floor((top+h)/256)+1,n=Math.pow(2,z);
-    for(let tx=minTx;tx<=maxTx;tx++)for(let ty=minTy;ty<=maxTy;ty++){
-      if(ty<0||ty>=n)continue;
-      const wrapped=((tx%n)+n)%n,img=document.createElement('img');img.className='osm-tile';img.alt='';img.draggable=false;img.src=`/api/airspace/tile/${z}/${wrapped}/${ty}.png`;img.style.left=`${tx*256-left}px`;img.style.top=`${ty*256-top}px`;map.appendChild(img);
-    }
-    const metersPerPixel=156543.03392*Math.cos(Number(site.latitude)*Math.PI/180)/Math.pow(2,z),ring=document.createElement('div'),diameter=(radiusKm*2000)/metersPerPixel;
-    ring.className='airspace-ring';ring.style.width=`${diameter}px`;ring.style.height=`${diameter}px`;ring.style.left=`${w/2}px`;ring.style.top=`${h/2}px`;map.appendChild(ring);
-    const siteMarker=document.createElement('div');siteMarker.className='site-marker';siteMarker.style.left=`${w/2}px`;siteMarker.style.top=`${h/2}px`;siteMarker.title=site.site_name||'Operation Site';map.appendChild(siteMarker);
-    (t.aircraft||[]).forEach(a=>{const p=worldPixel(a.lat,a.lon,z),x=p.x-left,y=p.y-top;if(x<-20||x>w+20||y<-20||y>h+20)return;const b=document.createElement('button');b.type='button';b.className='aircraft-marker '+(a.distance_km<=10?'critical':a.distance_km<=25?'near':'');b.textContent='✈';b.style.left=`${x}px`;b.style.top=`${y}px`;b.style.rotate=`${Number(a.track_deg||0)}deg`;b.title=`${a.callsign} · ${fmt(a.distance_km,1,' km')}`;map.appendChild(b);});
-  }
+  async function loadSite(){const r=await fetch('/api/weather',{cache:'no-store'}),j=await r.json(),s=j.settings||{};if(s.latitude==null||s.longitude==null)throw new Error('Operation-site coordinates are not configured');site={site_name:s.site_name||'Operation Site',latitude:Number(s.latitude),longitude:Number(s.longitude)};}
+  async function fetchProvider(name,url){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),6500);try{const r=await fetch(url,{cache:'no-store',signal:controller.signal,headers:{Accept:'application/json'}});if(!r.ok)throw new Error(`${name} HTTP ${r.status}`);const j=await r.json();return {provider:name,payload:j};}finally{clearTimeout(timer);}}
+  async function loadTraffic(){snapshot=null;renderWorkspace();try{if(!site)await loadSite();const nm=Math.max(1,Math.ceil(radiusKm/1.852)),providers=[['ADSB.lol',`https://api.adsb.lol/v2/point/${site.latitude}/${site.longitude}/${nm}`],['ADSB.one',`https://api.adsb.one/v2/point/${site.latitude}/${site.longitude}/${nm}`]];let result=null,errors=[];for(const [name,url] of providers){try{result=await fetchProvider(name,url);break}catch(e){errors.push(`${name}: ${e.message}`);}}if(!result)throw new Error(errors.join(' | '));const raw=result.payload.ac||result.payload.aircraft||[],aircraft=raw.map(normalize).filter(Boolean).filter(a=>a.distance_km<=radiusKm).sort((a,b)=>a.distance_km-b.distance_km);snapshot={ok:true,status:'OBSERVATIONAL',traffic:{provider:result.provider,aircraft}};}catch(e){snapshot={ok:false,status:e.name==='AbortError'?'TIMEOUT':'UNAVAILABLE',message:e.message};}renderWorkspace();requestAnimationFrame(drawMap);}
 
-  async function loadTraffic(force=false){
-    const serial=++requestSerial;
-    loading=true;
-    snapshot=null;
-    if(document.querySelector('[data-panel="airspace"]'))renderWorkspace();
-    const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),8000);
-    try{
-      const r=await fetch(`/api/airspace/traffic?radius_km=${radiusKm}${force?'&refresh=1':''}&_=${Date.now()}`,{cache:'no-store',signal:controller.signal,headers:{'Accept':'application/json'}});
-      const payload=await r.json();
-      if(serial!==requestSerial)return;
-      snapshot=payload;
-      if(!r.ok&&snapshot?.ok!==true)snapshot={...snapshot,ok:false,status:snapshot.status||`HTTP ${r.status}`};
-    }catch(e){
-      if(serial!==requestSerial)return;
-      snapshot={ok:false,status:e.name==='AbortError'?'TIMEOUT':'UNAVAILABLE',message:e.name==='AbortError'?'The Render server did not return live traffic within 8 seconds. Press RETRY.':e.message};
-    }finally{
-      clearTimeout(timer);
-      if(serial===requestSerial)loading=false;
-    }
-    if(serial===requestSerial&&document.querySelector('[data-panel="airspace"]')){renderWorkspace();requestAnimationFrame(drawMap);}
-  }
-
-  document.addEventListener('change',e=>{if(e.target?.id==='airspace-radius'){radiusKm=Number(e.target.value)||50;loadTraffic(true);}});
-  document.addEventListener('click',e=>{if(e.target?.id==='airspace-refresh'){e.preventDefault();loadTraffic(true);}});
-  window.addEventListener('resize',()=>{if(document.querySelector('[data-panel="airspace"]'))drawMap();});
-
-  PANEL_NAMES.airspace='AIRSPACE & LIVE TRAFFIC';
-  renderers.airspace=airspacePanel;
-  const requested=new URLSearchParams(location.search).get('panel');
-  if(requested==='airspace'){document.body.classList.add('popout');layout=[{panel:'airspace',span:3,order:0}];}
-  else if(!layout.some(x=>x.panel==='airspace')){const commandIndex=layout.findIndex(x=>x.panel==='command'),insertAt=commandIndex>=0?commandIndex+1:layout.length;layout.splice(insertAt,0,{panel:'airspace',span:2,order:insertAt});layout.forEach((x,i)=>x.order=i);}
-  renderWorkspace();
-  loadTraffic(false);
-  refreshTimer=setInterval(()=>loadTraffic(false),15000);
+  document.addEventListener('change',e=>{if(e.target?.id==='airspace-radius'){radiusKm=Number(e.target.value)||50;loadTraffic();}});
+  document.addEventListener('click',e=>{if(e.target?.id==='airspace-refresh'){e.preventDefault();loadTraffic();}});
+  window.addEventListener('resize',()=>drawMap());
+  PANEL_NAMES.airspace='AIRSPACE & LIVE TRAFFIC';renderers.airspace=airspacePanel;
+  if(!layout.some(x=>x.panel==='airspace')){const i=layout.findIndex(x=>x.panel==='command'),at=i>=0?i+1:layout.length;layout.splice(at,0,{panel:'airspace',span:2,order:at});layout.forEach((x,n)=>x.order=n);}
+  renderWorkspace();loadTraffic();refreshTimer=setInterval(loadTraffic,30000);
 })();
