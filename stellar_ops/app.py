@@ -24,6 +24,7 @@ from .operations import operations
 from .pressure_edge import ensure_pressure_edge_integration
 from .runtime_context import get_runtime_context
 from .telemetry_runtime import recording_status
+from .weather import weather
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = os.environ.get("STELLAR_OPS_SECRET", "development-only-change-me")
@@ -33,6 +34,7 @@ app.register_blueprint(media)
 app.register_blueprint(media_frame_preview)
 app.register_blueprint(bench_ignition)
 app.register_blueprint(operations)
+app.register_blueprint(weather)
 app.before_request(begin_request)
 
 
