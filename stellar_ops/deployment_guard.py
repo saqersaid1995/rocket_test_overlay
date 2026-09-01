@@ -160,14 +160,16 @@ def apply_security_headers(response):
         "frame-ancestors 'self'; "
         "base-uri 'self'; form-action 'self'",
     )
+    identity = system_identity()
     if request.path.startswith("/api/") or request.path.startswith("/health"):
-        response.headers.setdefault(
-            "Cache-Control", "no-store, no-cache, must-revalidate, private"
-        )
-    if (
-        system_identity()["environment"] == "PRODUCTION"
-        and request.is_secure
-    ):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    elif request.path.startswith("/static/") and identity["environment"] != "PRODUCTION":
+        # Development assets change frequently. Do not let the browser keep an
+        # older JavaScript bundle after a git pull/restart.
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    if identity["environment"] == "PRODUCTION" and request.is_secure:
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
         )
