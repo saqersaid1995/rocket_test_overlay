@@ -137,10 +137,29 @@ class Gateway(socketserver.ThreadingTCPServer):
             if self._connections.get(device_id) is handler:
                 self._connections.pop(device_id, None)
 
+    def _handler_for(self, device_id: str) -> EdgeHandler | None:
+        with self._connections_lock:
+            return self._connections.get(device_id)
+
+    def send_bench_led_state(self, device_id: str = "PT-01", on: bool = False) -> dict:
+        handler = self._handler_for(device_id)
+        if handler is None:
+            return {"ok": False, "error": f"{device_id} is not connected to the Ethernet edge gateway"}
+        try:
+            handler.send_frame({
+                "type": "BENCH_LED_SET",
+                "state": "ON" if on else "OFF",
+                "bench_only": True,
+                "gateway_time_utc": now(),
+            })
+            return {"ok": True, "device_id": device_id, "state": "ON" if on else "OFF"}
+        except OSError as exc:
+            self.unregister_connection(device_id, handler)
+            return {"ok": False, "error": f"Ethernet command send failed: {exc}"}
+
     def send_bench_led_pulse(self, device_id: str = "PT-01", duration_ms: int = 500) -> dict:
         duration_ms = max(50, min(int(duration_ms), 2000))
-        with self._connections_lock:
-            handler = self._connections.get(device_id)
+        handler = self._handler_for(device_id)
         if handler is None:
             return {"ok": False, "error": f"{device_id} is not connected to the Ethernet edge gateway"}
         try:
