@@ -6,30 +6,51 @@ import time
 from flask import Blueprint, jsonify
 
 from .control import connect, event
-from .edge_runtime import send_bench_led_pulse
+from .edge_runtime import send_bench_led_state
 
 bench_ignition = Blueprint("bench_ignition", __name__)
 _lock = threading.RLock()
 _state = {
-    "active_until": 0.0,
-    "last_pulse_at": None,
-    "pulse_ms": 500,
+    "active": False,
+    "last_changed_at": None,
     "last_result": None,
 }
 
 
 def _snapshot() -> dict:
-    now = time.monotonic()
     with _lock:
-        active = now < float(_state["active_until"])
         return {
-            "mode": "BENCH_LED_ETHERNET_ONLY",
-            "active": active,
-            "pulse_ms": int(_state["pulse_ms"]),
-            "last_pulse_at": _state["last_pulse_at"],
+            "mode": "BENCH_LED_ETHERNET_LATCHED",
+            "active": bool(_state["active"]),
+            "last_changed_at": _state["last_changed_at"],
             "last_result": _state["last_result"],
             "physical_output": "BENCH_LED_ONLY",
         }
+
+
+def _set_state(on: bool):
+    result = send_bench_led_state(device_id="PT-01", on=on)
+
+    if not result.get("ok"):
+        with _lock:
+            _state["last_result"] = result.get("error", "Ethernet bench LED command failed")
+        return jsonify(ok=False, error=_state["last_result"], **_snapshot()), 503
+
+    with _lock:
+        _state["active"] = on
+        _state["last_changed_at"] = time.time()
+        _state["last_result"] = f"BENCH_LED_SET {'ON' if on else 'OFF'} sent over SMTCS Ethernet session"
+
+    with connect() as db:
+        event(
+            db,
+            "BENCH_LED_ON" if on else "BENCH_LED_OFF",
+            "TEST_DIRECTOR",
+            "INFO",
+            f"Bench LED {'enabled' if on else 'disabled'} on PT-01 over the established Ethernet edge session",
+        )
+
+    return jsonify(ok=True, **_snapshot())
 
 
 @bench_ignition.get("/api/bench/ignition")
@@ -37,30 +58,11 @@ def bench_ignition_status():
     return jsonify(_snapshot())
 
 
-@bench_ignition.post("/api/bench/ignition/pulse")
-def bench_ignition_pulse():
-    pulse_ms = 500
-    result = send_bench_led_pulse(device_id="PT-01", duration_ms=pulse_ms)
+@bench_ignition.post("/api/bench/ignition/on")
+def bench_ignition_on():
+    return _set_state(True)
 
-    if not result.get("ok"):
-        with _lock:
-            _state["last_result"] = result.get("error", "Ethernet bench LED command failed")
-        return jsonify(ok=False, error=_state["last_result"], **_snapshot()), 503
 
-    now_wall = time.time()
-    with _lock:
-        _state["pulse_ms"] = pulse_ms
-        _state["active_until"] = time.monotonic() + pulse_ms / 1000.0
-        _state["last_pulse_at"] = now_wall
-        _state["last_result"] = "BENCH_LED_PULSE sent over SMTCS Ethernet session"
-
-    with connect() as db:
-        event(
-            db,
-            "BENCH_LED_TEST",
-            "TEST_DIRECTOR",
-            "INFO",
-            "Bench LED pulse sent to PT-01 over the established Ethernet edge session",
-        )
-
-    return jsonify(ok=True, **_snapshot())
+@bench_ignition.post("/api/bench/ignition/off")
+def bench_ignition_off():
+    return _set_state(False)
