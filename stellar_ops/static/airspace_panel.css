@@ -28,3 +28,10 @@
 .aircraft-popover{position:absolute;z-index:20;min-width:190px;background:#061117;border:1px solid #276079;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);font-size:9px;color:#bdd2dc}
 .aircraft-popover b{display:block;color:#e4f4fa;font-size:11px;margin-bottom:5px}.aircraft-popover div{display:flex;justify-content:space-between;gap:12px;padding:2px 0}.aircraft-popover span:first-child{color:#587f91}
 @media(max-width:1100px){.airspace-layout{grid-template-columns:1fr}.airspace-map{border-right:0;border-bottom:1px solid #143445}.airspace-toolbar .airspace-state{display:none}}
+.air12-controls{display:flex;align-items:center;gap:6px}
+.air12-controls select,.air12-controls button{height:27px;border-radius:0;font-size:9px;box-sizing:border-box}
+#air12-refresh{min-width:11ch;text-align:center;position:relative}
+#air12-refresh.loading{opacity:.65;cursor:wait}
+#air12-refresh.loading::after{content:'';position:absolute;right:8px;top:50%;width:5px;height:5px;border-radius:50%;background:currentColor;transform:translateY(-50%);animation:air12-pulse 1s ease-in-out infinite}
+@keyframes air12-pulse{50%{opacity:.15}}
+#air12-change{min-width:9ch;text-align:center}
