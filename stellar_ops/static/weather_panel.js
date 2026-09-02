@@ -211,6 +211,8 @@
   }
 
   function start() {
+    const requestedPanel = new URLSearchParams(location.search).get('panel');
+    if (requestedPanel && requestedPanel !== 'weather') return;
     const legacy = document.querySelector('body > #weather-strip');
     if (legacy) legacy.remove();
     installStyles();
