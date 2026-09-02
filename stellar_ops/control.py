@@ -918,7 +918,8 @@ def save_device():
           adapter_type=excluded.adapter_type,config_json=excluded.config_json,enabled=1,last_test_status='NOT_TESTED',last_test_message=NULL,last_test_at=NULL""",
           (OPERATION_ID, device_id, adapter, json.dumps(config)))
         event(db, "DEVICE_CONFIG", "INSTRUMENTATION", "INFO", f"Device {device_id} saved with {adapter} adapter")
-    return jsonify(ok=True, device_id=device_id)
+        stored = db.execute("SELECT endpoint FROM devices WHERE operation_id=? AND id=?", (OPERATION_ID, device_id)).fetchone()
+    return jsonify(ok=True, device_id=device_id, endpoint=stored["endpoint"] if stored else None, adapter_type=adapter)
 
 
 @control.post("/api/control/device/<device_id>/state")
