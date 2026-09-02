@@ -17,7 +17,6 @@ from .deployment_guard import (
     mutation_guard,
 )
 from .edge_runtime import ensure_edge_gateway
-from .http_telemetry import ensure_esp32_pressure_integration
 from .observability import begin_request, finish_request, process_metrics
 from .media import media
 from .media_frame_preview import media_frame_preview
@@ -45,20 +44,16 @@ app.before_request(begin_request)
 
 @app.before_request
 def ensure_physical_pressure_telemetry():
-    """Bind PT-01 to the selected physical telemetry transport.
+    """Keep PT-01 bound to the inbound Ethernet edge path.
 
-    The current ESP32 exposes JSON at http://192.168.4.1/reading while operating
-    as a Wi-Fi access point.  Ethernet edge telemetry remains selectable with
-    STELLAR_OPS_PRESSURE_TRANSPORT=ETHERNET.
+    The ESP32 commissioning UI stays local on Wi-Fi. Operational telemetry is
+    pushed to Stellar Ops over SMTCS-EDGE/1 TCP on port 9100; no HTTP polling is
+    used in the operational path.
     """
     init_control_db()
     try:
-        transport = os.environ.get("STELLAR_OPS_PRESSURE_TRANSPORT", "HTTP").strip().upper()
-        if transport in {"HTTP", "HTTP_JSON", "WIFI"}:
-            ensure_esp32_pressure_integration(CONTROL_DB, OPERATION_ID)
-        else:
-            ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
-            ensure_edge_gateway(CONTROL_DB)
+        ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
+        ensure_edge_gateway(CONTROL_DB)
     except (RuntimeError, OSError) as exc:
         app.logger.warning("Pressure Ethernet telemetry setup failed: %s", exc)
 
@@ -214,7 +209,8 @@ def trigger_ignition():
 
 if __name__ == "__main__":
     init_control_db()
-    ensure_physical_pressure_telemetry()
+    ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
+    ensure_edge_gateway(CONTROL_DB)
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", "5001")),
