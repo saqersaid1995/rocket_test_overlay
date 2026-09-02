@@ -915,7 +915,7 @@ def save_device():
            endpoint, "NOT_TESTED", 1 if payload.get("required", True) else 0))
         db.execute("""INSERT INTO device_integrations(operation_id,device_id,adapter_type,config_json,enabled,last_test_status)
           VALUES(?,?,?,?,1,'NOT_TESTED') ON CONFLICT(operation_id,device_id) DO UPDATE SET
-          adapter_type=excluded.adapter_type,config_json=excluded.config_json,enabled=1,last_test_status='NOT_TESTED',last_test_message=NULL""",
+          adapter_type=excluded.adapter_type,config_json=excluded.config_json,enabled=1,last_test_status='NOT_TESTED',last_test_message=NULL,last_test_at=NULL""",
           (OPERATION_ID, device_id, adapter, json.dumps(config)))
         event(db, "DEVICE_CONFIG", "INSTRUMENTATION", "INFO", f"Device {device_id} saved with {adapter} adapter")
     return jsonify(ok=True, device_id=device_id)

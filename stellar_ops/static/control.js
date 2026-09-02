@@ -3,7 +3,7 @@ let data=window.__INITIAL__, history=[], countdownStart=null, videoSignature='',
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(message,error=false){const t=$('#toast');t.textContent=message;t.className=error?'show error':'show';setTimeout(()=>t.className='',3000)}
 function requestConfirmation(message,{title='CONFIRM ACTION',acceptLabel='CONFIRM'}={}){const trigger=document.activeElement,dialog=$('#confirmation-dialog');$('#confirmation-title').textContent=title;$('#confirmation-message').textContent=message;$('#confirmation-accept').textContent=acceptLabel;dialog.showModal();return new Promise(resolve=>dialog.addEventListener('close',()=>{if(trigger?.isConnected)trigger.focus();resolve(dialog.returnValue==='confirm')},{once:true}))}
-async function send(url,body={}){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const v=await r.json();if(!r.ok)throw new Error(v.error||'Command failed');return v}
+async function send(url,body={}){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const v=await r.json();if(!r.ok)throw new Error(v.error||v.message||`Command failed (HTTP ${r.status})`);return v}
 async function remove(url){const r=await fetch(url,{method:'DELETE'}),v=await r.json();if(!r.ok)throw new Error(v.error||'Delete failed');return v}
 function badge(v){return `<span class="badge ${String(v).toLowerCase().replace('_','-')}">${esc(v)}</span>`}
 function render(){
