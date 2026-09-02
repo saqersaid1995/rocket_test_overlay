@@ -53,6 +53,7 @@
     baseLayer: null,
     dynamicLayer: null,
     mapSignature: '',
+    history: new Map(),
     destroy() {
       controller.abort();
       if (this.timer) clearInterval(this.timer);
@@ -79,7 +80,7 @@
       .air12-shell{min-height:430px;background:#061117;color:#d9eef7}.air12-setup{min-height:390px;display:flex;align-items:center;justify-content:center;padding:18px}.air12-card{width:min(560px,92%);border:1px solid #143445;background:#07141b;padding:14px}.air12-card h3{margin:0 0 6px;font-size:12px}.air12-card p{margin:0 0 12px;font-size:8px;color:#6c8794}.air12-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.air12-grid label:first-child{grid-column:1/-1}.air12-grid label{display:flex;flex-direction:column;gap:4px;font-size:7px;letter-spacing:.08em;color:#4d7d93}.air12-grid input{height:29px;padding:0 8px;border:1px solid #245063;background:#041016;color:#d9eef7}.air12-actions{display:flex;align-items:center;gap:8px;margin-top:10px}.air12-actions button,.air12-controls button,.air12-controls select{height:27px;border:1px solid #245063;background:#07141b;color:#cdeaf6;font-size:8px;padding:0 9px}.air12-error{font-size:8px;color:#ff7777}
       .air12-top{display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(120px,.8fr) 130px auto;border-bottom:1px solid #143445;background:#07141b}.air12-cell{padding:7px 9px;border-right:1px solid #143445;min-width:0}.air12-cell small,.air12-summary small{display:block;font-size:7px;letter-spacing:.08em;color:#4d7d93}.air12-cell b{display:block;margin-top:2px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.air12-controls{display:flex;align-items:center;gap:6px;padding:6px 8px}.air12-controls .primary{border-color:#2f7894;color:#29c8f0}
       .air12-layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(330px,.8fr);min-height:370px}.air12-map-host{position:relative;min-height:370px;background:#031017;border-right:1px solid #143445;overflow:hidden}.air12-side{min-width:0;display:flex;flex-direction:column}.air12-summary{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #143445}.air12-summary>div{padding:8px;border-right:1px solid #143445}.air12-summary strong{display:block;margin-top:3px;font-size:13px}.air12-summary em{display:block;margin-top:2px;font-size:7px;color:#6c8794;font-style:normal}.air12-list{overflow:auto;max-height:270px}.air12-table{width:100%;border-collapse:collapse;font-size:8px}.air12-table th{position:sticky;top:0;background:#07141b;color:#4d7d93;text-align:left;padding:6px;border-bottom:1px solid #143445}.air12-table td{padding:6px;border-bottom:1px solid #102b38}.air12-table tbody tr{cursor:pointer}.air12-table tbody tr:hover,.air12-table tr.selected{background:#0a1b23}.air12-table code{font-size:9px;color:#d9eef7}.air12-table small{display:block;margin-top:2px;color:#6c8794}.air12-critical{color:#ff6767}.air12-caution{color:#e9ae42}.air12-awareness{color:#64cceb}.air12-empty{padding:16px;color:#6c8794;font-size:9px}.air12-foot{margin-top:auto;padding:7px 9px;border-top:1px solid #143445;color:#6c8794;font-size:7px}.air12-foot b{color:#e9ae42}
-      #airspace-v12-map{position:fixed;display:none;z-index:20;overflow:hidden;background:#07141b}#airspace-v12-map .air12-base,#airspace-v12-map .air12-dynamic{position:absolute;inset:0}#airspace-v12-map .tile{position:absolute;width:256px;height:256px;user-select:none;pointer-events:none}#airspace-v12-map .ring{position:absolute;border:1px solid rgba(41,200,240,.72);border-radius:50%;transform:translate(-50%,-50%)}#airspace-v12-map .ring.inner{border-color:rgba(233,174,66,.72)}#airspace-v12-map .ring.critical{border-color:rgba(255,103,103,.82)}#airspace-v12-map .site{position:absolute;width:11px;height:11px;border:2px solid #fff;background:#29c8f0;border-radius:50%;transform:translate(-50%,-50%)}#airspace-v12-map .plane{position:absolute;transform:translate(-50%,-50%);border:0;background:transparent;color:#d9eef7;font-size:17px;cursor:pointer;text-shadow:0 0 3px #000;transition:left .35s linear,top .35s linear,rotate .35s linear}#airspace-v12-map .plane.caution{color:#e9ae42}#airspace-v12-map .plane.critical{color:#ff6767}#airspace-v12-map .plane.selected{font-size:21px;filter:drop-shadow(0 0 4px #fff)}#airspace-v12-map .maplabel,#airspace-v12-map .updated{position:absolute;left:8px;padding:4px 6px;background:rgba(3,13,18,.88);border:1px solid #143445;color:#7ea6b7;font-size:7px;z-index:3}#airspace-v12-map .maplabel{top:8px}#airspace-v12-map .updated{bottom:6px}#airspace-v12-map .attrib{position:absolute;right:4px;bottom:3px;padding:2px 4px;background:rgba(255,255,255,.78);color:#222;font-size:7px;z-index:3}
+      #airspace-v12-map{position:fixed;display:none;z-index:20;overflow:hidden;background:#07141b}#airspace-v12-map .air12-base,#airspace-v12-map .air12-dynamic{position:absolute;inset:0}#airspace-v12-map .tile{position:absolute;width:256px;height:256px;user-select:none;pointer-events:none}#airspace-v12-map .ring{position:absolute;border:1px solid rgba(41,200,240,.72);border-radius:50%;transform:translate(-50%,-50%)}#airspace-v12-map .ring.inner{border-color:rgba(233,174,66,.72)}#airspace-v12-map .ring.critical{border-color:rgba(255,103,103,.82)}#airspace-v12-map .site{position:absolute;width:11px;height:11px;border:2px solid #fff;background:#29c8f0;border-radius:50%;transform:translate(-50%,-50%)}#airspace-v12-map .plane{position:absolute;transform:translate(-50%,-50%);border:0;background:transparent;color:#d9eef7;font-size:17px;cursor:pointer;text-shadow:0 0 3px #000;transition:left .35s linear,top .35s linear,rotate .35s linear}#airspace-v12-map .plane.caution{color:#e9ae42}#airspace-v12-map .plane.critical{color:#ff6767}#airspace-v12-map .plane.selected{font-size:21px;filter:drop-shadow(0 0 4px #fff)}#airspace-v12-map .maplabel,#airspace-v12-map .updated{position:absolute;left:8px;padding:4px 6px;background:rgba(3,13,18,.88);border:1px solid #143445;color:#7ea6b7;font-size:7px;z-index:3}#airspace-v12-map .maplabel{top:8px}#airspace-v12-map .updated{bottom:6px}#airspace-v12-map .attrib{position:absolute;right:4px;bottom:3px;padding:2px 4px;background:rgba(255,255,255,.78);color:#222;font-size:7px;z-index:3}#airspace-v12-map .air12-tracks{position:absolute;inset:0;z-index:2;overflow:visible}#airspace-v12-map .trail{fill:none;stroke:#64cceb;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.55}#airspace-v12-map .trail.caution{stroke:#e9ae42}#airspace-v12-map .trail.critical{stroke:#ff6767}#airspace-v12-map .heading{stroke:#64cceb;stroke-width:1.25;stroke-dasharray:4 3;opacity:.75}#airspace-v12-map .heading.caution{stroke:#e9ae42}#airspace-v12-map .heading.critical{stroke:#ff6767}
       @media(max-width:1100px){.air12-layout{grid-template-columns:1fr}.air12-map-host{border-right:0;border-bottom:1px solid #143445}.air12-top{grid-template-columns:1fr 1fr}.air12-controls{grid-column:1/-1}.air12-summary{grid-template-columns:1fr 1fr}}
     `;
     document.head.appendChild(s);
@@ -189,6 +190,18 @@
         ground_speed_kmh:a.ground_speed_kmh==null?null:Number(a.ground_speed_kmh),
         track_deg:a.track_deg==null?null:Number(a.track_deg)
       })).filter(a => Number.isFinite(a.lat) && Number.isFinite(a.lon) && Number.isFinite(a.distance_km)).sort((a,b)=>a.distance_km-b.distance_km);
+      const seenHex = new Set(state.traffic.map(a => a.hex));
+      for (const hex of state.history.keys()) if (!seenHex.has(hex)) state.history.delete(hex);
+      state.traffic.forEach(a => {
+        if (!a.hex) return;
+        const h = state.history.get(a.hex) || [];
+        const last = h[h.length - 1];
+        if (!last || last.lat !== a.lat || last.lon !== a.lon) {
+          h.push({lat:a.lat, lon:a.lon});
+          if (h.length > 6) h.shift();
+        }
+        state.history.set(a.hex, h);
+      });
       state.provider = j.traffic?.provider || 'SERVER ADS-B';
       state.status = j.status || 'OBSERVATIONAL';
       const ts = Number(j.traffic?.fetched_at_epoch);
@@ -271,9 +284,19 @@
     base.replaceChildren(frag);
   }
 
-  function updateDynamic(w,h,z,left,top) {
+  function updateDynamic(w,h,z,left,top,mpp) {
     const layer = state.dynamicLayer;
     if (!layer) return;
+    let tracks = layer.querySelector('svg.air12-tracks');
+    if (!tracks) {
+      tracks = document.createElementNS('http://www.w3.org/2000/svg','svg');
+      tracks.setAttribute('class','air12-tracks');
+      layer.insertBefore(tracks, layer.firstChild);
+    }
+    tracks.setAttribute('width', w); tracks.setAttribute('height', h);
+    tracks.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    const trackFrag = document.createDocumentFragment();
+
     const existing = new Map([...layer.querySelectorAll('.plane')].map(el => [el.dataset.hex, el]));
     const keep = new Set();
 
@@ -288,11 +311,32 @@
         layer.appendChild(b);
       }
       const sev=severity(a.distance_km);
-      b.className=`plane ${sev==='CRITICAL'?'critical':sev==='CAUTION'?'caution':''} ${state.selected===a.hex?'selected':''}`;
+      const sevClass=sev==='CRITICAL'?'critical':sev==='CAUTION'?'caution':'';
+      b.className=`plane ${sevClass} ${state.selected===a.hex?'selected':''}`;
       b.style.left=`${x}px`; b.style.top=`${y}px`; b.style.rotate=`${Number(a.track_deg||0)}deg`;
       b.title=`${a.callsign||'—'} · ${fmt(a.distance_km,1,' km')} · ${fmt(a.altitude_ft,0,' ft')}`;
+
+      const hist=state.history.get(a.hex);
+      if (hist && hist.length>=2) {
+        const pts=hist.map(pt=>{const hp=worldPixel(pt.lat,pt.lon,z); return `${(hp.x-left).toFixed(1)},${(hp.y-top).toFixed(1)}`;}).join(' ')+` ${x.toFixed(1)},${y.toFixed(1)}`;
+        const poly=document.createElementNS('http://www.w3.org/2000/svg','polyline');
+        poly.setAttribute('points',pts); poly.setAttribute('class',`trail ${sevClass}`);
+        trackFrag.appendChild(poly);
+      }
+      if (a.track_deg!=null && a.ground_speed_kmh) {
+        const LOOKAHEAD_S=120;
+        const distPx=(a.ground_speed_kmh*LOOKAHEAD_S/3600*1000)/mpp;
+        const bearing=a.track_deg*Math.PI/180;
+        const dx=Math.sin(bearing)*distPx, dy=-Math.cos(bearing)*distPx;
+        const line=document.createElementNS('http://www.w3.org/2000/svg','line');
+        line.setAttribute('x1',x.toFixed(1)); line.setAttribute('y1',y.toFixed(1));
+        line.setAttribute('x2',(x+dx).toFixed(1)); line.setAttribute('y2',(y+dy).toFixed(1));
+        line.setAttribute('class',`heading ${sevClass}`);
+        trackFrag.appendChild(line);
+      }
     });
 
+    tracks.replaceChildren(trackFrag);
     existing.forEach((el, hex) => { if (!keep.has(hex)) el.remove(); });
 
     let upd = layer.querySelector('.updated');
@@ -333,7 +377,7 @@
       rebuildBase(w,h,z,left,top,n,mpp);
       state.mapSignature = signature;
     }
-    updateDynamic(w,h,z,left,top);
+    updateDynamic(w,h,z,left,top,mpp);
   }
 
   function queueMap() {
