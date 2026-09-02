@@ -15,7 +15,7 @@ from .database import connect_database
 
 
 DEFAULT_DEVICE_ID = "PT-01"
-DEFAULT_ENDPOINT = "http://192.168.4.1/reading"
+DEFAULT_ENDPOINT = "http://192.168.1.50/reading"
 DEFAULT_POLL_INTERVAL_S = 0.2
 
 
@@ -179,11 +179,6 @@ class HttpTelemetryPoller:
     def start(self) -> None:
         if self.running:
             return
-        # Initialise SQLite/WAL before the worker and request threads can open
-        # the database concurrently.  Without this, both connections may race
-        # on PRAGMA journal_mode and the telemetry worker can die at startup.
-        db = self._database()
-        db.close()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name=f"http-telemetry-{self.config.device_id}", daemon=True)
         self._thread.start()
