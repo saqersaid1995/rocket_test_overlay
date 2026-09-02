@@ -35,8 +35,7 @@
 #air12-refresh.loading::after{content:'';position:absolute;right:8px;top:50%;width:5px;height:5px;border-radius:50%;background:currentColor;transform:translateY(-50%);animation:air12-pulse 1s ease-in-out infinite}
 @keyframes air12-pulse{50%{opacity:.15}}
 #air12-change{min-width:9ch;text-align:center}
-.popout .panel-body{display:flex;flex-direction:column}
-.popout .airspace-layout{flex:1;height:100%;min-height:0}
-.popout .airspace-map{height:100%;min-height:0}
-.popout .airspace-side{height:100%;min-height:0}
-.popout .airspace-table-wrap{flex:1;max-height:none}
+body.popout .panel-body{display:flex;flex-direction:column}
+body.popout .air12-shell{display:flex;flex-direction:column;flex:1;min-height:0}
+body.popout .air12-layout{flex:1;min-height:0}
+body.popout .air12-list{flex:1;max-height:none}
