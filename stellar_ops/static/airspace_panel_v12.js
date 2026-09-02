@@ -140,7 +140,8 @@
     if (radius && Number(radius.value) !== state.radius) radius.value = String(state.radius);
     const refresh = document.getElementById('air12-refresh');
     if (refresh) {
-      refresh.textContent = state.loading ? 'UPDATING…' : 'REFRESH';
+      refresh.textContent = 'REFRESH';
+      refresh.classList.toggle('loading', state.loading);
       refresh.disabled = state.loading;
     }
 
