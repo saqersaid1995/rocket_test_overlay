@@ -181,32 +181,13 @@ def liveness():
 
 
 # =====================================================================
-# 🔥 IGNITION API – sends pulse command to ESP32 relay
-# =====================================================================
-
-@app.route('/api/ignition', methods=['POST'])
-def trigger_ignition():
-    import requests
-
-    # ESP32 Ethernet IP (must match your configuration)
-    ESP32_IP = "192.168.1.50"
-    url = f"http://{ESP32_IP}/relay/pulse"
-
-    try:
-        # Send pulse command (2 seconds duration)
-        response = requests.post(url, json={"duration_ms": 2000}, timeout=2)
-
-        if response.status_code == 200:
-            return {"ok": True, "message": "Ignition command sent to ESP32"}
-        else:
-            return {"ok": False, "message": f"ESP32 error: {response.status_code}"}, 500
-
-    except requests.exceptions.ConnectionError:
-        return {"ok": False, "message": "Cannot reach ESP32. Check IP address."}, 500
-    except Exception as e:
-        return {"ok": False, "message": f"Error: {str(e)}"}, 500
-
-
+# The direct HTTP-to-ESP32 ignition route that used to live here was
+# removed: it targeted the ESP32's Ethernet IP over HTTP, but the
+# firmware's WebServer only binds to the Wi-Fi commissioning interface,
+# never the wired Ethernet stack, so the route could never actually
+# reach the device. The working relay path is bench_ignition.py's
+# /api/bench/ignition/on and /off, which route over the already
+# -established SMTCS Ethernet edge session via edge_runtime.py.
 # =====================================================================
 
 if __name__ == "__main__":

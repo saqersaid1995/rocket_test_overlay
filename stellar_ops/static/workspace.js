@@ -75,7 +75,7 @@ const DISPLAY_WIDGETS={
 };
 const CONTROL_WIDGETS_RENDER={
   BUTTON:c=>`<button data-dyn-command="${esc(c.id)}">${esc(c.name)}</button>`,
-  TOGGLE:c=>`<button data-dyn-command="${esc(c.id)}" class="dyn-toggle">TOGGLE</button>`,
+  TOGGLE:c=>`<div class="dyn-toggle-pair"><button data-dyn-command="${esc(c.id)}" data-dyn-value="true">ON</button><button data-dyn-command="${esc(c.id)}" data-dyn-value="false">OFF</button></div>`,
   DROPDOWN:c=>{let options=[];try{options=JSON.parse(c.command_options_json||'[]')}catch(e){}
     return `<select data-dyn-command="${esc(c.id)}">${options.map(o=>`<option value="${esc(o.value??o)}">${esc(o.label??o)}</option>`).join('')}</select>`},
   SLIDER:c=>`<input type="range" data-dyn-command="${esc(c.id)}" min="0" max="100">`,
@@ -107,7 +107,20 @@ PANEL_NAMES.dynamic='DYNAMIC CHANNELS';
 const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel,dynamic:dynamicPanel};
 function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();bindDynamicActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
 function bindDynamicActions(){
-  $$('[data-dyn-command]').forEach(el=>el.onclick=el.tagName==='SELECT'?null:()=>toast(`Command routing for "${el.dataset.dynCommand}" arrives in Phase 3 (migration off the hardcoded ignition path)`));
+  $$('[data-dyn-command]').forEach(el=>{
+    if(el.tagName==='SELECT'||el.type==='range')return;
+    el.onclick=async()=>{
+      const value=el.dataset.dynValue==='false'?false:el.dataset.dynValue==='true'?true:true;
+      if(!confirm(`Send command for "${el.dataset.dynCommand}" (value: ${value})?\n\nConfirm all personnel and equipment are clear before proceeding.`))return;
+      el.disabled=true;
+      try{
+        await send(`/api/control/channel/${encodeURIComponent(el.dataset.dynCommand)}/command`,{value});
+        toast(`Command sent: ${el.dataset.dynCommand} = ${value}`);
+        await refresh();
+      }catch(error){toast(error.message,true)}
+      finally{el.disabled=false}
+    };
+  });
 }
 function bindPanelActions(){
  $$('.panel').forEach((panel,index)=>{panel.ondragstart=()=>{dragIndex=index;panel.classList.add('dragging')};panel.ondragend=()=>panel.classList.remove('dragging');panel.ondragover=e=>{if(!locked){e.preventDefault();panel.classList.add('drag-over')}};panel.ondragleave=()=>panel.classList.remove('drag-over');panel.ondrop=e=>{e.preventDefault();panel.classList.remove('drag-over');const target=index,[moved]=layout.splice(dragIndex,1);layout.splice(target,0,moved);layout.forEach((x,i)=>x.order=i);renderWorkspace()}});
@@ -148,62 +161,9 @@ $('#open-alarms').onclick=()=>$('#alarm-dialog').showModal();$('#open-incidents'
 
 $$('[data-time]').forEach(b=>b.onclick=()=>setTimeMode(b.dataset.time));
 
-// =====================================================
-// REAL IGNITION CONTROL (ESP32 Relay)
-// =====================================================
-$('#jump-ignition').onclick = async function() {
-    const btn = this;
-
-    // Safety confirmation
-    if (!confirm(
-        "⚠️ SAFETY WARNING!\n\n" +
-        "You are about to send a real IGNITION command to the engine.\n" +
-        "Ensure all personnel and equipment are clear.\n\n" +
-        "Proceed?"
-    )) {
-        return;
-    }
-
-    // Visual feedback
-    const originalText = btn.textContent;
-    btn.textContent = '⏳ SENDING...';
-    btn.disabled = true;
-    btn.style.opacity = '0.6';
-
-    try {
-        const response = await fetch('/api/ignition', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-
-        if (data.ok) {
-            btn.textContent = '✅ IGNITION FIRED!';
-            btn.style.borderColor = '#ff6600';
-            btn.style.background = '#331100';
-            btn.style.color = '#ffaa00';
-            if (typeof toast === 'function') toast('🚀 Ignition relay fired!');
-        } else {
-            alert('❌ Ignition failed: ' + data.message);
-            btn.textContent = '❌ FAILED';
-            btn.style.color = 'red';
-        }
-    } catch (error) {
-        alert('❌ Server error: ' + error);
-        btn.textContent = '❌ NETWORK ERROR';
-        btn.style.color = 'red';
-    } finally {
-        // Reset button after 4 seconds
-        setTimeout(() => {
-            btn.textContent = '🚀 IGNITION TEST';
-            btn.disabled = false;
-            btn.style.opacity = '1';
-            btn.style.borderColor = '';
-            btn.style.background = '';
-            btn.style.color = '';
-        }, 4000);
-    }
-};
+// The #jump-ignition button is bound by bench_ignition.js, which loads
+// after this file and explicitly clears any prior onclick handler.
+// (See STUDIO_PROTECTION-style note: bench_ignition.js owns this button.)
 
 $('#kiosk').onclick=()=>{document.body.classList.toggle('kiosk');if(document.body.requestFullscreen&&!document.fullscreenElement)document.body.requestFullscreen().catch(()=>{})};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.body.classList.contains('kiosk'))document.body.classList.remove('kiosk')});

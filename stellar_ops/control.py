@@ -364,6 +364,30 @@ def _initialize_control_db() -> None:
             stamp,
             channel_grouping_migration,
         )
+        def seed_bench_relay_command_channel(connection):
+            connection.execute(
+                "INSERT OR IGNORE INTO channel_groups(operation_id,id,name,sort_order) VALUES(?,?,?,?)",
+                (OPERATION_ID, "bench-relay", "Bench relay", 0),
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO channels(operation_id,id,name,unit,source_id,quality,warning,critical,
+                sample_rate,interaction_pattern,control_widget,command_payload_json,group_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (OPERATION_ID, "bench.relay.command", "Bench relay (LED only)", "state", "PT-01",
+                 "NOT_TESTED", None, None, 10, "COMMAND", "TOGGLE",
+                 json.dumps({"type": "BENCH_LED_SET", "state": "{value}"}), "bench-relay"),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO channel_lifecycle VALUES(?,?,1,NULL)",
+                (OPERATION_ID, "bench.relay.command"),
+            )
+        apply_once(
+            db,
+            10,
+            "seed one example COMMAND channel through the generic dynamic system",
+            stamp,
+            seed_bench_relay_command_channel,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -1098,6 +1122,48 @@ def camera_popout(device_id: str):
     if not row["enabled"]:
         return jsonify(error="camera is archived"), 409
     return render_template("camera_popout.html", camera=dict(row))
+
+
+# Dynamic channel system, Phase 3 -- generic command execution.
+# Maps a COMMAND channel's command_payload_json "type" to the function
+# that actually carries it out. Only one executor exists today, reusing
+# the exact function bench_ignition.py already uses -- this endpoint
+# generalizes *routing*, it does not add any new hardware-facing code.
+def _execute_bench_led_set(source_id: str, value):
+    from .edge_runtime import send_bench_led_state
+    on = value in (True, "ON", "on", 1, "1", "true")
+    return send_bench_led_state(device_id=source_id, on=on)
+
+
+COMMAND_EXECUTORS = {"BENCH_LED_SET": _execute_bench_led_set}
+
+
+@control.post("/api/control/channel/<channel_id>/command")
+def execute_channel_command(channel_id: str):
+    payload = request.get_json(silent=True) or {}
+    with connect() as db:
+        channel = db.execute(
+            "SELECT * FROM channels WHERE operation_id=? AND id=?", (OPERATION_ID, channel_id)
+        ).fetchone()
+    if not channel:
+        return jsonify(error="channel not found"), 404
+    if channel["interaction_pattern"] != "COMMAND":
+        return jsonify(error="channel is not a COMMAND channel"), 400
+    try:
+        template = json.loads(channel["command_payload_json"] or "{}")
+    except (TypeError, ValueError):
+        return jsonify(error="channel command payload template is invalid"), 500
+    command_type = template.get("type")
+    executor = COMMAND_EXECUTORS.get(command_type)
+    if not executor:
+        return jsonify(error=f"no executor registered for command type '{command_type}'"), 501
+    result = executor(channel["source_id"], payload.get("value"))
+    if not result.get("ok"):
+        return jsonify(error=result.get("error", "command failed")), 503
+    with connect() as db:
+        event(db, "CHANNEL_COMMAND", channel_id, "INFO",
+              f"Command sent for channel {channel_id}: value={payload.get('value')}")
+    return jsonify(ok=True, channel_id=channel_id, value=payload.get("value"))
 
 
 @control.post("/api/control/channel-group")
