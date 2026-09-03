@@ -73,6 +73,8 @@ ADAPTER_TYPES = {"SMTCS_EDGE_TCP", "SIMULATOR", "MODBUS_TCP", "OPC_UA", "TCP", "
 INTERACTION_PATTERNS = {"STREAM", "COMMAND", "REQUEST_RESPONSE"}
 DISPLAY_TYPES = {"NUMBER", "GAUGE", "GRAPH", "STATUS_LAMP", "TEXT", "LOG", "IMAGE", "VIDEO"}
 CONTROL_WIDGETS = {"BUTTON", "TOGGLE", "DROPDOWN", "SLIDER"}
+RULE_OPERATORS = {"GT", "GTE", "LT", "LTE", "EQ", "BETWEEN"}
+RULE_PRIORITIES = {"P1", "P2"}
 
 
 def _str_field(payload: dict, key: str, default: str = "") -> str:
@@ -442,6 +444,21 @@ def _initialize_control_db() -> None:
             stamp,
             virtual_channel_migration,
         )
+        def channel_rules_migration(connection):
+            connection.executescript("""CREATE TABLE IF NOT EXISTS channel_rules(
+                operation_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+                channel_id TEXT NOT NULL, operator TEXT NOT NULL,
+                threshold REAL NOT NULL, threshold_high REAL,
+                priority TEXT NOT NULL DEFAULT 'P2', message TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY(operation_id,id));""")
+        apply_once(
+            db,
+            13,
+            "add channel_rules: generalized threshold/range alerts on top of the existing alarm engine",
+            stamp,
+            channel_rules_migration,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -575,6 +592,7 @@ def snapshot() -> dict:
             integration["secret_configured"] = has_password(integration["device_id"]) if integration["device_type"] == "IP-CAMERA" else False
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["channel_groups"] = [dict(x) for x in db.execute("SELECT * FROM channel_groups WHERE operation_id=? ORDER BY sort_order,rowid", (OPERATION_ID,))]
+        data["channel_rules"] = [dict(x) for x in db.execute("SELECT * FROM channel_rules WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
@@ -1298,6 +1316,48 @@ def execute_channel_command(channel_id: str):
         event(db, "CHANNEL_COMMAND", channel_id, "INFO",
               f"Command sent for channel {channel_id}: value={payload.get('value')}")
     return jsonify(ok=True, channel_id=channel_id, value=payload.get("value"))
+
+
+@control.post("/api/control/rule")
+def save_rule():
+    """Alert-only rule: watches one channel, opens/closes an alarm through
+    the existing evaluate_alarms() lifecycle when the condition is met.
+    Deliberately does not support triggering a COMMAND channel -- that
+    was explicitly deferred until the safety/authority layer exists."""
+    payload = request.get_json(silent=True) or {}
+    required = ("id", "name", "channel_id", "operator", "threshold", "priority", "message")
+    if any(payload.get(key) in (None, "") for key in required):
+        return jsonify(error="rule id, name, channel, operator, threshold, priority and message are required"), 400
+    rule_id = _str_field(payload, "id")
+    if not all(char.isalnum() or char in "-_" for char in rule_id):
+        return jsonify(error="rule id may contain letters, numbers, hyphen and underscore only"), 400
+    channel_id = _str_field(payload, "channel_id")
+    operator = _str_field(payload, "operator").upper()
+    if operator not in RULE_OPERATORS: return jsonify(error="unsupported operator"), 400
+    priority = _str_field(payload, "priority").upper()
+    if priority not in RULE_PRIORITIES: return jsonify(error="priority must be P1 or P2"), 400
+    try:
+        threshold = float(payload["threshold"])
+    except (TypeError, ValueError): return jsonify(error="threshold must be numeric"), 400
+    threshold_high = None
+    if operator == "BETWEEN":
+        try:
+            threshold_high = float(payload["threshold_high"])
+        except (TypeError, ValueError, KeyError): return jsonify(error="BETWEEN requires a numeric threshold_high"), 400
+        if threshold_high <= threshold: return jsonify(error="threshold_high must be greater than threshold"), 400
+    message = _str_field(payload, "message")
+    with connect() as db:
+        if not db.execute("SELECT 1 FROM channels WHERE operation_id=? AND id=?", (OPERATION_ID, channel_id)).fetchone():
+            return jsonify(error="channel does not exist"), 409
+        db.execute("""INSERT INTO channel_rules(operation_id,id,name,channel_id,operator,threshold,threshold_high,priority,message,enabled)
+            VALUES(?,?,?,?,?,?,?,?,?,1) ON CONFLICT(operation_id,id) DO UPDATE SET
+            name=excluded.name,channel_id=excluded.channel_id,operator=excluded.operator,
+            threshold=excluded.threshold,threshold_high=excluded.threshold_high,
+            priority=excluded.priority,message=excluded.message,enabled=1""",
+                   (OPERATION_ID, rule_id, _str_field(payload, "name"), channel_id, operator,
+                    threshold, threshold_high, priority, message))
+        event(db, "RULE_CONFIG", "INSTRUMENTATION", "INFO", f"Rule {rule_id} configuration saved")
+    return jsonify(ok=True, rule_id=rule_id)
 
 
 @control.post("/api/control/channel-group")

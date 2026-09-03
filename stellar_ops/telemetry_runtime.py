@@ -290,3 +290,23 @@ def evaluate_alarms(db, operation_id: str, telemetry: dict) -> None:
         warning_bad=not critical_bad and warning is not None and value>=warning
         transition(f"LIMIT_CRITICAL:{channel_id}",critical_bad,"P1",channel_id,f"Value {value:g} exceeds critical high limit {critical:g}" if critical is not None else "Critical limit cleared",persistence)
         transition(f"LIMIT_WARNING:{channel_id}",warning_bad,"P2",channel_id,f"Value {value:g} exceeds warning high limit {warning:g}" if warning is not None else "Warning limit cleared",persistence)
+
+    # Dynamic channel system, Phase 6 -- generalized rules (alert-only).
+    # Reuses the exact same transition() helper as the built-in
+    # quality/limit checks above, so a custom rule opens and closes
+    # through the same debounced alarm lifecycle and shows up in the
+    # existing Alarm Monitor automatically -- no separate UI needed.
+    rules=db.execute("SELECT * FROM channel_rules WHERE operation_id=? AND enabled=1",(operation_id,)).fetchall()
+    for rule in rules:
+        item=telemetry.get("channels",{}).get(rule["channel_id"])
+        if not item or not isinstance(item.get("value"),(int,float)):
+            continue
+        value=float(item["value"]); op=rule["operator"]
+        if op=="GT": met=value>rule["threshold"]
+        elif op=="GTE": met=value>=rule["threshold"]
+        elif op=="LT": met=value<rule["threshold"]
+        elif op=="LTE": met=value<=rule["threshold"]
+        elif op=="EQ": met=value==rule["threshold"]
+        elif op=="BETWEEN": met=rule["threshold"]<=value<=rule["threshold_high"]
+        else: met=False
+        transition(f"RULE:{rule['id']}",met,rule["priority"],rule["channel_id"],rule["message"],persistence)
