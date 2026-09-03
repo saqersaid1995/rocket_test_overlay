@@ -351,6 +351,19 @@ def _initialize_control_db() -> None:
             stamp,
             dynamic_channel_model_migration,
         )
+        def channel_grouping_migration(connection):
+            connection.executescript("""CREATE TABLE IF NOT EXISTS channel_groups(
+                operation_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(operation_id,id));""")
+            add_column(connection,"channels","group_id TEXT")
+        apply_once(
+            db,
+            9,
+            "add channel subsystem grouping (Group/Panel concept)",
+            stamp,
+            channel_grouping_migration,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -483,6 +496,7 @@ def snapshot() -> dict:
         for integration in data["integrations"]:
             integration["secret_configured"] = has_password(integration["device_id"]) if integration["device_type"] == "IP-CAMERA" else False
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
+        data["channel_groups"] = [dict(x) for x in db.execute("SELECT * FROM channel_groups WHERE operation_id=? ORDER BY sort_order,rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
@@ -1086,6 +1100,26 @@ def camera_popout(device_id: str):
     return render_template("camera_popout.html", camera=dict(row))
 
 
+@control.post("/api/control/channel-group")
+def save_channel_group():
+    payload = request.get_json(silent=True) or {}
+    required = ("id", "name")
+    if any(not str(payload.get(key, "")).strip() for key in required): return jsonify(error="group id and name are required"), 400
+    group_id = str(payload["id"]).strip()
+    if not all(char.isalnum() or char in "-_" for char in group_id): return jsonify(error="group id may contain letters, numbers, hyphen and underscore only"), 400
+    try:
+        sort_order = int(payload.get("sort_order", 0))
+    except (TypeError, ValueError): return jsonify(error="sort order must be an integer"), 400
+    with connect() as db:
+        blocked = configuration_error(db)
+        if blocked: return jsonify(error=blocked), 409
+        db.execute("""INSERT INTO channel_groups(operation_id,id,name,sort_order) VALUES(?,?,?,?)
+            ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order""",
+                   (OPERATION_ID, group_id, str(payload["name"]).strip(), sort_order))
+        event(db,"CHANNEL_GROUP_CONFIG","INSTRUMENTATION","INFO",f"Channel group {group_id} configuration saved")
+    return jsonify(ok=True, group_id=group_id)
+
+
 @control.post("/api/control/channel")
 def save_channel():
     payload = request.get_json(silent=True) or {}
@@ -1134,6 +1168,7 @@ def save_channel():
         raw_field = ""
 
     linked_channel_id = str(payload.get("linked_channel_id", "")).strip() or None
+    group_id = str(payload.get("group_id", "")).strip() or None
 
     try:
         slope=float(payload.get("slope",1)); intercept=float(payload.get("intercept",0)); rate=int(payload.get("sample_rate",10)); stale=int(payload.get("stale_timeout_ms",1000))
@@ -1150,16 +1185,18 @@ def save_channel():
             WHERE d.operation_id=? AND d.id=? AND i.enabled=1""",(OPERATION_ID,payload["source_id"])).fetchone(): return jsonify(error="source device does not exist or is disabled"),409
         if linked_channel_id and not db.execute("SELECT 1 FROM channels WHERE operation_id=? AND id=?",(OPERATION_ID,linked_channel_id)).fetchone():
             return jsonify(error="linked channel does not exist"),409
+        if group_id and not db.execute("SELECT 1 FROM channel_groups WHERE operation_id=? AND id=?",(OPERATION_ID,group_id)).fetchone():
+            return jsonify(error="channel group does not exist"),409
         db.execute("""INSERT INTO channels(operation_id,id,name,unit,source_id,quality,warning,critical,sample_rate,
-            interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id,group_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,unit=excluded.unit,source_id=excluded.source_id,
             warning=excluded.warning,critical=excluded.critical,sample_rate=excluded.sample_rate,
             interaction_pattern=excluded.interaction_pattern,display_type=excluded.display_type,control_widget=excluded.control_widget,
             command_payload_json=excluded.command_payload_json,command_options_json=excluded.command_options_json,
-            poll_interval_ms=excluded.poll_interval_ms,linked_channel_id=excluded.linked_channel_id""",
+            poll_interval_ms=excluded.poll_interval_ms,linked_channel_id=excluded.linked_channel_id,group_id=excluded.group_id""",
                    (OPERATION_ID,channel_id,str(payload["name"]).strip(),str(payload["unit"]).strip(),payload["source_id"],"NOT_TESTED",warning,critical,rate,
-                    interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id))
+                    interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id,group_id))
         db.execute("""INSERT INTO channel_integrations VALUES(?,?,?,?,?,?,?) ON CONFLICT(operation_id,channel_id) DO UPDATE SET raw_field=excluded.raw_field,calibration_slope=excluded.calibration_slope,calibration_intercept=excluded.calibration_intercept,stale_timeout_ms=excluded.stale_timeout_ms,required_for_commit=excluded.required_for_commit""",
                    (OPERATION_ID,channel_id,raw_field,slope,intercept,stale,1 if payload.get("required",True) else 0))
         db.execute("""INSERT INTO channel_lifecycle VALUES(?,?,1,NULL) ON CONFLICT(operation_id,channel_id)

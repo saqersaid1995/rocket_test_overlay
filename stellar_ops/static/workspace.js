@@ -58,8 +58,57 @@ function camerasPanel(item){
 function channelsPanel(item){const runtime=data.telemetry.channels||{};return panelShell(item,`<table class="data-table"><thead><tr><th>CHANNEL</th><th>VALUE</th><th>QUALITY</th><th>AGE</th><th>LIMIT</th></tr></thead><tbody>${data.channels.filter(c=>c.enabled).map(c=>{const v=runtime[c.id]||{};return `<tr><td><code>${c.id}</code><small>${esc(c.name)}</small></td><td>${v.value??'—'} ${c.unit}</td><td>${badge(v.quality||'NO_DATA')}</td><td>${v.age_ms??'—'} ms</td><td>${c.warning??'—'} / ${c.critical??'—'}</td></tr>`}).join('')}</tbody></table>`,'QUALITY-AWARE')}
 function networkPanel(item){const m=data.telemetry.meta||{},sessions=data.edge_sessions||[];return panelShell(item,`<div class="network-grid"><div class="metric"><small>ACTIVE DEVICE</small><strong>${esc(m.device_id||'—')}</strong><em>${esc(m.status||'NO DEVICE')}</em></div><div class="metric"><small>SAMPLES RECEIVED</small><strong>${m.total_samples||0}</strong><em>raw samples</em></div><div class="metric"><small>SEQUENCE GAPS</small><strong>${m.sequence_gaps||0}</strong><em>missing batches</em></div></div>${sessions.map(s=>`<div class="device-row"><code>${s.device_id}</code><span>${s.remote_addr} · ${s.firmware||'—'}</span>${badge(s.status)}</div>`).join('')||'<div class="empty">NO EDGE SESSION</div>'}`,'SMTCS-EDGE/1')}
 function storagePanel(item){const r=data.recording||{},samples=data.edge_sessions.reduce((n,s)=>n+s.total_samples,0),packages=data.evidence_packages||[];return panelShell(item,`<div class="storage-grid"><div class="metric"><small>RECORDING</small><strong>${esc(r.state||'STOPPED')}</strong><em>${esc(r.source_mode||'—')}</em></div><div class="metric"><small>HISTORIAN SAMPLES</small><strong>${samples}</strong><em>SQLite raw store</em></div><div class="metric"><small>ACTIVE RUN</small><strong>${esc(activeRun().code)}</strong><em>evidence context</em></div><div class="metric"><small>EVIDENCE PACKAGES</small><strong>${packages.length}</strong><em>${packages.filter(p=>p.state==='SEALED').length} sealed</em></div><div class="metric"><small>AUDIT INTEGRITY</small><strong>${esc(data.audit_integrity?.status||'UNKNOWN')}</strong><em>SHA-256 chain</em></div></div>${packages.slice(0,3).map(p=>`<div class="device-row"><code>PKG-${p.id}</code><span>${p.telemetry_samples} samples · ${p.manifest_sha256?esc(p.manifest_sha256.slice(0,16))+'…':'manifest pending'}</span>${badge(p.state)}</div>`).join('')}`,'EVIDENCE STATUS')}
-const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel};
-function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
+
+// =====================================================================
+// Dynamic channel system, Phase 2 -- widget registry + grouping.
+// Renders any channel purely off its interaction_pattern/display_type/
+// control_widget columns (Phase 1), with zero hardcoded channel names.
+// Adding a new display_type or control_widget later means adding one
+// entry to these two registries -- nothing else in the panel changes.
+// =====================================================================
+const DISPLAY_WIDGETS={
+  NUMBER:(c,v)=>`<div class="dyn-number"><span class="dyn-val">${v.value??'—'}</span><span class="dyn-unit">${esc(c.unit)}</span></div>`,
+  GAUGE:(c,v)=>{const pct=c.critical?Math.min(100,Math.max(0,((v.value||0)/c.critical)*100)):0;return `<div class="dyn-gauge"><div class="dyn-gauge-track"><div class="dyn-gauge-fill" style="width:${pct}%"></div></div><span class="dyn-val">${v.value??'—'} ${esc(c.unit)}</span></div>`},
+  STATUS_LAMP:(c,v)=>`<span class="dyn-lamp ${v.quality==='GOOD'?'ok':'bad'}">${esc(v.value??'—')}</span>`,
+  TEXT:(c,v)=>`<div class="dyn-text">${esc(v.value??'—')}</div>`,
+  LOG:(c,v)=>`<div class="dyn-text">${esc(v.value??'—')}</div>`,
+};
+const CONTROL_WIDGETS_RENDER={
+  BUTTON:c=>`<button data-dyn-command="${esc(c.id)}">${esc(c.name)}</button>`,
+  TOGGLE:c=>`<button data-dyn-command="${esc(c.id)}" class="dyn-toggle">TOGGLE</button>`,
+  DROPDOWN:c=>{let options=[];try{options=JSON.parse(c.command_options_json||'[]')}catch(e){}
+    return `<select data-dyn-command="${esc(c.id)}">${options.map(o=>`<option value="${esc(o.value??o)}">${esc(o.label??o)}</option>`).join('')}</select>`},
+  SLIDER:c=>`<input type="range" data-dyn-command="${esc(c.id)}" min="0" max="100">`,
+};
+function dynamicWidget(channel,value){
+  if(channel.interaction_pattern==='COMMAND'){
+    const render=CONTROL_WIDGETS_RENDER[channel.control_widget];
+    return render?render(channel):`<div class="dyn-text muted">control widget "${esc(channel.control_widget)}" not yet supported</div>`;
+  }
+  const render=DISPLAY_WIDGETS[channel.display_type];
+  return render?render(channel,value||{}):`<div class="dyn-text muted">display type "${esc(channel.display_type)}" not yet supported</div>`;
+}
+function dynamicPanel(item){
+  const runtime=data.telemetry.channels||{};
+  const groups=(data.channel_groups||[]).slice().sort((a,b)=>a.sort_order-b.sort_order);
+  const channels=(data.channels||[]).filter(c=>c.enabled);
+  const byGroup=new Map();
+  const ungrouped=[];
+  channels.forEach(c=>{
+    if(c.group_id&&groups.some(g=>g.id===c.group_id)){if(!byGroup.has(c.group_id))byGroup.set(c.group_id,[]);byGroup.get(c.group_id).push(c)}
+    else ungrouped.push(c);
+  });
+  const tile=c=>`<div class="dyn-tile"><small>${esc(c.name)}</small>${dynamicWidget(c,runtime[c.id])}</div>`;
+  const groupBlocks=groups.filter(g=>byGroup.has(g.id)).map(g=>`<div class="dyn-group"><h4>${esc(g.name)}</h4><div class="dyn-tiles">${byGroup.get(g.id).map(tile).join('')}</div></div>`).join('');
+  const ungroupedBlock=ungrouped.length?`<div class="dyn-group"><h4>UNGROUPED</h4><div class="dyn-tiles">${ungrouped.map(tile).join('')}</div></div>`:'';
+  return panelShell(item,groupBlocks+ungroupedBlock||'<div class="empty">NO CHANNELS CONFIGURED</div>','DYNAMIC · WIDGET REGISTRY');
+}
+PANEL_NAMES.dynamic='DYNAMIC CHANNELS';
+const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel,dynamic:dynamicPanel};
+function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();bindDynamicActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
+function bindDynamicActions(){
+  $$('[data-dyn-command]').forEach(el=>el.onclick=el.tagName==='SELECT'?null:()=>toast(`Command routing for "${el.dataset.dynCommand}" arrives in Phase 3 (migration off the hardcoded ignition path)`));
+}
 function bindPanelActions(){
  $$('.panel').forEach((panel,index)=>{panel.ondragstart=()=>{dragIndex=index;panel.classList.add('dragging')};panel.ondragend=()=>panel.classList.remove('dragging');panel.ondragover=e=>{if(!locked){e.preventDefault();panel.classList.add('drag-over')}};panel.ondragleave=()=>panel.classList.remove('drag-over');panel.ondrop=e=>{e.preventDefault();panel.classList.remove('drag-over');const target=index,[moved]=layout.splice(dragIndex,1);layout.splice(target,0,moved);layout.forEach((x,i)=>x.order=i);renderWorkspace()}});
  $$('[data-popout]').forEach(b=>b.onclick=()=>window.open(`/workspace?panel=${encodeURIComponent(b.dataset.popout)}`,`smtcs-${b.dataset.popout}`,'width=1100,height=760'));
