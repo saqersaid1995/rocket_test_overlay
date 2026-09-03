@@ -10,6 +10,7 @@ from .airspace import airspace
 from .audit_integrity import verify_audit_ledger
 from .bench_ignition import bench_ignition
 from .build_info import system_identity
+from .channel_history import ensure_channel_history_sampler
 from .control import CONTROL_DB, OPERATION_ID, connect, control, init_control_db
 from .deployment_guard import (
     apply_security_headers,
@@ -54,6 +55,7 @@ def ensure_physical_pressure_telemetry():
     try:
         ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
         ensure_edge_gateway(CONTROL_DB)
+        ensure_channel_history_sampler(CONTROL_DB, OPERATION_ID)
     except (RuntimeError, OSError) as exc:
         app.logger.warning("Pressure Ethernet telemetry setup failed: %s", exc)
 
@@ -211,6 +213,7 @@ if __name__ == "__main__":
     init_control_db()
     ensure_pressure_edge_integration(CONTROL_DB, OPERATION_ID)
     ensure_edge_gateway(CONTROL_DB)
+    ensure_channel_history_sampler(CONTROL_DB, OPERATION_ID)
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", "5001")),

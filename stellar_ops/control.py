@@ -566,6 +566,27 @@ def api_snapshot():
     return jsonify(snapshot())
 
 
+@control.get("/api/control/channel/<channel_id>/history")
+def api_channel_history(channel_id: str):
+    """Recorded time-series for one channel, for graph-type widgets.
+
+    Query params: since, until (unix seconds). Defaults to the last hour.
+    """
+    from .channel_history import query_history
+
+    now = time.time()
+    try:
+        since = float(request.args.get("since", now - 3600))
+        until = float(request.args.get("until", now))
+    except ValueError:
+        return jsonify(error="since and until must be numeric unix timestamps"), 400
+    if until <= since:
+        return jsonify(error="until must be after since"), 400
+    with connect() as db:
+        samples = query_history(db, OPERATION_ID, channel_id, since, until)
+    return jsonify(channel_id=channel_id, since=since, until=until, samples=samples)
+
+
 @control.get("/api/control/stream")
 def api_stream():
     @stream_with_context
