@@ -11,7 +11,7 @@ from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, stream_with_context
 from .adapters import inspect_csv, test_adapter
 from .audit_integrity import (
     append_audit_record,
@@ -61,7 +61,11 @@ CONTROL_DB = Path(os.environ.get("STELLAR_OPS_DATA", ROOT / "data")) / "control.
 control = Blueprint("control", __name__)
 OPERATION_ID = "OP-QUAL-STATIC-001"
 DEVICE_TYPES = {"DAQ", "PRESSURE", "LOAD-CELL", "THERMOCOUPLE", "IP-CAMERA", "CONTROLLER", "TIME", "LOGGER"}
-ADAPTER_TYPES = {"SMTCS_EDGE_TCP", "SIMULATOR", "MODBUS_TCP", "OPC_UA", "TCP", "SERIAL", "MODBUS_RTU", "CAN", "ONVIF", "RTSP", "CSV_REPLAY", "NTP"}
+ADAPTER_TYPES = {"SMTCS_EDGE_TCP", "SIMULATOR", "MODBUS_TCP", "OPC_UA", "TCP", "SERIAL", "MODBUS_RTU", "CAN", "ONVIF", "RTSP", "CSV_REPLAY", "NTP",
+                  # ANALOG_DAQ: seed devices wired through another device's DAQ analog input
+                  # channels (e.g. PT-01 before its Ethernet integration is configured) rather
+                  # than an independent network/serial protocol.
+                  "ANALOG_DAQ"}
 
 # Dynamic channel system, Phase 1 -- see docs/smtcs (channel taxonomy discussion).
 # A channel's interaction_pattern decides which of display_type / control_widget
@@ -69,6 +73,16 @@ ADAPTER_TYPES = {"SMTCS_EDGE_TCP", "SIMULATOR", "MODBUS_TCP", "OPC_UA", "TCP", "
 INTERACTION_PATTERNS = {"STREAM", "COMMAND", "REQUEST_RESPONSE"}
 DISPLAY_TYPES = {"NUMBER", "GAUGE", "GRAPH", "STATUS_LAMP", "TEXT", "LOG", "IMAGE", "VIDEO"}
 CONTROL_WIDGETS = {"BUTTON", "TOGGLE", "DROPDOWN", "SLIDER"}
+
+
+def _str_field(payload: dict, key: str, default: str = "") -> str:
+    """Read a stripped string field from a JSON payload, treating a missing
+    key and an explicit JSON null the same way. payload.get(key, default)
+    alone is NOT enough: it only substitutes default when the key is
+    absent, so an explicit null (e.g. from a round-tripped config export)
+    still becomes the literal string "None" once passed through str()."""
+    value = payload.get(key)
+    return str(value).strip() if value is not None else default
 
 
 def utc_now() -> str:
@@ -667,6 +681,68 @@ def workspace_console():
     return render_template("workspace.html", initial=snapshot())
 
 
+@control.get("/api/control/config/export")
+def export_config():
+    """A portable, secret-free snapshot of channel groups, devices and
+    channels -- meant to be committed to a repo alongside the code, so a
+    test-stand configuration can be diffed, shared, or restored the same
+    way the code itself is (see the branch/PR workflow used throughout
+    this project's history)."""
+    with connect() as db:
+        groups = [dict(row) for row in db.execute(
+            "SELECT id,name,sort_order FROM channel_groups WHERE operation_id=? ORDER BY sort_order,rowid",
+            (OPERATION_ID,))]
+        devices_raw = [dict(row) for row in db.execute(
+            "SELECT id,name,device_type,endpoint,required FROM devices WHERE operation_id=? ORDER BY rowid",
+            (OPERATION_ID,))]
+        adapter_by_device = {row["device_id"]: row["adapter_type"] for row in db.execute(
+            "SELECT device_id,adapter_type FROM device_integrations WHERE operation_id=?", (OPERATION_ID,))}
+        integrations_by_device = {row["device_id"]: row["config_json"] for row in db.execute(
+            "SELECT device_id,config_json FROM device_integrations WHERE operation_id=?", (OPERATION_ID,))}
+        channels = [dict(row) for row in db.execute(
+            """SELECT c.id,c.name,c.unit,c.source_id,c.warning,c.critical,c.sample_rate,
+                      c.interaction_pattern,c.display_type,c.control_widget,c.command_payload_json,
+                      c.command_options_json,c.poll_interval_ms,c.linked_channel_id,c.group_id,
+                      c.is_virtual,c.formula,i.raw_field,i.calibration_slope AS slope,
+                      i.calibration_intercept AS intercept,i.stale_timeout_ms,i.required_for_commit AS required
+               FROM channels c LEFT JOIN channel_integrations i
+                 ON i.operation_id=c.operation_id AND i.channel_id=c.id
+               WHERE c.operation_id=? ORDER BY c.rowid""",
+            (OPERATION_ID,))]
+    devices = []
+    for row in devices_raw:
+        cfg = json.loads(integrations_by_device.get(row["id"]) or "{}")
+        devices.append({**row, "adapter_type": adapter_by_device.get(row["id"]),
+                         "username": cfg.get("username", ""), "profile": cfg.get("profile", ""),
+                         "notes": cfg.get("notes", "")})  # password is deliberately never exported
+    return jsonify(exported_at=utc_now(), operation_id=OPERATION_ID,
+                   channel_groups=groups, devices=devices, channels=channels)
+
+
+@control.post("/api/control/config/import")
+def import_config():
+    """Replays an exported config through the real save_channel_group /
+    save_device / save_channel endpoints (via the app's own test client),
+    in dependency order (groups, then devices, then channels). This is
+    deliberately NOT a raw INSERT: importing gets exactly the same
+    validation manual entry does, including the Phase 4 simulation-first
+    gate for any device that's new to this operation."""
+    payload = request.get_json(silent=True) or {}
+    client = current_app.test_client()
+    results = {"channel_groups": [], "devices": [], "channels": []}
+    for group in payload.get("channel_groups", []):
+        response = client.post("/api/control/channel-group", json=group)
+        results["channel_groups"].append({"id": group.get("id"), "status": response.status_code, "body": response.get_json()})
+    for device in payload.get("devices", []):
+        response = client.post("/api/control/device", json=device)
+        results["devices"].append({"id": device.get("id"), "status": response.status_code, "body": response.get_json()})
+    for channel in payload.get("channels", []):
+        response = client.post("/api/control/channel", json=channel)
+        results["channels"].append({"id": channel.get("id"), "status": response.status_code, "body": response.get_json()})
+    failed = [item for category in results.values() for item in category if item["status"] >= 400]
+    return jsonify(ok=not failed, failed_count=len(failed), results=results)
+
+
 @control.get("/api/control/snapshot")
 def api_snapshot():
     return jsonify(snapshot())
@@ -1232,7 +1308,7 @@ def save_channel_group():
     group_id = str(payload["id"]).strip()
     if not all(char.isalnum() or char in "-_" for char in group_id): return jsonify(error="group id may contain letters, numbers, hyphen and underscore only"), 400
     try:
-        sort_order = int(payload.get("sort_order", 0))
+        sort_order = int(payload.get("sort_order") if payload.get("sort_order") is not None else 0)
     except (TypeError, ValueError): return jsonify(error="sort order must be an integer"), 400
     with connect() as db:
         blocked = configuration_error(db)
@@ -1256,10 +1332,10 @@ def save_channel():
     poll_interval_ms = None
 
     if is_virtual:
-        formula = str(payload.get("formula", "")).strip()
+        formula = _str_field(payload, "formula").strip()
         if not formula: return jsonify(error="virtual channels require a formula"), 400
         interaction_pattern = "STREAM"
-        display_type = str(payload.get("display_type", "")).strip().upper() or None
+        display_type = _str_field(payload, "display_type").strip().upper() or None
         if display_type is None: return jsonify(error="a display type is required"), 400
         if display_type not in DISPLAY_TYPES: return jsonify(error="unsupported display type"), 400
         from .formula_engine import evaluate_formula, FormulaError
@@ -1273,14 +1349,14 @@ def save_channel():
         control_widget = None; command_options_json = None; command_payload_json = None
         raw_field = None
     else:
-        interaction_pattern = str(payload.get("interaction_pattern", "STREAM")).strip().upper() or "STREAM"
+        interaction_pattern = _str_field(payload, "interaction_pattern", "STREAM").upper() or "STREAM"
         if interaction_pattern not in INTERACTION_PATTERNS:
             return jsonify(error="unsupported interaction pattern"), 400
-        display_type = str(payload.get("display_type", "")).strip().upper() or None
-        control_widget = str(payload.get("control_widget", "")).strip().upper() or None
+        display_type = _str_field(payload, "display_type").strip().upper() or None
+        control_widget = _str_field(payload, "control_widget").strip().upper() or None
         command_options_json = None
         command_payload_json = None
-        raw_field = str(payload.get("raw_field", "")).strip()
+        raw_field = _str_field(payload, "raw_field").strip()
 
         if interaction_pattern in ("STREAM", "REQUEST_RESPONSE"):
             if not raw_field: return jsonify(error="raw field is required for STREAM and REQUEST_RESPONSE channels"), 400
@@ -1313,13 +1389,16 @@ def save_channel():
                 command_options_json = json.dumps(options)
             raw_field = ""
 
-    linked_channel_id = str(payload.get("linked_channel_id", "")).strip() or None
-    group_id = str(payload.get("group_id", "")).strip() or None
+    linked_channel_id = _str_field(payload, "linked_channel_id").strip() or None
+    group_id = _str_field(payload, "group_id").strip() or None
 
     try:
-        slope=float(payload.get("slope",1)); intercept=float(payload.get("intercept",0)); rate=int(payload.get("sample_rate",10)); stale=int(payload.get("stale_timeout_ms",1000))
-        warning=float(payload["warning"]) if str(payload.get("warning","")).strip() else None
-        critical=float(payload["critical"]) if str(payload.get("critical","")).strip() else None
+        slope=float(payload.get("slope") if payload.get("slope") is not None else 1)
+        intercept=float(payload.get("intercept") if payload.get("intercept") is not None else 0)
+        rate=int(payload.get("sample_rate") if payload.get("sample_rate") is not None else 10)
+        stale=int(payload.get("stale_timeout_ms") if payload.get("stale_timeout_ms") is not None else 1000)
+        warning=float(payload["warning"]) if _str_field(payload, "warning").strip() else None
+        critical=float(payload["critical"]) if _str_field(payload, "critical").strip() else None
     except (TypeError,ValueError): return jsonify(error="calibration, rates and limits must be numeric"), 400
     if not math.isfinite(slope) or not math.isfinite(intercept) or slope == 0: return jsonify(error="calibration slope must be finite and non-zero"),400
     if rate<1 or rate>10000 or stale<10: return jsonify(error="sample rate or stale timeout is outside supported limits"),400
