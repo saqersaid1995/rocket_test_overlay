@@ -388,6 +388,17 @@ def _initialize_control_db() -> None:
             stamp,
             seed_bench_relay_command_channel,
         )
+        def device_simulation_log_migration(connection):
+            connection.executescript("""CREATE TABLE IF NOT EXISTS device_simulation_log(
+                operation_id TEXT NOT NULL, device_id TEXT NOT NULL, verified_at TEXT NOT NULL,
+                PRIMARY KEY(operation_id,device_id));""")
+        apply_once(
+            db,
+            11,
+            "add device simulation log for the mandatory simulation-first workflow",
+            stamp,
+            device_simulation_log_migration,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -988,6 +999,20 @@ def save_device():
     with connect() as db:
         blocked = configuration_error(db)
         if blocked: return jsonify(error=blocked), 409
+        is_new_device = not db.execute(
+            "SELECT 1 FROM devices WHERE operation_id=? AND id=?", (OPERATION_ID, device_id)
+        ).fetchone()
+        if is_new_device and adapter != "SIMULATOR":
+            verified = db.execute(
+                "SELECT 1 FROM device_simulation_log WHERE operation_id=? AND device_id=?",
+                (OPERATION_ID, device_id),
+            ).fetchone()
+            if not verified:
+                return jsonify(
+                    error="new devices must be verified with a SIMULATOR adapter first -- "
+                    "save this device with adapter_type=SIMULATOR, confirm it behaves as "
+                    "expected, then switch to the real adapter"
+                ), 409
         password = str(payload.get("password", ""))
         if device_type == "IP-CAMERA" and password:
             try:
@@ -1004,6 +1029,10 @@ def save_device():
           VALUES(?,?,?,?,1,'NOT_TESTED') ON CONFLICT(operation_id,device_id) DO UPDATE SET
           adapter_type=excluded.adapter_type,config_json=excluded.config_json,enabled=1,last_test_status='NOT_TESTED',last_test_message=NULL,last_test_at=NULL""",
           (OPERATION_ID, device_id, adapter, json.dumps(config)))
+        if adapter == "SIMULATOR":
+            db.execute("""INSERT INTO device_simulation_log(operation_id,device_id,verified_at) VALUES(?,?,?)
+              ON CONFLICT(operation_id,device_id) DO UPDATE SET verified_at=excluded.verified_at""",
+              (OPERATION_ID, device_id, utc_now()))
         event(db, "DEVICE_CONFIG", "INSTRUMENTATION", "INFO", f"Device {device_id} saved with {adapter} adapter")
         stored = db.execute("SELECT endpoint FROM devices WHERE operation_id=? AND id=?", (OPERATION_ID, device_id)).fetchone()
     return jsonify(ok=True, device_id=device_id, endpoint=stored["endpoint"] if stored else None, adapter_type=adapter)
