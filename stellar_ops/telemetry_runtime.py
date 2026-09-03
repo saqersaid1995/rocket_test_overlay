@@ -175,6 +175,26 @@ def live_snapshot(db, operation_id: str) -> dict:
             ) / 1_000_000
             elapsed = max(elapsed, channel_elapsed)
 
+    virtual_channels = db.execute(
+        "SELECT c.id,c.unit,c.formula FROM channels c LEFT JOIN channel_lifecycle l "
+        "ON l.operation_id=c.operation_id AND l.channel_id=c.id "
+        "WHERE c.operation_id=? AND c.is_virtual=1 AND COALESCE(l.enabled,1)=1",
+        (operation_id,),
+    ).fetchall()
+    if virtual_channels:
+        from .formula_engine import evaluate_formula, FormulaError
+        numeric_values = {cid: entry["value"] for cid, entry in values.items()
+                           if isinstance(entry.get("value"), (int, float))}
+        for vc in virtual_channels:
+            try:
+                computed = evaluate_formula(vc["formula"] or "", numeric_values)
+                values[vc["id"]] = {"value": computed, "raw": None, "unit": vc["unit"],
+                                     "quality": "GOOD", "age_ms": 0, "source": "VIRTUAL"}
+            except FormulaError as exc:
+                values[vc["id"]] = {"value": None, "raw": None, "unit": vc["unit"],
+                                     "quality": "INVALID", "age_ms": None, "source": "VIRTUAL",
+                                     "error": str(exc)}
+
     if not newest_session:
         unknown = db.execute(
             "SELECT device_id,last_seen FROM edge_sessions ORDER BY last_seen DESC LIMIT 1"

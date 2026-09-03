@@ -22,7 +22,7 @@ from .camera_runtime import (camera_recording_status, camera_status, delete_pass
                              drain_runtime_events, has_password, mjpeg_frames, save_password,
                              start_camera_recordings, stop_camera_recordings,
                              test_camera, test_camera_component)
-from .database import add_column, apply_once, connect_database
+from .database import add_column, apply_once, columns, connect_database
 from .evidence import close_package, open_package
 from .execution_safety import (
     command_id_from_request,
@@ -398,6 +398,35 @@ def _initialize_control_db() -> None:
             "add device simulation log for the mandatory simulation-first workflow",
             stamp,
             device_simulation_log_migration,
+        )
+        def virtual_channel_migration(connection):
+            add_column(connection,"channels","is_virtual INTEGER NOT NULL DEFAULT 0")
+            add_column(connection,"channels","formula TEXT")
+            # source_id was originally NOT NULL; virtual channels have no
+            # physical source device, so it must become nullable. SQLite
+            # can't ALTER a column's NOT NULL in place -- rebuild the table.
+            cols = columns(connection, "channels")
+            connection.executescript(f"""
+                ALTER TABLE channels RENAME TO channels_old_v12;
+                CREATE TABLE channels(
+                    operation_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+                    unit TEXT NOT NULL, source_id TEXT, quality TEXT NOT NULL,
+                    warning REAL, critical REAL, sample_rate INTEGER NOT NULL,
+                    interaction_pattern TEXT NOT NULL DEFAULT 'STREAM',
+                    display_type TEXT, control_widget TEXT, command_payload_json TEXT,
+                    command_options_json TEXT, poll_interval_ms INTEGER, linked_channel_id TEXT,
+                    group_id TEXT, is_virtual INTEGER NOT NULL DEFAULT 0, formula TEXT,
+                    PRIMARY KEY(operation_id,id));
+                INSERT INTO channels({','.join(sorted(cols))})
+                    SELECT {','.join(sorted(cols))} FROM channels_old_v12;
+                DROP TABLE channels_old_v12;
+            """)
+        apply_once(
+            db,
+            12,
+            "add virtual/derived channels (formula over other channel values)",
+            stamp,
+            virtual_channel_migration,
         )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
@@ -1218,49 +1247,71 @@ def save_channel_group():
 @control.post("/api/control/channel")
 def save_channel():
     payload = request.get_json(silent=True) or {}
-    required = ("id", "name", "unit", "source_id")
-    if any(not str(payload.get(key, "")).strip() for key in required): return jsonify(error="channel id, name, unit and source device are required"), 400
+    is_virtual = bool(payload.get("is_virtual"))
+    required = ("id", "name", "unit") if is_virtual else ("id", "name", "unit", "source_id")
+    if any(not str(payload.get(key, "")).strip() for key in required):
+        return jsonify(error="channel id, name and unit are required" + ("" if is_virtual else ", along with a source device")), 400
     channel_id = str(payload["id"]).strip()
-    interaction_pattern = str(payload.get("interaction_pattern", "STREAM")).strip().upper() or "STREAM"
-    if interaction_pattern not in INTERACTION_PATTERNS:
-        return jsonify(error="unsupported interaction pattern"), 400
-    display_type = str(payload.get("display_type", "")).strip().upper() or None
-    control_widget = str(payload.get("control_widget", "")).strip().upper() or None
-    command_options_json = None
-    command_payload_json = None
+    formula = None
     poll_interval_ms = None
-    raw_field = str(payload.get("raw_field", "")).strip()
 
-    if interaction_pattern in ("STREAM", "REQUEST_RESPONSE"):
-        if not raw_field: return jsonify(error="raw field is required for STREAM and REQUEST_RESPONSE channels"), 400
-        if display_type is None: return jsonify(error="a display type is required for this interaction pattern"), 400
+    if is_virtual:
+        formula = str(payload.get("formula", "")).strip()
+        if not formula: return jsonify(error="virtual channels require a formula"), 400
+        interaction_pattern = "STREAM"
+        display_type = str(payload.get("display_type", "")).strip().upper() or None
+        if display_type is None: return jsonify(error="a display type is required"), 400
         if display_type not in DISPLAY_TYPES: return jsonify(error="unsupported display type"), 400
-        if control_widget is not None: return jsonify(error="control widget only applies to COMMAND channels"), 400
-        poll_raw = payload.get("poll_interval_ms")
-        if interaction_pattern == "STREAM" and poll_raw not in (None, ""): return jsonify(error="poll interval only applies to REQUEST_RESPONSE channels"), 400
-        if poll_raw not in (None, ""):
-            try: poll_interval_ms = int(poll_raw)
-            except (TypeError, ValueError): return jsonify(error="poll interval must be an integer number of milliseconds"), 400
-            if poll_interval_ms < 0: return jsonify(error="poll interval cannot be negative"), 400
-    else:
-        if control_widget is None: return jsonify(error="a control widget is required for COMMAND channels"), 400
-        if control_widget not in CONTROL_WIDGETS: return jsonify(error="unsupported control widget"), 400
-        if display_type is not None: return jsonify(error="display type only applies to STREAM and REQUEST_RESPONSE channels"), 400
-        command_payload_raw = payload.get("command_payload_json")
-        if not str(command_payload_raw or "").strip(): return jsonify(error="COMMAND channels require a command payload template"), 400
+        from .formula_engine import evaluate_formula, FormulaError
+        with connect() as db:
+            existing = db.execute("SELECT id FROM channels WHERE operation_id=?", (OPERATION_ID,)).fetchall()
+        probe_values = {row["id"]: 1.0 for row in existing if row["id"] != channel_id}
         try:
-            parsed_payload = json.loads(command_payload_raw) if isinstance(command_payload_raw, str) else command_payload_raw
-        except (TypeError, ValueError): return jsonify(error="command payload template must be valid JSON"), 400
-        command_payload_json = json.dumps(parsed_payload)
-        if control_widget == "DROPDOWN":
-            options_raw = payload.get("command_options_json")
-            if not options_raw: return jsonify(error="dropdown control widgets require command options"), 400
+            evaluate_formula(formula, probe_values)
+        except FormulaError as exc:
+            return jsonify(error=f"formula could not be validated: {exc}"), 400
+        control_widget = None; command_options_json = None; command_payload_json = None
+        raw_field = None
+    else:
+        interaction_pattern = str(payload.get("interaction_pattern", "STREAM")).strip().upper() or "STREAM"
+        if interaction_pattern not in INTERACTION_PATTERNS:
+            return jsonify(error="unsupported interaction pattern"), 400
+        display_type = str(payload.get("display_type", "")).strip().upper() or None
+        control_widget = str(payload.get("control_widget", "")).strip().upper() or None
+        command_options_json = None
+        command_payload_json = None
+        raw_field = str(payload.get("raw_field", "")).strip()
+
+        if interaction_pattern in ("STREAM", "REQUEST_RESPONSE"):
+            if not raw_field: return jsonify(error="raw field is required for STREAM and REQUEST_RESPONSE channels"), 400
+            if display_type is None: return jsonify(error="a display type is required for this interaction pattern"), 400
+            if display_type not in DISPLAY_TYPES: return jsonify(error="unsupported display type"), 400
+            if control_widget is not None: return jsonify(error="control widget only applies to COMMAND channels"), 400
+            poll_raw = payload.get("poll_interval_ms")
+            if interaction_pattern == "STREAM" and poll_raw not in (None, ""): return jsonify(error="poll interval only applies to REQUEST_RESPONSE channels"), 400
+            if poll_raw not in (None, ""):
+                try: poll_interval_ms = int(poll_raw)
+                except (TypeError, ValueError): return jsonify(error="poll interval must be an integer number of milliseconds"), 400
+                if poll_interval_ms < 0: return jsonify(error="poll interval cannot be negative"), 400
+        else:
+            if control_widget is None: return jsonify(error="a control widget is required for COMMAND channels"), 400
+            if control_widget not in CONTROL_WIDGETS: return jsonify(error="unsupported control widget"), 400
+            if display_type is not None: return jsonify(error="display type only applies to STREAM and REQUEST_RESPONSE channels"), 400
+            command_payload_raw = payload.get("command_payload_json")
+            if not str(command_payload_raw or "").strip(): return jsonify(error="COMMAND channels require a command payload template"), 400
             try:
-                options = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
-            except (TypeError, ValueError): return jsonify(error="command options must be valid JSON"), 400
-            if not isinstance(options, list) or not options: return jsonify(error="command options must be a non-empty list"), 400
-            command_options_json = json.dumps(options)
-        raw_field = ""
+                parsed_payload = json.loads(command_payload_raw) if isinstance(command_payload_raw, str) else command_payload_raw
+            except (TypeError, ValueError): return jsonify(error="command payload template must be valid JSON"), 400
+            command_payload_json = json.dumps(parsed_payload)
+            if control_widget == "DROPDOWN":
+                options_raw = payload.get("command_options_json")
+                if not options_raw: return jsonify(error="dropdown control widgets require command options"), 400
+                try:
+                    options = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
+                except (TypeError, ValueError): return jsonify(error="command options must be valid JSON"), 400
+                if not isinstance(options, list) or not options: return jsonify(error="command options must be a non-empty list"), 400
+                command_options_json = json.dumps(options)
+            raw_field = ""
 
     linked_channel_id = str(payload.get("linked_channel_id", "")).strip() or None
     group_id = str(payload.get("group_id", "")).strip() or None
@@ -1273,31 +1324,36 @@ def save_channel():
     if not math.isfinite(slope) or not math.isfinite(intercept) or slope == 0: return jsonify(error="calibration slope must be finite and non-zero"),400
     if rate<1 or rate>10000 or stale<10: return jsonify(error="sample rate or stale timeout is outside supported limits"),400
     if warning is not None and critical is not None and warning >= critical: return jsonify(error="warning limit must be below critical limit"),400
+    source_id = None if is_virtual else payload["source_id"]
     with connect() as db:
         blocked = configuration_error(db)
         if blocked: return jsonify(error=blocked), 409
-        if not db.execute("""SELECT 1 FROM devices d JOIN device_integrations i ON i.operation_id=d.operation_id AND i.device_id=d.id
-            WHERE d.operation_id=? AND d.id=? AND i.enabled=1""",(OPERATION_ID,payload["source_id"])).fetchone(): return jsonify(error="source device does not exist or is disabled"),409
+        if not is_virtual and not db.execute("""SELECT 1 FROM devices d JOIN device_integrations i ON i.operation_id=d.operation_id AND i.device_id=d.id
+            WHERE d.operation_id=? AND d.id=? AND i.enabled=1""",(OPERATION_ID,source_id)).fetchone(): return jsonify(error="source device does not exist or is disabled"),409
         if linked_channel_id and not db.execute("SELECT 1 FROM channels WHERE operation_id=? AND id=?",(OPERATION_ID,linked_channel_id)).fetchone():
             return jsonify(error="linked channel does not exist"),409
         if group_id and not db.execute("SELECT 1 FROM channel_groups WHERE operation_id=? AND id=?",(OPERATION_ID,group_id)).fetchone():
             return jsonify(error="channel group does not exist"),409
         db.execute("""INSERT INTO channels(operation_id,id,name,unit,source_id,quality,warning,critical,sample_rate,
-            interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id,group_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id,group_id,
+            is_virtual,formula)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,unit=excluded.unit,source_id=excluded.source_id,
             warning=excluded.warning,critical=excluded.critical,sample_rate=excluded.sample_rate,
             interaction_pattern=excluded.interaction_pattern,display_type=excluded.display_type,control_widget=excluded.control_widget,
             command_payload_json=excluded.command_payload_json,command_options_json=excluded.command_options_json,
-            poll_interval_ms=excluded.poll_interval_ms,linked_channel_id=excluded.linked_channel_id,group_id=excluded.group_id""",
-                   (OPERATION_ID,channel_id,str(payload["name"]).strip(),str(payload["unit"]).strip(),payload["source_id"],"NOT_TESTED",warning,critical,rate,
-                    interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id,group_id))
-        db.execute("""INSERT INTO channel_integrations VALUES(?,?,?,?,?,?,?) ON CONFLICT(operation_id,channel_id) DO UPDATE SET raw_field=excluded.raw_field,calibration_slope=excluded.calibration_slope,calibration_intercept=excluded.calibration_intercept,stale_timeout_ms=excluded.stale_timeout_ms,required_for_commit=excluded.required_for_commit""",
-                   (OPERATION_ID,channel_id,raw_field,slope,intercept,stale,1 if payload.get("required",True) else 0))
+            poll_interval_ms=excluded.poll_interval_ms,linked_channel_id=excluded.linked_channel_id,group_id=excluded.group_id,
+            is_virtual=excluded.is_virtual,formula=excluded.formula""",
+                   (OPERATION_ID,channel_id,str(payload["name"]).strip(),str(payload["unit"]).strip(),source_id,"NOT_TESTED",warning,critical,rate,
+                    interaction_pattern,display_type,control_widget,command_payload_json,command_options_json,poll_interval_ms,linked_channel_id,group_id,
+                    1 if is_virtual else 0,formula))
+        if not is_virtual:
+            db.execute("""INSERT INTO channel_integrations VALUES(?,?,?,?,?,?,?) ON CONFLICT(operation_id,channel_id) DO UPDATE SET raw_field=excluded.raw_field,calibration_slope=excluded.calibration_slope,calibration_intercept=excluded.calibration_intercept,stale_timeout_ms=excluded.stale_timeout_ms,required_for_commit=excluded.required_for_commit""",
+                       (OPERATION_ID,channel_id,raw_field,slope,intercept,stale,1 if payload.get("required",True) else 0))
         db.execute("""INSERT INTO channel_lifecycle VALUES(?,?,1,NULL) ON CONFLICT(operation_id,channel_id)
             DO UPDATE SET enabled=1,retired_at=NULL""", (OPERATION_ID,channel_id))
         event(db,"CHANNEL_CONFIG","INSTRUMENTATION","INFO",f"Channel {channel_id} configuration saved")
-    return jsonify(ok=True,channel_id=channel_id,interaction_pattern=interaction_pattern)
+    return jsonify(ok=True,channel_id=channel_id,interaction_pattern=interaction_pattern,is_virtual=is_virtual)
 
 
 @control.post("/api/control/channel/<path:channel_id>/state")
