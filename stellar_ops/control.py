@@ -834,6 +834,51 @@ def api_channel_history(channel_id: str):
     return jsonify(channel_id=channel_id, since=since, until=until, samples=samples)
 
 
+@control.get("/api/control/channel-history-range")
+def api_channel_history_range():
+    """The recorded time span available for replay -- drives the replay
+    slider's min/max. Empty (nulls) until the Phase 0 sampler has recorded
+    at least one sample."""
+    from .channel_history import ensure_schema
+
+    with connect() as db:
+        ensure_schema(db)
+        row = db.execute(
+            "SELECT MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM channel_history WHERE operation_id=?",
+            (OPERATION_ID,),
+        ).fetchone()
+    return jsonify(min_ts=row["min_ts"], max_ts=row["max_ts"])
+
+
+@control.get("/api/control/channel-history-snapshot")
+def api_channel_history_snapshot():
+    """Reconstructs a live_snapshot()-shaped {channels: {...}} dict from
+    recorded history at one point in time, so replay can feed the exact
+    same widget-rendering code (DISPLAY_WIDGETS / dynamicWidget in
+    workspace.js) that live mode uses -- replay is a different data
+    source, not a different display engine."""
+    from .channel_history import ensure_schema
+
+    try:
+        ts = float(request.args.get("ts", ""))
+    except (TypeError, ValueError):
+        return jsonify(error="ts must be a numeric unix timestamp"), 400
+    with connect() as db:
+        ensure_schema(db)
+        channel_ids = [row["id"] for row in db.execute(
+            "SELECT id FROM channels WHERE operation_id=?", (OPERATION_ID,))]
+        channels = {}
+        for channel_id in channel_ids:
+            row = db.execute(
+                "SELECT value, quality FROM channel_history WHERE operation_id=? AND channel_id=? AND ts<=? "
+                "ORDER BY ts DESC LIMIT 1",
+                (OPERATION_ID, channel_id, ts),
+            ).fetchone()
+            if row:
+                channels[channel_id] = {"value": row["value"], "quality": row["quality"], "age_ms": 0}
+    return jsonify(ts=ts, channels=channels)
+
+
 @control.get("/api/control/stream")
 def api_stream():
     @stream_with_context

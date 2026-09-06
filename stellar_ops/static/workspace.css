@@ -70,3 +70,9 @@
 .pid-arrow-fill{fill:#3a5866}
 .pid-edge-label{fill:var(--muted);font:7px ui-monospace,monospace}
 .pid-node:hover .pid-shape{stroke-width:2.5}
+.dyn-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);background:#061118}
+.dyn-toolbar button{background:#081922;border:1px solid #244653;color:#89a4af;padding:5px 10px;font:7px ui-monospace,monospace;cursor:pointer}
+.dyn-toolbar button.active{border-color:var(--cyan);color:var(--cyan)}
+.dyn-toolbar button:disabled{opacity:.4;cursor:not-allowed}
+.dyn-toolbar input[type=range]{flex:1;max-width:220px}
+.dyn-replay-time{font:8px ui-monospace,monospace;color:var(--amber);white-space:nowrap}

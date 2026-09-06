@@ -88,8 +88,23 @@ function dynamicWidget(channel,value){
   const render=DISPLAY_WIDGETS[channel.display_type];
   return render?render(channel,value||{}):`<div class="dyn-text muted">display type "${esc(channel.display_type)}" not yet supported</div>`;
 }
+// =====================================================================
+// Replay, item 13 of the dynamic channel plan -- reuses this exact
+// panel and its widget-rendering functions. The only thing that
+// changes in replay mode is *where the per-channel values come from*
+// (recorded history via /api/control/channel-history-snapshot instead
+// of the live snapshot's telemetry.channels); dynamicWidget() and the
+// DISPLAY_WIDGETS/CONTROL_WIDGETS_RENDER registries are never touched.
+// =====================================================================
+const dynamicReplay={active:false,ts:null,minTs:null,maxTs:null,cache:{},playing:false,timer:null};
+async function dynamicReplayLoadRange(){
+  try{const r=await fetch('/api/control/channel-history-range');const d=await r.json();dynamicReplay.minTs=d.min_ts;dynamicReplay.maxTs=d.max_ts;if(dynamicReplay.ts==null)dynamicReplay.ts=d.max_ts}catch(e){}
+}
+async function dynamicReplayLoadSnapshot(ts){
+  try{const r=await fetch(`/api/control/channel-history-snapshot?ts=${ts}`);const d=await r.json();dynamicReplay.cache=d.channels||{};renderWorkspace()}catch(e){}
+}
 function dynamicPanel(item){
-  const runtime=data.telemetry.channels||{};
+  const runtime=dynamicReplay.active?dynamicReplay.cache:(data.telemetry.channels||{});
   const groups=(data.channel_groups||[]).slice().sort((a,b)=>a.sort_order-b.sort_order);
   const channels=(data.channels||[]).filter(c=>c.enabled);
   const byGroup=new Map();
@@ -101,7 +116,16 @@ function dynamicPanel(item){
   const tile=c=>`<div class="dyn-tile"><small>${esc(c.name)}</small>${dynamicWidget(c,runtime[c.id])}</div>`;
   const groupBlocks=groups.filter(g=>byGroup.has(g.id)).map(g=>`<div class="dyn-group"><h4>${esc(g.name)}</h4><div class="dyn-tiles">${byGroup.get(g.id).map(tile).join('')}</div></div>`).join('');
   const ungroupedBlock=ungrouped.length?`<div class="dyn-group"><h4>UNGROUPED</h4><div class="dyn-tiles">${ungrouped.map(tile).join('')}</div></div>`:'';
-  return panelShell(item,groupBlocks+ungroupedBlock||'<div class="empty">NO CHANNELS CONFIGURED</div>','DYNAMIC · WIDGET REGISTRY');
+  const hasHistory=dynamicReplay.minTs!=null&&dynamicReplay.maxTs!=null&&dynamicReplay.maxTs>dynamicReplay.minTs;
+  const toolbar=`<div class="dyn-toolbar">
+    <button data-dyn-mode="LIVE" class="${!dynamicReplay.active?'active':''}">LIVE</button>
+    <button data-dyn-mode="REPLAY" class="${dynamicReplay.active?'active':''}" ${hasHistory?'':'disabled'}>REPLAY</button>
+    ${dynamicReplay.active&&hasHistory?`<input type="range" id="dyn-replay-slider" min="${dynamicReplay.minTs}" max="${dynamicReplay.maxTs}" step="1" value="${dynamicReplay.ts??dynamicReplay.maxTs}">
+    <span class="dyn-replay-time">${new Date((dynamicReplay.ts??dynamicReplay.maxTs)*1000).toISOString().substr(11,8)} UTC</span>
+    <button id="dyn-replay-play">${dynamicReplay.playing?'PAUSE':'PLAY'}</button>`:''}
+    ${dynamicReplay.active&&!hasHistory?'<span class="dyn-replay-time">NO RECORDED HISTORY YET</span>':''}
+  </div>`;
+  return panelShell(item,toolbar+(groupBlocks+ungroupedBlock||'<div class="empty">NO CHANNELS CONFIGURED</div>'),dynamicReplay.active?'REPLAY · RECORDED HISTORY':'LIVE · WIDGET REGISTRY');
 }
 PANEL_NAMES.dynamic='DYNAMIC CHANNELS';
 
@@ -166,8 +190,37 @@ PANEL_NAMES.pid='P&ID DIAGRAM';
 const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel,dynamic:dynamicPanel,pid:pidPanel};
 function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();bindDynamicActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
 function bindDynamicActions(){
+  $$('[data-dyn-mode]').forEach(el=>el.onclick=async()=>{
+    if(el.disabled)return;
+    const goingReplay=el.dataset.dynMode==='REPLAY';
+    if(goingReplay&&!dynamicReplay.active){
+      dynamicReplay.active=true;
+      await dynamicReplayLoadRange();
+      if(dynamicReplay.maxTs!=null)await dynamicReplayLoadSnapshot(dynamicReplay.maxTs);
+      else renderWorkspace();
+    }else if(!goingReplay&&dynamicReplay.active){
+      dynamicReplay.active=false;
+      if(dynamicReplay.timer){clearInterval(dynamicReplay.timer);dynamicReplay.timer=null;dynamicReplay.playing=false}
+      renderWorkspace();
+    }
+  });
+  const slider=$('#dyn-replay-slider');
+  if(slider)slider.oninput=()=>{dynamicReplay.ts=Number(slider.value);dynamicReplayLoadSnapshot(dynamicReplay.ts)};
+  const playButton=$('#dyn-replay-play');
+  if(playButton)playButton.onclick=()=>{
+    dynamicReplay.playing=!dynamicReplay.playing;
+    if(dynamicReplay.playing){
+      dynamicReplay.timer=setInterval(()=>{
+        dynamicReplay.ts=Math.min((dynamicReplay.ts??dynamicReplay.minTs)+1,dynamicReplay.maxTs);
+        dynamicReplayLoadSnapshot(dynamicReplay.ts);
+        if(dynamicReplay.ts>=dynamicReplay.maxTs){clearInterval(dynamicReplay.timer);dynamicReplay.timer=null;dynamicReplay.playing=false;renderWorkspace()}
+      },500);
+    }else if(dynamicReplay.timer){clearInterval(dynamicReplay.timer);dynamicReplay.timer=null}
+    renderWorkspace();
+  };
   $$('[data-dyn-command]').forEach(el=>{
     if(el.tagName==='SELECT'||el.type==='range')return;
+    if(dynamicReplay.active){el.disabled=true;el.title='Commands are disabled while viewing replayed history';return}
     el.onclick=async()=>{
       const value=el.dataset.dynValue==='false'?false:el.dataset.dynValue==='true'?true:true;
       if(!confirm(`Send command for "${el.dataset.dynCommand}" (value: ${value})?\n\nConfirm all personnel and equipment are clear before proceeding.`))return;
