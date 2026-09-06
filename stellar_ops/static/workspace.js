@@ -141,15 +141,30 @@ PANEL_NAMES.dynamic='DYNAMIC CHANNELS';
 // Groups with no connections at all are drawn separately below so
 // they're still visible without cluttering the flow diagram.
 // =====================================================================
-const PID_NODE_W=130,PID_NODE_H=70,PID_COL_W=220,PID_ROW_H=110,PID_MARGIN=30;
-const PID_SYMBOL_REGISTRY={
-  TANK:(w,h,label,val)=>`<rect x="10" y="5" width="${w-20}" height="${h-30}" rx="10" class="pid-shape pid-tank"/>${val?`<text x="${w/2}" y="${(h-30)/2+8}" text-anchor="middle" class="pid-value">${esc(val)}</text>`:''}<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-label">${esc(label)}</text>`,
-  VALVE:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5;return `<polygon points="${cx-18},${cy-14} ${cx},${cy} ${cx-18},${cy+14}" class="pid-shape pid-valve"/><polygon points="${cx+18},${cy-14} ${cx},${cy} ${cx+18},${cy+14}" class="pid-shape pid-valve"/><line x1="${cx}" y1="${cy-14}" x2="${cx}" y2="${cy-24}" class="pid-valve-stem"/><rect x="${cx-8}" y="${cy-32}" width="16" height="8" class="pid-shape pid-valve"/><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
-  PUMP:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5,r=18;return `<circle cx="${cx}" cy="${cy}" r="${r}" class="pid-shape pid-pump"/><polygon points="${cx-6},${cy-9} ${cx-6},${cy+9} ${cx+9},${cy}" class="pid-pump-triangle"/><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
-  SENSOR:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5,r=16;return `<circle cx="${cx}" cy="${cy}" r="${r}" class="pid-shape pid-sensor"/><text x="${cx}" y="${cy+4}" text-anchor="middle" class="pid-sensor-letter">${esc((label||'?').charAt(0).toUpperCase())}</text><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
-  CAMERA:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5;return `<rect x="${cx-16}" y="${cy-10}" width="32" height="20" rx="3" class="pid-shape pid-camera"/><circle cx="${cx+4}" cy="${cy}" r="6" class="pid-camera-lens"/><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
-  GENERIC:(w,h,label,val)=>`<rect x="10" y="5" width="${w-20}" height="${h-30}" rx="6" class="pid-shape pid-generic"/>${val?`<text x="${w/2}" y="${(h-30)/2+8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-label">${esc(label)}</text>`,
+const PID_NODE_W=140,PID_NODE_H=78,PID_COL_W=230,PID_ROW_H=118,PID_MARGIN=40;
+function pidFormatValue(val){if(val==null||val==='')return '';const num=Number(val);if(!Number.isFinite(num))return String(val);return Math.abs(num)<1000?(Math.round(num*100)/100).toString():Math.round(num).toString()}
+const PID_SYMBOL_META={
+  TANK:{icon:'<rect x="3" y="2" width="14" height="16" rx="3"/>',title:'Vessel / tank'},
+  VALVE:{icon:'<polygon points="2,3 10,10 2,17"/><polygon points="18,3 10,10 18,17"/>',title:'Valve'},
+  PUMP:{icon:'<circle cx="10" cy="10" r="8"/><polygon points="7,6 7,14 14,10"/>',title:'Pump'},
+  SENSOR:{icon:'<circle cx="10" cy="10" r="8"/>',title:'Sensor / instrument'},
+  CAMERA:{icon:'<rect x="2" y="5" width="16" height="10" rx="2"/><circle cx="12" cy="10" r="3"/>',title:'Camera'},
+  GENERIC:{icon:'<rect x="2" y="4" width="16" height="12" rx="2"/><line x1="2" y1="9" x2="18" y2="9"/>',title:'Device (unmapped symbol)'},
 };
+const PID_SYMBOL_REGISTRY={
+  TANK:(w,h,label,val)=>`<rect x="12" y="6" width="${w-24}" height="${h-34}" rx="12" class="pid-shape pid-tank"/>${val?`<text x="${w/2}" y="${(h-34)/2+13}" text-anchor="middle" class="pid-value">${esc(val)}</text>`:''}<text x="${w/2}" y="${h-10}" text-anchor="middle" class="pid-label">${esc(label)}</text>`,
+  VALVE:(w,h,label,val)=>{const cx=w/2,cy=(h-34)/2+8;return `<polygon points="${cx-20},${cy-16} ${cx},${cy} ${cx-20},${cy+16}" class="pid-shape pid-valve"/><polygon points="${cx+20},${cy-16} ${cx},${cy} ${cx+20},${cy+16}" class="pid-shape pid-valve"/><line x1="${cx}" y1="${cy-16}" x2="${cx}" y2="${cy-28}" class="pid-valve-stem"/><rect x="${cx-9}" y="${cy-36}" width="18" height="9" rx="2" class="pid-shape pid-valve"/><text x="${w/2}" y="${h-24}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-10}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  PUMP:(w,h,label,val)=>{const cx=w/2,cy=(h-34)/2+8,r=20;return `<circle cx="${cx}" cy="${cy}" r="${r}" class="pid-shape pid-pump"/><polygon points="${cx-7},${cy-10} ${cx-7},${cy+10} ${cx+10},${cy}" class="pid-pump-triangle"/><text x="${w/2}" y="${h-24}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-10}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  SENSOR:(w,h,label,val)=>{const cx=w/2,cy=(h-34)/2+8,r=19;return `<circle cx="${cx}" cy="${cy}" r="${r}" class="pid-shape pid-sensor"/><text x="${cx}" y="${cy+5}" text-anchor="middle" class="pid-sensor-letter">${esc((label||'?').charAt(0).toUpperCase())}</text><text x="${w/2}" y="${h-24}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-10}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  CAMERA:(w,h,label,val)=>{const cx=w/2,cy=(h-34)/2+8;return `<rect x="${cx-18}" y="${cy-11}" width="36" height="22" rx="3" class="pid-shape pid-camera"/><circle cx="${cx+5}" cy="${cy}" r="7" class="pid-camera-lens"/><text x="${w/2}" y="${h-24}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-10}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  GENERIC:(w,h,label,val)=>`<rect x="12" y="6" width="${w-24}" height="${h-34}" rx="7" class="pid-shape pid-generic"/><line x1="18" y1="20" x2="${w-18}" y2="20" class="pid-generic-divider"/>${val?`<text x="${w/2}" y="${(h-34)/2+18}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}<text x="${w/2}" y="${h-10}" text-anchor="middle" class="pid-label">${esc(label)}</text>`,
+};
+function pidQualityClass(quality){
+  if(!quality)return 'pid-q-none';
+  if(quality==='GOOD'||quality==='SIMULATED')return 'pid-q-good';
+  if(quality==='STALE'||quality==='UNCALIBRATED')return 'pid-q-warn';
+  return 'pid-q-bad';
+}
 function computePidLayout(groups,connections){
   const byId=new Map(groups.map(g=>[g.id,g]));
   const incoming=new Map(groups.map(g=>[g.id,[]]));
@@ -168,6 +183,7 @@ function computePidLayout(groups,connections){
   const unconnected=groups.filter(g=>!connectedIds.has(g.id)).map(g=>g.id);
   return {columns,unconnected};
 }
+const pidView={scale:1};
 function pidPanel(item){
   const groups=data.channel_groups||[],connections=data.group_connections||[],channels=data.channels||[],runtime=data.telemetry.channels||{};
   if(!groups.length)return panelShell(item,'<div class="empty">NO GROUPS DEFINED — create a channel group with a symbol type first</div>','P&ID · AUTO-GENERATED');
@@ -176,19 +192,45 @@ function pidPanel(item){
   const maxRows=columns.size?Math.max(...[...columns.values()].map(a=>a.length)):0;
   const pos=new Map();
   columns.forEach((ids,col)=>ids.forEach((id,row)=>pos.set(id,{x:PID_MARGIN+col*PID_COL_W,y:PID_MARGIN+row*PID_ROW_H})));
-  const connectedBottom=PID_MARGIN+maxRows*PID_ROW_H+(unconnected.length?40:0);
+  const connectedBottom=PID_MARGIN+maxRows*PID_ROW_H+(unconnected.length?50:0);
   unconnected.forEach((id,i)=>pos.set(id,{x:PID_MARGIN+(i%4)*PID_COL_W,y:connectedBottom+Math.floor(i/4)*PID_ROW_H}));
   const repChannel=gid=>channels.find(c=>c.group_id===gid&&c.interaction_pattern!=='COMMAND'&&c.enabled);
-  const edgesSvg=connections.map(c=>{const a=pos.get(c.from_group_id),b=pos.get(c.to_group_id);if(!a||!b)return '';const x1=a.x+PID_NODE_W,y1=a.y+PID_NODE_H/2,x2=b.x,y2=b.y+PID_NODE_H/2;return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="pid-edge" marker-end="url(#pid-arrow)"/>`+(c.label?`<text x="${(x1+x2)/2}" y="${(y1+y2)/2-6}" text-anchor="middle" class="pid-edge-label">${esc(c.label)}</text>`:'')}).join('');
-  const nodesSvg=groups.map(g=>{const p=pos.get(g.id);if(!p)return '';const rep=repChannel(g.id),v=rep?runtime[rep.id]:null,valueLabel=v&&v.value!=null?`${v.value}${rep.unit?' '+esc(rep.unit):''}`:'';const render=PID_SYMBOL_REGISTRY[g.symbol]||PID_SYMBOL_REGISTRY.GENERIC;return `<g class="pid-node" transform="translate(${p.x},${p.y})"><title>${esc(g.name)} (${esc(g.symbol)})</title>${render(PID_NODE_W,PID_NODE_H,g.name,valueLabel)}</g>`}).join('');
-  const totalWidth=Math.max(400,PID_MARGIN*2+(maxCol+1)*PID_COL_W);
-  const totalHeight=Math.max(220,connectedBottom+Math.ceil(unconnected.length/4)*PID_ROW_H+PID_MARGIN);
-  const svg=`<svg viewBox="0 0 ${totalWidth} ${totalHeight}" class="pid-svg"><defs><marker id="pid-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="pid-arrow-fill"/></marker></defs>${edgesSvg}${nodesSvg}</svg>`;
-  return panelShell(item,`<div class="pid-scroll">${svg}</div>`,'P&ID · AUTO-GENERATED');
+  const edgesSvg=connections.map(c=>{
+    const a=pos.get(c.from_group_id),b=pos.get(c.to_group_id);if(!a||!b)return '';
+    const x1=a.x+PID_NODE_W,y1=a.y+PID_NODE_H/2-17,x2=b.x,y2=b.y+PID_NODE_H/2-17;
+    const midX=(x1+x2)/2,midY=(y1+y2)/2;
+    const labelPill=c.label?`<rect x="${midX-esc(c.label).length*3.2-6}" y="${midY-16}" width="${esc(c.label).length*6.4+12}" height="14" rx="3" class="pid-edge-pill"/><text x="${midX}" y="${midY-9}" text-anchor="middle" class="pid-edge-label">${esc(c.label)}</text>`:'';
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="pid-edge" marker-end="url(#pid-arrow)"/>${labelPill}`;
+  }).join('');
+  const nodesSvg=groups.map(g=>{
+    const p=pos.get(g.id);if(!p)return '';
+    const rep=repChannel(g.id),v=rep?runtime[rep.id]:null;
+    const hasValue=rep&&v&&v.value!=null;
+    const valueLabel=hasValue?`${pidFormatValue(v.value)}${rep.unit?' '+esc(rep.unit):''}`:'';
+    const qualityClass=rep?pidQualityClass(v?v.quality:null):'pid-q-unlinked';
+    const render=PID_SYMBOL_REGISTRY[g.symbol]||PID_SYMBOL_REGISTRY.GENERIC;
+    const unlinkedTag=!rep?`<text x="${PID_NODE_W/2}" y="${PID_NODE_H-10}" text-anchor="middle" class="pid-unlinked-tag">NO CHANNEL LINKED</text>`:'';
+    return `<g class="pid-node ${qualityClass}" transform="translate(${p.x},${p.y})"><title>${esc(g.name)} (${esc(g.symbol)})${rep?'':' — no channel linked to this group'}</title>${render(PID_NODE_W,PID_NODE_H,g.name,rep?valueLabel:'')}${unlinkedTag}</g>`;
+  }).join('');
+  const totalWidth=Math.max(460,PID_MARGIN*2+(maxCol+1)*PID_COL_W);
+  const totalHeight=Math.max(260,connectedBottom+Math.ceil(unconnected.length/4)*PID_ROW_H+PID_MARGIN);
+  const symbolsUsed=[...new Set(groups.map(g=>g.symbol||'GENERIC'))];
+  const legend=`<div class="pid-legend">${symbolsUsed.map(s=>{const meta=PID_SYMBOL_META[s]||PID_SYMBOL_META.GENERIC;return `<span class="pid-legend-item" title="${esc(meta.title)}"><svg viewBox="0 0 20 20" class="pid-legend-icon">${meta.icon}</svg>${esc(s)}</span>`}).join('')}<span class="pid-legend-item pid-legend-quality"><i class="pid-q-good"></i>GOOD<i class="pid-q-warn"></i>STALE<i class="pid-q-bad"></i>BAD/DISCONNECTED<i class="pid-q-unlinked"></i>UNLINKED</span></div>`;
+  const svg=`<svg viewBox="0 0 ${totalWidth} ${totalHeight}" class="pid-svg"><defs><pattern id="pid-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" class="pid-grid-line"/></pattern><marker id="pid-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="pid-arrow-fill"/></marker></defs><rect x="0" y="0" width="${totalWidth}" height="${totalHeight}" fill="url(#pid-grid)"/>${edgesSvg}${nodesSvg}</svg>`;
+  const toolbar=`<div class="pid-toolbar">${legend}<div class="pid-zoom"><button data-pid-zoom="out">−</button><span>${Math.round(pidView.scale*100)}%</span><button data-pid-zoom="in">+</button><button data-pid-zoom="reset">RESET</button></div></div>`;
+  return panelShell(item,`${toolbar}<div class="pid-scroll"><div class="pid-zoom-wrap" style="transform:scale(${pidView.scale});transform-origin:top left">${svg}</div></div>`,'P&ID · AUTO-GENERATED');
 }
 PANEL_NAMES.pid='P&ID DIAGRAM';
 const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel,dynamic:dynamicPanel,pid:pidPanel};
-function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();bindDynamicActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
+function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();bindDynamicActions();bindPidActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
+function bindPidActions(){
+  $$('[data-pid-zoom]').forEach(el=>el.onclick=()=>{
+    if(el.dataset.pidZoom==='in')pidView.scale=Math.min(2,Math.round((pidView.scale+0.15)*100)/100);
+    else if(el.dataset.pidZoom==='out')pidView.scale=Math.max(0.4,Math.round((pidView.scale-0.15)*100)/100);
+    else pidView.scale=1;
+    renderWorkspace();
+  });
+}
 function bindDynamicActions(){
   $$('[data-dyn-mode]').forEach(el=>el.onclick=async()=>{
     if(el.disabled)return;
