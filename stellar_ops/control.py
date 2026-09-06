@@ -75,6 +75,9 @@ DISPLAY_TYPES = {"NUMBER", "GAUGE", "GRAPH", "STATUS_LAMP", "TEXT", "LOG", "IMAG
 CONTROL_WIDGETS = {"BUTTON", "TOGGLE", "DROPDOWN", "SLIDER"}
 RULE_OPERATORS = {"GT", "GTE", "LT", "LTE", "EQ", "BETWEEN"}
 RULE_PRIORITIES = {"P1", "P2"}
+# P&ID symbol registry keys -- the frontend's SYMBOL_REGISTRY (workspace.js) has a
+# render function for each of these, plus a GENERIC fallback for anything unmapped.
+SYMBOL_TYPES = {"TANK", "VALVE", "PUMP", "SENSOR", "CAMERA", "GENERIC"}
 
 
 def _str_field(payload: dict, key: str, default: str = "") -> str:
@@ -488,6 +491,19 @@ def _initialize_control_db() -> None:
             stamp,
             channel_templates_migration,
         )
+        def pid_migration(connection):
+            add_column(connection, "channel_groups", "symbol TEXT NOT NULL DEFAULT 'GENERIC'")
+            connection.executescript("""CREATE TABLE IF NOT EXISTS group_connections(
+                operation_id TEXT NOT NULL, id TEXT NOT NULL,
+                from_group_id TEXT NOT NULL, to_group_id TEXT NOT NULL, label TEXT,
+                PRIMARY KEY(operation_id,id));""")
+        apply_once(
+            db,
+            15,
+            "add P&ID support: group symbol type and physical group-to-group connections",
+            stamp,
+            pid_migration,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -623,6 +639,7 @@ def snapshot() -> dict:
         data["channel_groups"] = [dict(x) for x in db.execute("SELECT * FROM channel_groups WHERE operation_id=? ORDER BY sort_order,rowid", (OPERATION_ID,))]
         data["channel_rules"] = [dict(x) for x in db.execute("SELECT * FROM channel_rules WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["channel_templates"] = [dict(x) for x in db.execute("SELECT * FROM channel_templates WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
+        data["group_connections"] = [dict(x) for x in db.execute("SELECT * FROM group_connections WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
@@ -1466,14 +1483,46 @@ def save_channel_group():
     try:
         sort_order = int(payload.get("sort_order") if payload.get("sort_order") is not None else 0)
     except (TypeError, ValueError): return jsonify(error="sort order must be an integer"), 400
+    symbol = _str_field(payload, "symbol", "GENERIC").upper() or "GENERIC"
+    if symbol not in SYMBOL_TYPES: return jsonify(error="unsupported symbol type"), 400
     with connect() as db:
         blocked = configuration_error(db)
         if blocked: return jsonify(error=blocked), 409
-        db.execute("""INSERT INTO channel_groups(operation_id,id,name,sort_order) VALUES(?,?,?,?)
-            ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order""",
-                   (OPERATION_ID, group_id, str(payload["name"]).strip(), sort_order))
+        db.execute("""INSERT INTO channel_groups(operation_id,id,name,sort_order,symbol) VALUES(?,?,?,?,?)
+            ON CONFLICT(operation_id,id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,symbol=excluded.symbol""",
+                   (OPERATION_ID, group_id, str(payload["name"]).strip(), sort_order, symbol))
         event(db,"CHANNEL_GROUP_CONFIG","INSTRUMENTATION","INFO",f"Channel group {group_id} configuration saved")
     return jsonify(ok=True, group_id=group_id)
+
+
+@control.post("/api/control/connection")
+def save_connection():
+    """A physical link between two groups (e.g. 'fuel tank -> isolation valve
+    -> combustion chamber'), for the P&ID diagram. This is metadata the
+    system cannot infer from channel data alone -- someone has to state how
+    things are actually plumbed together, once, when the group is designed."""
+    payload = request.get_json(silent=True) or {}
+    required = ("id", "from_group_id", "to_group_id")
+    if any(not str(payload.get(key, "")).strip() for key in required):
+        return jsonify(error="connection id, from group and to group are required"), 400
+    connection_id = _str_field(payload, "id")
+    if not all(char.isalnum() or char in "-_" for char in connection_id):
+        return jsonify(error="connection id may contain letters, numbers, hyphen and underscore only"), 400
+    from_group_id = _str_field(payload, "from_group_id")
+    to_group_id = _str_field(payload, "to_group_id")
+    if from_group_id == to_group_id:
+        return jsonify(error="a group cannot connect to itself"), 400
+    with connect() as db:
+        blocked = configuration_error(db)
+        if blocked: return jsonify(error=blocked), 409
+        for gid in (from_group_id, to_group_id):
+            if not db.execute("SELECT 1 FROM channel_groups WHERE operation_id=? AND id=?", (OPERATION_ID, gid)).fetchone():
+                return jsonify(error=f"group '{gid}' does not exist"), 409
+        db.execute("""INSERT INTO group_connections(operation_id,id,from_group_id,to_group_id,label) VALUES(?,?,?,?,?)
+            ON CONFLICT(operation_id,id) DO UPDATE SET from_group_id=excluded.from_group_id,to_group_id=excluded.to_group_id,label=excluded.label""",
+                   (OPERATION_ID, connection_id, from_group_id, to_group_id, _str_field(payload, "label")))
+        event(db,"PID_CONNECTION_CONFIG","INSTRUMENTATION","INFO",f"Connection {connection_id} configuration saved")
+    return jsonify(ok=True, connection_id=connection_id)
 
 
 @control.post("/api/control/channel")

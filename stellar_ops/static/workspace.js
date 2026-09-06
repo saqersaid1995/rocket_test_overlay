@@ -104,7 +104,66 @@ function dynamicPanel(item){
   return panelShell(item,groupBlocks+ungroupedBlock||'<div class="empty">NO CHANNELS CONFIGURED</div>','DYNAMIC · WIDGET REGISTRY');
 }
 PANEL_NAMES.dynamic='DYNAMIC CHANNELS';
-const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel,dynamic:dynamicPanel};
+
+// =====================================================================
+// P&ID diagram, item 11 of the dynamic channel plan.
+// =====================================================================
+// Every group is one symbol on the diagram (its `symbol` field picks
+// the shape); group_connections are the physical piping/wiring the
+// system cannot infer on its own -- entered once via System
+// Configuration. Layout is a simple longest-path DAG layering: each
+// connected group's column = 1 + the deepest column of anything
+// upstream of it, computed by BFS from root nodes (no incoming edge).
+// Groups with no connections at all are drawn separately below so
+// they're still visible without cluttering the flow diagram.
+// =====================================================================
+const PID_NODE_W=130,PID_NODE_H=70,PID_COL_W=220,PID_ROW_H=110,PID_MARGIN=30;
+const PID_SYMBOL_REGISTRY={
+  TANK:(w,h,label,val)=>`<rect x="10" y="5" width="${w-20}" height="${h-30}" rx="10" class="pid-shape pid-tank"/>${val?`<text x="${w/2}" y="${(h-30)/2+8}" text-anchor="middle" class="pid-value">${esc(val)}</text>`:''}<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-label">${esc(label)}</text>`,
+  VALVE:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5;return `<polygon points="${cx-18},${cy-14} ${cx},${cy} ${cx-18},${cy+14}" class="pid-shape pid-valve"/><polygon points="${cx+18},${cy-14} ${cx},${cy} ${cx+18},${cy+14}" class="pid-shape pid-valve"/><line x1="${cx}" y1="${cy-14}" x2="${cx}" y2="${cy-24}" class="pid-valve-stem"/><rect x="${cx-8}" y="${cy-32}" width="16" height="8" class="pid-shape pid-valve"/><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  PUMP:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5,r=18;return `<circle cx="${cx}" cy="${cy}" r="${r}" class="pid-shape pid-pump"/><polygon points="${cx-6},${cy-9} ${cx-6},${cy+9} ${cx+9},${cy}" class="pid-pump-triangle"/><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  SENSOR:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5,r=16;return `<circle cx="${cx}" cy="${cy}" r="${r}" class="pid-shape pid-sensor"/><text x="${cx}" y="${cy+4}" text-anchor="middle" class="pid-sensor-letter">${esc((label||'?').charAt(0).toUpperCase())}</text><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  CAMERA:(w,h,label,val)=>{const cx=w/2,cy=(h-30)/2+5;return `<rect x="${cx-16}" y="${cy-10}" width="32" height="20" rx="3" class="pid-shape pid-camera"/><circle cx="${cx+4}" cy="${cy}" r="6" class="pid-camera-lens"/><text x="${w/2}" y="${h-20}" text-anchor="middle" class="pid-label">${esc(label)}</text>${val?`<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}`},
+  GENERIC:(w,h,label,val)=>`<rect x="10" y="5" width="${w-20}" height="${h-30}" rx="6" class="pid-shape pid-generic"/>${val?`<text x="${w/2}" y="${(h-30)/2+8}" text-anchor="middle" class="pid-value-sm">${esc(val)}</text>`:''}<text x="${w/2}" y="${h-8}" text-anchor="middle" class="pid-label">${esc(label)}</text>`,
+};
+function computePidLayout(groups,connections){
+  const byId=new Map(groups.map(g=>[g.id,g]));
+  const incoming=new Map(groups.map(g=>[g.id,[]]));
+  const outgoing=new Map(groups.map(g=>[g.id,[]]));
+  connections.forEach(c=>{if(!byId.has(c.from_group_id)||!byId.has(c.to_group_id))return;outgoing.get(c.from_group_id).push(c.to_group_id);incoming.get(c.to_group_id).push(c.from_group_id)});
+  const connectedIds=new Set();
+  connections.forEach(c=>{if(byId.has(c.from_group_id)&&byId.has(c.to_group_id)){connectedIds.add(c.from_group_id);connectedIds.add(c.to_group_id)}});
+  const depth=new Map();
+  const queue=[...connectedIds].filter(id=>incoming.get(id).length===0);
+  queue.forEach(id=>depth.set(id,0));
+  let guard=0;
+  while(queue.length&&guard++<2000){const id=queue.shift(),d=depth.get(id);(outgoing.get(id)||[]).forEach(next=>{if(!depth.has(next)||depth.get(next)<d+1){depth.set(next,d+1);queue.push(next)}})}
+  connectedIds.forEach(id=>{if(!depth.has(id))depth.set(id,0)});
+  const columns=new Map();
+  connectedIds.forEach(id=>{const d=depth.get(id);if(!columns.has(d))columns.set(d,[]);columns.get(d).push(id)});
+  const unconnected=groups.filter(g=>!connectedIds.has(g.id)).map(g=>g.id);
+  return {columns,unconnected};
+}
+function pidPanel(item){
+  const groups=data.channel_groups||[],connections=data.group_connections||[],channels=data.channels||[],runtime=data.telemetry.channels||{};
+  if(!groups.length)return panelShell(item,'<div class="empty">NO GROUPS DEFINED — create a channel group with a symbol type first</div>','P&ID · AUTO-GENERATED');
+  const {columns,unconnected}=computePidLayout(groups,connections);
+  const maxCol=columns.size?Math.max(...columns.keys()):0;
+  const maxRows=columns.size?Math.max(...[...columns.values()].map(a=>a.length)):0;
+  const pos=new Map();
+  columns.forEach((ids,col)=>ids.forEach((id,row)=>pos.set(id,{x:PID_MARGIN+col*PID_COL_W,y:PID_MARGIN+row*PID_ROW_H})));
+  const connectedBottom=PID_MARGIN+maxRows*PID_ROW_H+(unconnected.length?40:0);
+  unconnected.forEach((id,i)=>pos.set(id,{x:PID_MARGIN+(i%4)*PID_COL_W,y:connectedBottom+Math.floor(i/4)*PID_ROW_H}));
+  const repChannel=gid=>channels.find(c=>c.group_id===gid&&c.interaction_pattern!=='COMMAND'&&c.enabled);
+  const edgesSvg=connections.map(c=>{const a=pos.get(c.from_group_id),b=pos.get(c.to_group_id);if(!a||!b)return '';const x1=a.x+PID_NODE_W,y1=a.y+PID_NODE_H/2,x2=b.x,y2=b.y+PID_NODE_H/2;return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="pid-edge" marker-end="url(#pid-arrow)"/>`+(c.label?`<text x="${(x1+x2)/2}" y="${(y1+y2)/2-6}" text-anchor="middle" class="pid-edge-label">${esc(c.label)}</text>`:'')}).join('');
+  const nodesSvg=groups.map(g=>{const p=pos.get(g.id);if(!p)return '';const rep=repChannel(g.id),v=rep?runtime[rep.id]:null,valueLabel=v&&v.value!=null?`${v.value}${rep.unit?' '+esc(rep.unit):''}`:'';const render=PID_SYMBOL_REGISTRY[g.symbol]||PID_SYMBOL_REGISTRY.GENERIC;return `<g class="pid-node" transform="translate(${p.x},${p.y})"><title>${esc(g.name)} (${esc(g.symbol)})</title>${render(PID_NODE_W,PID_NODE_H,g.name,valueLabel)}</g>`}).join('');
+  const totalWidth=Math.max(400,PID_MARGIN*2+(maxCol+1)*PID_COL_W);
+  const totalHeight=Math.max(220,connectedBottom+Math.ceil(unconnected.length/4)*PID_ROW_H+PID_MARGIN);
+  const svg=`<svg viewBox="0 0 ${totalWidth} ${totalHeight}" class="pid-svg"><defs><marker id="pid-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="pid-arrow-fill"/></marker></defs>${edgesSvg}${nodesSvg}</svg>`;
+  return panelShell(item,`<div class="pid-scroll">${svg}</div>`,'P&ID · AUTO-GENERATED');
+}
+PANEL_NAMES.pid='P&ID DIAGRAM';
+const renderers={mission:missionPanel,command:commandPanel,telemetry:telemetryPanel,derived:derivedPanel,procedure:procedurePanel,poll:pollPanel,alarms:alarmsPanel,events:eventsPanel,cameras:camerasPanel,channels:channelsPanel,network:networkPanel,storage:storagePanel,incidents:incidentsPanel,dynamic:dynamicPanel,pid:pidPanel};
 function renderWorkspace(){syncHeader();const currentCameraPanel=document.querySelector('[data-panel="cameras"]'),currentCameraSignature=currentCameraPanel?.dataset.cameraSignature;$('#workspace').className=`workspace ${locked?'locked':'editing'}`;$('#workspace').innerHTML=layout.sort((a,b)=>a.order-b.order).map(item=>(renderers[item.panel]||missionPanel)(item)).join('');const incomingCameraPanel=document.querySelector('[data-panel="cameras"]');if(currentCameraPanel&&incomingCameraPanel&&currentCameraSignature===incomingCameraPanel.dataset.cameraSignature)incomingCameraPanel.replaceWith(currentCameraPanel);bindPanelActions();bindCommandActions();bindDynamicActions();drawPlots();renderAlarmCenter();renderIncidentCenter()}
 function bindDynamicActions(){
   $$('[data-dyn-command]').forEach(el=>{

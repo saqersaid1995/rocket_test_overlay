@@ -50,3 +50,23 @@
 @media(max-width:760px){.context-topbar{height:48px}.context-topbar>div:nth-child(n+3){display:none}}
 .dyn-group{border-bottom:1px solid var(--line)}.dyn-group h4{margin:0;padding:6px 9px;font:7px ui-monospace,monospace;color:var(--muted);letter-spacing:.08em;background:#061118}.dyn-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:1px;background:var(--line2)}.dyn-tile{background:#07141b;padding:10px}.dyn-tile>small{display:block;color:var(--muted);font:7px ui-monospace,monospace;margin-bottom:6px}.dyn-number{display:flex;align-items:baseline;gap:5px}.dyn-val{font:16px ui-monospace,monospace;color:var(--text)}.dyn-unit{font:8px ui-monospace,monospace;color:var(--muted)}.dyn-gauge-track{height:4px;background:#0d232c;margin-bottom:5px}.dyn-gauge-fill{height:100%;background:var(--cyan)}.dyn-lamp{display:inline-block;padding:3px 8px;font:8px ui-monospace,monospace;border:1px solid #31505d}.dyn-lamp.ok{color:var(--green);border-color:#27664e}.dyn-lamp.bad{color:var(--red);border-color:#77353a}.dyn-text{font:9px ui-monospace,monospace;color:#89a0aa}.dyn-text.muted{color:var(--muted);font-style:italic}.dyn-tile button,.dyn-tile select,.dyn-tile input[type=range]{width:100%;background:#081922;border:1px solid #244653;color:#89a4af;padding:5px;font:7px ui-monospace,monospace}.dyn-tile button:hover{border-color:var(--cyan);color:var(--cyan)}
 .dyn-toggle-pair{display:flex;gap:4px}.dyn-toggle-pair button{flex:1}
+.pid-scroll{overflow:auto;padding:8px}
+.pid-svg{display:block;min-width:100%}
+.pid-shape{fill:#0b1f28;stroke:var(--cyan);stroke-width:1.5}
+.pid-tank{fill:#0d2530}
+.pid-valve{fill:#1a2f1c;stroke:var(--green)}
+.pid-pump{fill:#0b1f28;stroke:var(--cyan)}
+.pid-pump-triangle{fill:var(--cyan)}
+.pid-sensor{fill:#241a2f;stroke:#b98af0}
+.pid-sensor-letter{fill:#d9c2ff;font:700 11px ui-monospace,monospace}
+.pid-camera{fill:#2f1a1a;stroke:var(--red)}
+.pid-camera-lens{fill:var(--red)}
+.pid-generic{fill:#0d1a20;stroke:#4a6472}
+.pid-valve-stem{stroke:var(--green);stroke-width:1.5}
+.pid-label{fill:#9db3bc;font:700 8px ui-monospace,monospace}
+.pid-value{fill:#e6f4f8;font:700 12px ui-monospace,monospace}
+.pid-value-sm{fill:#7fe6c4;font:700 9px ui-monospace,monospace}
+.pid-edge{stroke:#3a5866;stroke-width:1.5}
+.pid-arrow-fill{fill:#3a5866}
+.pid-edge-label{fill:var(--muted);font:7px ui-monospace,monospace}
+.pid-node:hover .pid-shape{stroke-width:2.5}
