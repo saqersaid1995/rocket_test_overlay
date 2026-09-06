@@ -459,6 +459,35 @@ def _initialize_control_db() -> None:
             stamp,
             channel_rules_migration,
         )
+        def channel_templates_migration(connection):
+            connection.executescript("""CREATE TABLE IF NOT EXISTS channel_templates(
+                operation_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+                description TEXT, definition_json TEXT NOT NULL,
+                PRIMARY KEY(operation_id,id));""")
+            valve_definition = json.dumps([
+                {"id": "{base_id}.command", "name": "{base_name} command", "unit": "state",
+                 "interaction_pattern": "COMMAND", "control_widget": "TOGGLE",
+                 "command_payload_json": json.dumps({"type": "VALVE_SET", "state": "{value}"}),
+                 "source_id": "{source_id}", "group_id": "{group_id}"},
+                {"id": "{base_id}.position", "name": "{base_name} position", "unit": "state",
+                 "interaction_pattern": "STREAM", "display_type": "STATUS_LAMP",
+                 "raw_field": "{base_id}_position", "source_id": "{source_id}", "group_id": "{group_id}",
+                 "linked_channel_id": "{base_id}.command"},
+            ])
+            connection.execute(
+                "INSERT OR IGNORE INTO channel_templates(operation_id,id,name,description,definition_json) VALUES(?,?,?,?,?)",
+                (OPERATION_ID, "valve-command-feedback", "Valve (command + position feedback)",
+                 "The standard linked pair: a COMMAND channel to open/close, and a STREAM "
+                 "channel confirming actual position -- discussed at length in the design "
+                 "review before this system was built.", valve_definition),
+            )
+        apply_once(
+            db,
+            14,
+            "add channel_templates: reusable multi-channel patterns (e.g. valve = command+feedback)",
+            stamp,
+            channel_templates_migration,
+        )
         db.execute("INSERT OR IGNORE INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (OPERATION_ID, "QST-001", "RNX-71V Static Qualification", "STATIC_MOTOR_TEST",
                     "SIMULATION", "CHECKOUT", None, None, 10, None, stamp))
@@ -593,6 +622,7 @@ def snapshot() -> dict:
         data["channel_integrations"] = [dict(x) for x in db.execute("SELECT * FROM channel_integrations WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["channel_groups"] = [dict(x) for x in db.execute("SELECT * FROM channel_groups WHERE operation_id=? ORDER BY sort_order,rowid", (OPERATION_ID,))]
         data["channel_rules"] = [dict(x) for x in db.execute("SELECT * FROM channel_rules WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
+        data["channel_templates"] = [dict(x) for x in db.execute("SELECT * FROM channel_templates WHERE operation_id=? ORDER BY rowid", (OPERATION_ID,))]
         data["replays"] = [dict(x) for x in db.execute("SELECT id,filename,uploaded_at,row_count,columns_json,active FROM replay_datasets WHERE operation_id=? ORDER BY id DESC", (OPERATION_ID,))]
         data["edge_sessions"] = [dict(x) for x in db.execute("SELECT * FROM edge_sessions ORDER BY last_seen DESC LIMIT 20")]
         data["runs"] = [dict(x) for x in db.execute("SELECT * FROM test_runs WHERE operation_id=? ORDER BY id DESC",(OPERATION_ID,))]
@@ -1316,6 +1346,72 @@ def execute_channel_command(channel_id: str):
         event(db, "CHANNEL_COMMAND", channel_id, "INFO",
               f"Command sent for channel {channel_id}: value={payload.get('value')}")
     return jsonify(ok=True, channel_id=channel_id, value=payload.get("value"))
+
+
+@control.post("/api/control/template")
+def save_template():
+    """A reusable multi-channel pattern (e.g. valve = COMMAND + STREAM linked
+    pair). definition_json is a list of channel payloads (the same shape
+    save_channel() accepts) with {base_id}/{base_name}/{source_id}/{group_id}
+    placeholders, applied in order via /api/control/template/<id>/apply."""
+    payload = request.get_json(silent=True) or {}
+    required = ("id", "name", "definition_json")
+    if any(not str(payload.get(key, "")).strip() for key in required):
+        return jsonify(error="template id, name and definition are required"), 400
+    template_id = _str_field(payload, "id")
+    if not all(char.isalnum() or char in "-_" for char in template_id):
+        return jsonify(error="template id may contain letters, numbers, hyphen and underscore only"), 400
+    definition_raw = payload["definition_json"]
+    try:
+        definition = json.loads(definition_raw) if isinstance(definition_raw, str) else definition_raw
+    except (TypeError, ValueError):
+        return jsonify(error="definition must be valid JSON"), 400
+    if not isinstance(definition, list) or not definition:
+        return jsonify(error="definition must be a non-empty list of channel definitions"), 400
+    with connect() as db:
+        db.execute("""INSERT INTO channel_templates(operation_id,id,name,description,definition_json)
+            VALUES(?,?,?,?,?) ON CONFLICT(operation_id,id) DO UPDATE SET
+            name=excluded.name,description=excluded.description,definition_json=excluded.definition_json""",
+                   (OPERATION_ID, template_id, _str_field(payload, "name"), _str_field(payload, "description"),
+                    json.dumps(definition)))
+        event(db, "TEMPLATE_CONFIG", "INSTRUMENTATION", "INFO", f"Template {template_id} configuration saved")
+    return jsonify(ok=True, template_id=template_id)
+
+
+@control.post("/api/control/template/<template_id>/apply")
+def apply_template(template_id: str):
+    payload = request.get_json(silent=True) or {}
+    base_id = _str_field(payload, "base_id")
+    base_name = _str_field(payload, "base_name")
+    if not base_id or not base_name:
+        return jsonify(error="base_id and base_name are required to apply a template"), 400
+    if not all(char.isalnum() or char in "-_." for char in base_id):
+        return jsonify(error="base_id may contain letters, numbers, hyphen, underscore and dot only"), 400
+    source_id = _str_field(payload, "source_id")
+    group_id = _str_field(payload, "group_id")
+    with connect() as db:
+        template = db.execute(
+            "SELECT definition_json FROM channel_templates WHERE operation_id=? AND id=?",
+            (OPERATION_ID, template_id),
+        ).fetchone()
+    if not template:
+        return jsonify(error="template not found"), 404
+    definition = json.loads(template["definition_json"])
+
+    def substitute(value):
+        if isinstance(value, str):
+            return (value.replace("{base_id}", base_id).replace("{base_name}", base_name)
+                    .replace("{source_id}", source_id).replace("{group_id}", group_id))
+        return value
+
+    client = current_app.test_client()
+    results = []
+    for channel_def in definition:
+        filled = {key: substitute(value) for key, value in channel_def.items()}
+        response = client.post("/api/control/channel", json=filled)
+        results.append({"id": filled.get("id"), "status": response.status_code, "body": response.get_json()})
+    failed = [item for item in results if item["status"] >= 400]
+    return jsonify(ok=not failed, failed_count=len(failed), results=results)
 
 
 @control.post("/api/control/rule")
