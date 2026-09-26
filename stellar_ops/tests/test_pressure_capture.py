@@ -9,6 +9,7 @@ from unittest.mock import patch
 from openpyxl import load_workbook
 
 from stellar_ops.edge_gateway import database
+from stellar_ops import control as control_module
 from stellar_ops.pressure_capture import (
     PressureCaptureError,
     build_excel,
@@ -158,6 +159,28 @@ class PressureCaptureTests(unittest.TestCase):
                 ).fetchone()
             self.assertIsNotNone(reboot)
         finally:
+            directory.cleanup()
+
+    def test_dynamic_bench_relay_arms_capture_before_sending_on(self):
+        directory, path = self.make_db()
+        original_db = control_module.CONTROL_DB
+        try:
+            control_module.CONTROL_DB = path
+            with patch(
+                "stellar_ops.edge_runtime.send_bench_led_state",
+                return_value={"ok": True, "device_id": "PT-01", "state": "ON"},
+            ) as send:
+                result = control_module._execute_bench_led_set("PT-01", True)
+            self.assertTrue(result["ok"])
+            self.assertIn("capture", result)
+            send.assert_called_once_with(device_id="PT-01", on=True)
+            with database(path) as db:
+                active = db.execute(
+                    "SELECT * FROM pressure_captures WHERE state='ACTIVE'"
+                ).fetchone()
+            self.assertIsNotNone(active)
+        finally:
+            control_module.CONTROL_DB = original_db
             directory.cleanup()
 
     def test_stale_or_missing_telemetry_blocks_capture(self):
