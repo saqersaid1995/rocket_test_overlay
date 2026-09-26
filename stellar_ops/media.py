@@ -16,7 +16,8 @@ from flask import (Blueprint, Response, current_app, jsonify, render_template,
 from .control import OPERATION_ID, connect, event, init_control_db, snapshot
 from .database import add_column
 from .overlay_preview import OverlayPreviewError, render_overlay_preview
-from .camera_runtime import drain_runtime_events, mjpeg_frames
+from .camera_runtime import (camera_recording_status, drain_runtime_events, mjpeg_frames,
+                             start_camera_recordings, stop_camera_recordings)
 from .scene_compositor import (SceneCompositorError, compose_scene_jpeg,
                                dissolve_jpegs, extract_mjpeg_jpeg, mjpeg_part, slate_jpeg)
 from .broadcast_runtime import (configure_audio, load_stream_key, output_metrics, output_status,
@@ -41,6 +42,8 @@ from .broadcast_telemetry import (
 media = Blueprint("media", __name__)
 _PREVIEW_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _PREVIEW_CACHE_LOCK = threading.Lock()
+_MISSION_RAW_RECORDING_SESSION: int | None = None
+_MISSION_RAW_RECORDING_DEVICE: str | None = None
 
 
 def now() -> str:
@@ -367,8 +370,105 @@ def api_media_snapshot():
 
 @media.get("/api/media/recording/status")
 def api_media_recording_status():
-    """Lightweight Program recording status for Mission Control."""
+    """Lightweight Program recording status for Broadcast Control."""
     return jsonify(recording=program_recording_status())
+
+
+def _mission_raw_camera_config(db) -> dict:
+    session = db.execute(
+        "SELECT program_scene_id FROM broadcast_sessions WHERE operation_id=?",
+        (OPERATION_ID,),
+    ).fetchone()
+    if not session or not session["program_scene_id"]:
+        raise RuntimeError("Program scene is not assigned")
+    scene = db.execute(
+        "SELECT sources_json FROM broadcast_scenes WHERE id=?",
+        (session["program_scene_id"],),
+    ).fetchone()
+    sources = json.loads(scene["sources_json"] or "[]") if scene else []
+    camera_id = next(
+        (str(item.get("source")) for item in sources if item.get("kind") == "camera"),
+        "",
+    )
+    if not camera_id:
+        raise RuntimeError("Program scene has no camera source")
+    row = db.execute(
+        """SELECT d.id AS device_id,d.endpoint,i.adapter_type,i.config_json,i.enabled
+             FROM devices d JOIN device_integrations i
+               ON i.operation_id=d.operation_id AND i.device_id=d.id
+            WHERE d.operation_id=? AND d.id=? AND d.device_type='IP-CAMERA'""",
+        (OPERATION_ID, camera_id),
+    ).fetchone()
+    if not row or not row["enabled"]:
+        raise RuntimeError("Program camera is not enabled")
+    config = json.loads(row["config_json"] or "{}")
+    return {
+        "device_id": row["device_id"],
+        "adapter": row["adapter_type"],
+        "endpoint": config.get("endpoint") or row["endpoint"] or "",
+        "username": config.get("username", ""),
+        "profile": config.get("profile", ""),
+        "segment_seconds": 3600,
+    }
+
+
+@media.get("/api/media/mission-recording/status")
+def mission_recording_status():
+    global _MISSION_RAW_RECORDING_SESSION, _MISSION_RAW_RECORDING_DEVICE
+    if not _MISSION_RAW_RECORDING_DEVICE:
+        return jsonify(recording={"state":"STOPPED","mode":"RAW_MAIN","device_id":None})
+    detail = camera_recording_status(_MISSION_RAW_RECORDING_DEVICE)
+    detail = dict(detail)
+    detail["mode"] = "RAW_MAIN"
+    detail["device_id"] = _MISSION_RAW_RECORDING_DEVICE
+    return jsonify(recording=detail)
+
+
+@media.post("/api/media/mission-recording")
+def mission_recording_action():
+    global _MISSION_RAW_RECORDING_SESSION, _MISSION_RAW_RECORDING_DEVICE
+    action = str(body().get("action", "")).upper()
+    if action not in {"START", "STOP"}:
+        return jsonify(error="action must be START or STOP"), 400
+
+    if action == "START":
+        if _MISSION_RAW_RECORDING_DEVICE:
+            current = camera_recording_status(_MISSION_RAW_RECORDING_DEVICE)
+            if current.get("state") == "RECORDING":
+                return jsonify(error="Raw camera recording is already active"), 409
+        with connect() as db:
+            try:
+                camera = _mission_raw_camera_config(db)
+            except RuntimeError as exc:
+                return jsonify(error=str(exc)), 409
+        session_id = int(datetime.now(timezone.utc).timestamp() * 1000)
+        results = start_camera_recordings(
+            [camera],
+            Path(current_app.instance_path) / "raw-camera",
+            session_id,
+        )
+        result = results[0] if results else {"state":"FAILED","message":"recorder did not start"}
+        if result.get("state") != "RECORDING":
+            return jsonify(error=result.get("message","raw camera recording failed"), recording=result), 409
+        _MISSION_RAW_RECORDING_SESSION = session_id
+        _MISSION_RAW_RECORDING_DEVICE = camera["device_id"]
+        detail = camera_recording_status(camera["device_id"])
+        detail = dict(detail)
+        detail.update({"mode":"RAW_MAIN","device_id":camera["device_id"]})
+        return jsonify(ok=True, detail="Raw main-camera recording started", recording=detail)
+
+    if not _MISSION_RAW_RECORDING_SESSION:
+        return jsonify(ok=True, detail="Raw camera recording is already stopped",
+                       recording={"state":"STOPPED","mode":"RAW_MAIN"})
+
+    results = stop_camera_recordings(_MISSION_RAW_RECORDING_SESSION)
+    result = results[0] if results else {"state":"STOPPED"}
+    result = dict(result)
+    result["mode"] = "RAW_MAIN"
+    result["device_id"] = _MISSION_RAW_RECORDING_DEVICE
+    _MISSION_RAW_RECORDING_SESSION = None
+    _MISSION_RAW_RECORDING_DEVICE = None
+    return jsonify(ok=True, detail="Raw main-camera recording stopped", recording=result)
 
 
 def body() -> dict:
