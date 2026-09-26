@@ -365,6 +365,12 @@ def api_media_snapshot():
     return jsonify(media_snapshot())
 
 
+@media.get("/api/media/recording/status")
+def api_media_recording_status():
+    """Lightweight Program recording status for Mission Control."""
+    return jsonify(recording=program_recording_status())
+
+
 def body() -> dict:
     return request.get_json(silent=True) or {}
 
