@@ -302,6 +302,48 @@ def start_capture(
         db.close()
 
 
+def mark_relay_sent(db_path: Path, capture_id: int, relay_at: str | None = None) -> dict:
+    """Set T+0 to the actual server-side relay send instant.
+
+    start_capture intentionally arms the historian first. Once the Ethernet
+    relay command succeeds, this rebases any samples collected during those few
+    milliseconds so exported time zero corresponds to the relay command.
+    """
+    db = connect_database(db_path)
+    try:
+        ensure_schema(db)
+        row = db.execute(
+            "SELECT * FROM pressure_captures WHERE id=?", (capture_id,)
+        ).fetchone()
+        if not row:
+            raise PressureCaptureError("pressure capture not found")
+        new_stamp = relay_at or utc_now()
+        old_dt = _parse_stamp(row["trigger_at"])
+        new_dt = _parse_stamp(new_stamp)
+        shift = (old_dt - new_dt).total_seconds()
+        db.execute(
+            """UPDATE pressure_capture_samples
+               SET relative_time_s=relative_time_s+?
+               WHERE capture_id=?""",
+            (shift, capture_id),
+        )
+        db.execute(
+            """UPDATE pressure_captures SET
+                 trigger_at=?,
+                 boot_anchor_rel_s=CASE WHEN boot_anchor_rel_s IS NULL THEN NULL ELSE boot_anchor_rel_s+? END,
+                 last_sample_rel_s=CASE WHEN last_sample_rel_s IS NULL THEN NULL ELSE last_sample_rel_s+? END,
+                 peak_time_s=CASE WHEN peak_time_s IS NULL THEN NULL ELSE peak_time_s+? END,
+                 below_since_rel=CASE WHEN below_since_rel IS NULL THEN NULL ELSE below_since_rel+? END
+               WHERE id=?""",
+            (new_stamp, shift, shift, shift, shift, capture_id),
+        )
+        _event(db, capture_id, "RELAY_SENT", "Pressure timeline rebased to successful BENCH_LED_SET ON command")
+        db.commit()
+        return capture_status(db, capture_id)
+    finally:
+        db.close()
+
+
 def cancel_capture(db_path: Path, capture_id: int, reason: str) -> None:
     db = connect_database(db_path)
     try:
@@ -421,10 +463,10 @@ def ingest_edge_batch(db_path: Path, message: dict, received_at: str) -> None:
                     f"ESP boot id changed from {capture['last_boot_id']} to {boot_id}; capture continued",
                     missing,
                 )
-            anchor_ext = first_ext
-            anchor_rel = approx_rel
             wraps = 0
             first_ext = first_raw
+            anchor_ext = first_ext
+            anchor_rel = approx_rel
         elif same_boot and last_ext is not None:
             expected = int(last_ext) + period_us
             time_gap_samples = max(0, int(round((first_ext - expected) / period_us)))
