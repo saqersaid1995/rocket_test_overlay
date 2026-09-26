@@ -1375,8 +1375,42 @@ def camera_popout(device_id: str):
 # generalizes *routing*, it does not add any new hardware-facing code.
 def _execute_bench_led_set(source_id: str, value):
     from .edge_runtime import send_bench_led_state
+    from .pressure_capture import (
+        PressureCaptureError,
+        cancel_capture,
+        mark_relay_sent,
+        start_capture,
+    )
+
     on = value in (True, "ON", "on", 1, "1", "true")
-    return send_bench_led_state(device_id=source_id, on=on)
+    capture = None
+    if on:
+        try:
+            capture = start_capture(
+                CONTROL_DB,
+                OPERATION_ID,
+                device_id=source_id,
+                actor="TEST_DIRECTOR",
+            )
+        except PressureCaptureError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    result = send_bench_led_state(device_id=source_id, on=on)
+    if not result.get("ok"):
+        if capture is not None:
+            cancel_capture(
+                CONTROL_DB,
+                int(capture["id"]),
+                "Relay command failed after logger was armed: "
+                + result.get("error", "unknown Ethernet error"),
+            )
+        return result
+
+    if capture is not None:
+        capture = mark_relay_sent(CONTROL_DB, int(capture["id"]))
+        result = dict(result)
+        result["capture"] = capture
+    return result
 
 
 COMMAND_EXECUTORS = {"BENCH_LED_SET": _execute_bench_led_set}
