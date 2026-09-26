@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - development/stellar-ops-v2
+      - feature/pressure-capture
   pull_request:
     branches:
       - development/stellar-ops-v2
