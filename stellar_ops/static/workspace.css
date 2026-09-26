@@ -145,3 +145,19 @@
   color:inherit;
   font-weight:700;
 }
+
+
+/* Mission-page Program video recording */
+#mission-video-record{min-width:96px}
+#mission-video-record.video-recording-active{
+  border-color:#ff4d57;
+  box-shadow:0 0 0 1px #ff4d57 inset,0 0 14px rgba(255,77,87,.3);
+  font-weight:800;
+}
+#mission-video-record.video-recording-active::before{
+  content:"● ";
+}
+#mission-video-record.video-recording-failed{
+  border-color:#f0b63e;
+  font-weight:800;
+}
