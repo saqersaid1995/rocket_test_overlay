@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .edge_protocol import ProtocolError, decode_frame, encode_frame
 from .database import add_column, connect_database
+from .pressure_capture import ingest_edge_batch
 
 DEFAULT_DB = Path(os.environ.get("STELLAR_OPS_DATA", Path(__file__).resolve().parent / "data")) / "control.db"
 
@@ -93,16 +94,22 @@ class EdgeHandler(socketserver.StreamRequestHandler):
                         last=session["last_sequence"]; gap=max(0,msg["sequence"]-(last+1)) if last is not None and msg["sequence"] > last else 0
                         try: active_run=db.execute("SELECT id FROM test_runs WHERE active=1 ORDER BY id DESC LIMIT 1").fetchone()
                         except sqlite3.OperationalError: active_run=None
+                        received_stamp = now()
                         inserted = db.execute("""INSERT OR IGNORE INTO edge_batches(device_id,boot_id,sequence,received_at,first_sample_us,sample_period_us,sample_count,channels_json,run_id)
-                          VALUES(?,?,?,?,?,?,?,?,?)""",(self.device_id,self.boot_id,msg["sequence"],now(),msg["first_sample_us"],msg["sample_period_us"],msg["sample_count"],json.dumps(msg["channels"],separators=(",",":")),active_run["id"] if active_run else None))
+                          VALUES(?,?,?,?,?,?,?,?,?)""",(self.device_id,self.boot_id,msg["sequence"],received_stamp,msg["first_sample_us"],msg["sample_period_us"],msg["sample_count"],json.dumps(msg["channels"],separators=(",",":")),active_run["id"] if active_run else None))
                         if inserted.rowcount:
                             db.execute("""UPDATE edge_sessions SET last_seen=?,last_sequence=CASE WHEN last_sequence IS NULL OR ? > last_sequence THEN ? ELSE last_sequence END,
                               total_samples=total_samples+?,sequence_gaps=sequence_gaps+?,status='STREAMING'
-                              WHERE device_id=? AND boot_id=?""",(now(),msg["sequence"],msg["sequence"],msg["sample_count"],gap,self.device_id,self.boot_id))
+                              WHERE device_id=? AND boot_id=?""",(received_stamp,msg["sequence"],msg["sequence"],msg["sample_count"],gap,self.device_id,self.boot_id))
                         else:
                             db.execute("UPDATE edge_sessions SET last_seen=?,status='STREAMING' WHERE device_id=? AND boot_id=?",
-                                       (now(),self.device_id,self.boot_id))
+                                       (received_stamp,self.device_id,self.boot_id))
                         db.commit()
+                        if inserted.rowcount:
+                            # Feed the exact accepted batch into the pressure-capture
+                            # path after the historian commit. This preserves every
+                            # 200 Hz sample and avoids a second network data source.
+                            ingest_edge_batch(self.server.db_path, msg, received_stamp)
                         self.reply({"type":"ACK","ack_sequence":msg["sequence"],"gateway_time_utc":now()})
                 except ProtocolError as exc:
                     try:
