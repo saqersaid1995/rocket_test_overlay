@@ -391,6 +391,14 @@ def start_program_recording(cameras: list[dict], scene: dict, directory: Path) -
                 errors = list(item.get("errors", []))
                 if _program_recording is item:
                     _program_recording = None
+            if thread.is_alive():
+                thread.join(timeout=1)
+            for stream in (process.stdin, process.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except OSError:
+                    pass
             if path.exists() and path.stat().st_size == 0:
                 path.unlink(missing_ok=True)
             detail = errors[-1] if errors else f"FFmpeg exited with code {code}"
@@ -460,6 +468,12 @@ def stop_program_recording() -> dict:
     thread = item.get("progress_thread")
     if thread and thread.is_alive():
         thread.join(timeout=1)
+    for stream in (process.stdin, process.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass
 
     path = Path(item["path"])
     size = path.stat().st_size if path.exists() else 0
