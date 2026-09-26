@@ -145,5 +145,83 @@ class BroadcastRuntimeTests(unittest.TestCase):
             server.server_close()
 
 
+    def test_start_stop_program_recording_creates_verified_playable_file(self):
+        output = io.BytesIO()
+        Image.new("RGB", (320, 180), (35, 120, 210)).save(output, "JPEG")
+        jpeg = output.getvalue()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.end_headers()
+                try:
+                    while True:
+                        self.wfile.write(
+                            b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                        )
+                        self.wfile.flush()
+                        time.sleep(1 / 60)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            source = f"http://127.0.0.1:{server.server_port}/program.mjpg"
+            with tempfile.TemporaryDirectory() as directory:
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "STELLAR_PROGRAM_BUS_URL": source,
+                        "STELLAR_BROADCAST_WIDTH": "640",
+                        "STELLAR_BROADCAST_HEIGHT": "360",
+                        "STELLAR_BROADCAST_FPS": "30",
+                    },
+                ):
+                    started = broadcast_runtime.start_program_recording(
+                        [], {}, Path(directory)
+                    )
+                    self.assertEqual(started["state"], "RECORDING")
+                    status = broadcast_runtime.program_recording_status()
+                    self.assertEqual(status["state"], "RECORDING")
+                    time.sleep(0.35)
+                    stopped = broadcast_runtime.stop_program_recording()
+
+                self.assertEqual(stopped["state"], "RECORDED", stopped.get("error"))
+                self.assertTrue(stopped["verified"])
+                target = Path(stopped["path"])
+                self.assertTrue(target.exists())
+                self.assertGreater(target.stat().st_size, 3_000)
+
+                import cv2
+                capture = cv2.VideoCapture(str(target))
+                ok, frame = capture.read()
+                capture.release()
+                self.assertTrue(ok)
+                self.assertEqual(frame.shape[:2], (360, 640))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_second_program_recording_is_rejected_while_first_is_active(self):
+        class Process:
+            @staticmethod
+            def poll():
+                return None
+
+        broadcast_runtime._program_recording = {
+            "process": Process(),
+            "path": "/tmp/already-recording.mkv",
+            "started_at": time.time(),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "already active"):
+                broadcast_runtime.start_program_recording([], {}, Path(directory))
+
+
 if __name__ == "__main__":
     unittest.main()
