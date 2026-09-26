@@ -32,8 +32,6 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
-      - name: Install Chromium for browser acceptance
-        run: python -m playwright install --with-deps chromium
       - name: Check pressure capture JavaScript
         run: node --check stellar_ops/static/pressure_capture.js
       - name: Run non-browser unit suite
