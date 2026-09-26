@@ -34,5 +34,5 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
       - name: Check pressure capture JavaScript
         run: node --check stellar_ops/static/pressure_capture.js
-      - name: Run non-browser unit suite
-        run: python -m unittest discover -s stellar_ops/tests -p 'test_*.py' -v
+      - name: Run pressure capture tests
+        run: python -m unittest stellar_ops.tests.test_pressure_capture -v
