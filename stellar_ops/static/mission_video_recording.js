@@ -27,20 +27,20 @@
         startedAt = Date.now() - duration * 1000;
       }
       button.textContent = `STOP REC · ${elapsedText()}`;
-      button.title = recording?.path
-        ? `Recording Program video: ${recording.path}`
-        : 'Program video recording is active';
+      button.title = recording?.file
+        ? `Recording RAW main camera: ${recording.file}`
+        : 'RAW main-camera recording is active';
       return;
     }
 
     startedAt = null;
     button.textContent = state === 'FAILED' ? 'VIDEO REC FAILED' : 'VIDEO REC';
-    button.title = recording?.error || 'Start Program video recording';
+    button.title = recording?.error || 'Record RAW main camera at native quality';
   }
 
   async function status() {
     try {
-      const response = await fetch('/api/media/recording/status', {cache: 'no-store'});
+      const response = await fetch('/api/media/mission-recording/status', {cache: 'no-store'});
       const payload = await response.json();
       if (response.ok) paint(payload.recording || {});
     } catch (_) {
@@ -52,9 +52,9 @@
     if (busy) return;
     busy = true;
     button.disabled = true;
-    const action = state === 'RECORDING' ? 'STOP_RECORDING' : 'START_RECORDING';
+    const action = state === 'RECORDING' ? 'STOP' : 'START';
     try {
-      const response = await fetch('/api/media/broadcast', {
+      const response = await fetch('/api/media/mission-recording', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({action}),
@@ -63,16 +63,16 @@
       if (!response.ok) throw new Error(payload.error || 'Video recording command failed');
 
       paint(payload.recording || {
-        state: action === 'START_RECORDING' ? 'RECORDING' : 'STOPPED',
+        state: action === 'START' ? 'RECORDING' : 'STOPPED',
       });
 
       if (typeof toast === 'function') {
-        if (action === 'START_RECORDING') {
-          toast('Program video recording started');
+        if (action === 'START') {
+          toast('Raw high-quality camera recording started');
         } else if (payload.recording?.state === 'RECORDED') {
           toast('Video saved and verified');
         } else {
-          toast('Program video recording stopped');
+          toast('Raw camera recording stopped');
         }
       }
     } catch (error) {
