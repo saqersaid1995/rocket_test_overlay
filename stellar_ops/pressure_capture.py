@@ -511,15 +511,20 @@ def ingest_edge_batch(db_path: Path, message: dict, received_at: str) -> None:
                 peak_bar = pressure_bar
                 peak_time = rel
 
-            if pressure_bar > float(capture["threshold_bar"]):
+            threshold = float(capture["threshold_bar"])
+            if pressure_bar > threshold:
                 seen_above = True
                 below_since = None
-            elif seen_above:
+            elif seen_above and pressure_bar < threshold:
                 if below_since is None:
                     below_since = rel
                 elif (rel - float(below_since)) * 1000.0 >= int(capture["settle_ms"]):
                     state = "COMPLETED"
                     stop_reason = "PRESSURE_DECAY_BELOW_THRESHOLD"
+            elif seen_above:
+                # Exactly at the threshold is not "below" it, so it breaks the
+                # continuous-below-threshold settling interval.
+                below_since = None
 
             phase = _phase(rel, pressure_bar, seen_above, float(capture["threshold_bar"]))
             inserted = db.execute(
