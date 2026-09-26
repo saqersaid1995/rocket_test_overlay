@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify
 
 from .control import CONTROL_DB, OPERATION_ID, connect, event
 from .edge_runtime import send_bench_led_state
-from .pressure_capture import PressureCaptureError, cancel_capture, start_capture
+from .pressure_capture import PressureCaptureError, cancel_capture, mark_relay_sent, start_capture
 
 bench_ignition = Blueprint("bench_ignition", __name__)
 _lock = threading.RLock()
@@ -60,6 +60,9 @@ def _set_state(on: bool):
         with _lock:
             _state["last_result"] = result.get("error", "Ethernet bench LED command failed")
         return jsonify(ok=False, error=_state["last_result"], **_snapshot()), 503
+
+    if capture is not None:
+        capture = mark_relay_sent(CONTROL_DB, int(capture["id"]))
 
     with _lock:
         _state["active"] = on
