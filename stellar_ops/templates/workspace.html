@@ -68,6 +68,7 @@
     <select id="time-window" aria-label="Telemetry time window"><option value="30">30 SEC</option><option value="120">2 MIN</option><option value="600">10 MIN</option><option value="0">FULL RUN</option></select>
     <button id="jump-ignition" title="Bench simulation only — no physical output">IGNITION TEST</button>
     <button id="pressure-log" title="Open high-rate pressure capture log">PRESSURE LOG</button>
+    <button id="mission-video-record" title="Start or stop Program video recording">VIDEO REC</button>
     <span id="mission-time">T−00:00:10.000</span>
   </div>
   <button id="kiosk">KIOSK</button>
@@ -120,6 +121,7 @@
 <script src="{{url_for('static',filename='workspace_stability.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='bench_ignition.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='pressure_capture.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='mission_video_recording.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='weather_panel.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='airspace_panel_v12.js',v=system_identity.commit)}}"></script>
 </body>
