@@ -18,8 +18,8 @@ ${panel('PROGRAM STATUS',`<div class="program-summary"><small>NOW ON PROGRAM</sm
 ${panel('SYSTEM FLOW',`<div class="flow"><span>SOURCES<small>Telemetry · Cameras</small></span><i>→</i><span>COMPOSITIONS<small>Graphs · Video walls</small></span><i>→</i><span>DISPLAYS<small>Operator screens</small></span><i>→</i><span>PROGRAM<small>Public broadcast</small></span></div>`,'full','ARCHITECTURE')}</div>`}
 function cameraSourceCard(c){
  const status=c.runtime_live?'LIVE':c.configured?'OFFLINE':'NOT CONFIGURED';
- const picture=c.runtime_live
-  ? `<div class="source-video"><img src="${c.stream_url}" alt="${esc(c.name)} live preview"><span>${tag('LIVE')}</span></div>`
+ const picture=c.configured
+  ? `<div class="source-video"><img src="${c.stream_url}" alt="${esc(c.name)} live preview"><span>${tag(c.runtime_live?'LIVE':(c.runtime_status||'CONNECTING'))}</span></div>`
   : `<div class="source-video empty-camera"><b>${esc(c.device_id)}</b><small>${esc(c.runtime_status||status)}</small></div>`;
  return `<article class="camera-source-card">${picture}<div class="camera-source-info"><div><code>${esc(c.device_id)}</code><h3>${esc(c.name)}</h3></div><div class="source-facts"><span>CONNECTION <b>${esc(status)}</b></span><span>RECORDING <b>${esc(c.recording||'STOPPED')}</b></span><span>OWNED BY <b>SYSTEM CONFIGURATION</b></span></div><div class="source-actions">${c.runtime_live?`<a href="${c.popout_url}" target="_blank" rel="noopener">OPEN CAMERA ↗</a>`:''}<a href="/control">CAMERA DIAGNOSTICS →</a></div></div></article>`;
 }
@@ -51,7 +51,7 @@ function sceneMonitor(s,bus=''){
  const source=s.sources.find(x=>x.kind==='camera');
  const camera=D.camera_profiles.find(x=>x.device_id===source?.source);
  const packageInfo=D.overlay_packages.find(x=>x.id===s.overlay_package_id);
- const picture=camera?.runtime_live
+ const picture=camera?.configured
   ? `<img class="camera-layer" src="${bus?`/api/media/bus/${bus}/stream.mjpg`:`/api/media/scene/${s.id}/stream.mjpg`}" alt="${esc(camera.name)} composited scene">`
   : `<div class="monitor-offline"><b>${esc(s.name)}</b><small>${camera?esc(camera.runtime_status):'CONTROLLED SLATE'}</small></div>`;
  // The scene endpoint burns the ROTPL layer into the video frame. Keeping a
@@ -61,7 +61,7 @@ function sceneMonitor(s,bus=''){
 }
 function sourceDeck(){
  const liveScenes=D.broadcast_scenes.filter(s=>s.scene_type==='LIVE');
- return `<section class="source-deck"><header><b>CAMERAS & LIVE SCENES</b><small>SELECT DIRECTLY TO PREVIEW</small></header><div>${liveScenes.map(s=>{const source=s.sources.find(x=>x.kind==='camera'),camera=D.camera_profiles.find(c=>c.device_id===source?.source);return `<button class="source-shot ${s.id===D.broadcast.preview_scene_id?'preview':''}" data-preview="${s.id}">${camera?.runtime_live?`<img src="${camera.stream_url}" alt="">`:'<span class="source-offline">NO VIDEO</span>'}<strong>${esc(s.name)}</strong><small>${esc(camera?.device_id||'NO CAMERA')}</small></button>`}).join('')}</div></section>`;
+ return `<section class="source-deck"><header><b>CAMERAS & LIVE SCENES</b><small>SELECT DIRECTLY TO PREVIEW</small></header><div>${liveScenes.map(s=>{const source=s.sources.find(x=>x.kind==='camera'),camera=D.camera_profiles.find(c=>c.device_id===source?.source);return `<button class="source-shot ${s.id===D.broadcast.preview_scene_id?'preview':''}" data-preview="${s.id}">${camera?.configured?`<img src="${camera.stream_url}" alt="">`:'<span class="source-offline">NO VIDEO</span>'}<strong>${esc(s.name)}</strong><small>${esc(camera?.device_id||'NO CAMERA')}</small></button>`}).join('')}</div></section>`;
 }
 function live(){
  const b=D.broadcast,program=scene(b.program_scene_id),preview=scene(b.preview_scene_id);
@@ -139,4 +139,4 @@ const endpointCode=new URLSearchParams(location.search).get('endpoint');
 async function heartbeat(){if(!window.__DISPLAY_SLUG__||!endpointCode)return;try{const r=await fetch(`/api/media/display/${encodeURIComponent(endpointCode)}/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),body=await r.json();if(r.ok&&body.page_slug&&body.page_slug!==window.__DISPLAY_SLUG__)location.replace(body.redirect)}catch(_){} }
 heartbeat();setInterval(heartbeat,10000);
 window.addEventListener('pagehide',()=>{$$('#app img[src*="/stream.mjpg"]').forEach(img=>img.removeAttribute('src'))});
-setInterval(refresh,1000);setInterval(syncHeader,250);render();
+setInterval(refresh,2500);setInterval(syncHeader,250);render();
