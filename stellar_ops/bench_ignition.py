@@ -5,8 +5,9 @@ import time
 
 from flask import Blueprint, jsonify
 
-from .control import connect, event
+from .control import CONTROL_DB, OPERATION_ID, connect, event
 from .edge_runtime import send_bench_led_state
+from .pressure_capture import PressureCaptureError, cancel_capture, mark_relay_sent, start_capture
 
 bench_ignition = Blueprint("bench_ignition", __name__)
 _lock = threading.RLock()
@@ -29,12 +30,39 @@ def _snapshot() -> dict:
 
 
 def _set_state(on: bool):
+    capture = None
+    if on:
+        # Arm the full-rate pressure logger before the physical relay command.
+        # If live pressure data is not arriving, start_capture fails and the
+        # relay command is deliberately never sent.
+        try:
+            capture = start_capture(
+                CONTROL_DB,
+                OPERATION_ID,
+                device_id="PT-01",
+                actor="TEST_DIRECTOR",
+            )
+        except PressureCaptureError as exc:
+            with _lock:
+                _state["last_result"] = str(exc)
+            return jsonify(ok=False, error=str(exc), **_snapshot()), 503
+
     result = send_bench_led_state(device_id="PT-01", on=on)
 
     if not result.get("ok"):
+        if capture is not None:
+            cancel_capture(
+                CONTROL_DB,
+                int(capture["id"]),
+                "Relay command failed after logger was armed: "
+                + result.get("error", "unknown Ethernet error"),
+            )
         with _lock:
             _state["last_result"] = result.get("error", "Ethernet bench LED command failed")
         return jsonify(ok=False, error=_state["last_result"], **_snapshot()), 503
+
+    if capture is not None:
+        capture = mark_relay_sent(CONTROL_DB, int(capture["id"]))
 
     with _lock:
         _state["active"] = on
@@ -50,7 +78,7 @@ def _set_state(on: bool):
             f"Bench LED {'enabled' if on else 'disabled'} on PT-01 over the established Ethernet edge session",
         )
 
-    return jsonify(ok=True, **_snapshot())
+    return jsonify(ok=True, capture=capture, **_snapshot())
 
 
 @bench_ignition.get("/api/bench/ignition")

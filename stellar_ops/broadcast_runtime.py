@@ -291,44 +291,205 @@ def output_metrics(destination_id: int) -> dict:
                 "network_latency_ms":item.get("network_latency_ms")}
 
 
+def _capture_recording_progress(item: dict) -> None:
+    """Drain FFmpeg stderr so the encoder cannot block and expose live metrics."""
+    process = item["process"]
+    stream = process.stderr
+    if stream is None:
+        return
+    for raw in iter(stream.readline, ""):
+        line = raw.strip()
+        if not line:
+            continue
+        if "=" in line:
+            key, value = line.split("=", 1)
+            if key in {"frame", "fps", "bitrate", "drop_frames", "out_time_ms", "speed"}:
+                with _lock:
+                    item[key] = value
+                    item["last_progress_at"] = time.time()
+                continue
+            if key == "lavfi.astats.Overall.RMS_level":
+                with _lock:
+                    item["audio_rms_db"] = value
+                    item["last_progress_at"] = time.time()
+                continue
+        # Keep a small diagnostic tail for start/stop failures without allowing
+        # unbounded FFmpeg output to accumulate in memory.
+        with _lock:
+            errors = item.setdefault("errors", [])
+            errors.append(line)
+            del errors[:-12]
+
+
+def _validate_recording_file(path: Path) -> tuple[bool, str]:
+    """Require a non-empty Matroska file with at least one decodable video frame."""
+    if not path.exists() or path.stat().st_size <= 0:
+        return False, "recording file is empty"
+    command = [
+        _ffmpeg_executable(), "-hide_banner", "-loglevel", "error",
+        "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
+        "-f", "null", "-",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=12,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"recording verification failed: {exc}"
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip().splitlines()
+        return False, detail[-1] if detail else "recorded video is not decodable"
+    return True, ""
+
+
 def start_program_recording(cameras: list[dict], scene: dict, directory: Path) -> dict:
     global _program_recording
+    with _lock:
+        prior = _program_recording
+        if prior and prior["process"].poll() is None:
+            raise RuntimeError("Program recording is already active")
+
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"public-program-{int(time.time())}.mkv"
+    # Millisecond precision avoids overwriting a previous clip when operators
+    # stop/start twice within the same second.
+    path = directory / f"public-program-{int(time.time() * 1000)}.mkv"
     process = subprocess.Popen(
-        _program_command(cameras, scene, str(path)), stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        _program_command(cameras, scene, str(path)),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
     )
-    _program_recording = {"process":process,"path":str(path),"started_at":time.time()}
-    return {"state":"RECORDING","path":str(path)}
+    item = {
+        "process": process,
+        "path": str(path),
+        "started_at": time.time(),
+        "last_progress_at": None,
+        "errors": [],
+    }
+    with _lock:
+        _program_recording = item
+    thread = threading.Thread(target=_capture_recording_progress, args=(item,), daemon=True)
+    item["progress_thread"] = thread
+    thread.start()
+
+    # Do not report RECORDING until FFmpeg has actually started producing the
+    # file (or encoder progress). This catches missing codecs/permissions/etc.
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline:
+        code = process.poll()
+        size = path.stat().st_size if path.exists() else 0
+        if code is not None:
+            with _lock:
+                errors = list(item.get("errors", []))
+                if _program_recording is item:
+                    _program_recording = None
+            if thread.is_alive():
+                thread.join(timeout=1)
+            for stream in (process.stdin, process.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except OSError:
+                    pass
+            if path.exists() and path.stat().st_size == 0:
+                path.unlink(missing_ok=True)
+            detail = errors[-1] if errors else f"FFmpeg exited with code {code}"
+            raise RuntimeError(f"Program recording failed to start: {detail}")
+        if size > 1024 or item.get("frame"):
+            return {"state": "RECORDING", "path": str(path), "bytes": size}
+        time.sleep(0.05)
+
+    # Some cameras deliver their first frame slowly. If the encoder is still
+    # alive after the preflight window, keep recording but expose STARTING.
+    return {"state": "RECORDING", "path": str(path),
+            "bytes": path.stat().st_size if path.exists() else 0}
 
 
 def program_recording_status() -> dict:
-    item = _program_recording
-    if not item:
-        return {"state": "STOPPED", "path": None, "duration_seconds": 0, "bytes": 0}
+    with _lock:
+        item = _program_recording
+        if not item:
+            return {"state": "STOPPED", "path": None, "duration_seconds": 0, "bytes": 0}
+        snapshot = {
+            key: item.get(key)
+            for key in ("frame", "fps", "bitrate", "drop_frames", "speed",
+                        "last_progress_at", "audio_rms_db")
+        }
+        errors = list(item.get("errors", []))
     process = item["process"]
     path = Path(item["path"])
-    state = "RECORDING" if process.poll() is None else "FAILED"
-    return {
+    running = process.poll() is None
+    state = "RECORDING" if running else "FAILED"
+    result = {
         "state": state,
         "path": str(path),
         "duration_seconds": round(time.time() - item["started_at"], 1),
         "bytes": path.stat().st_size if path.exists() else 0,
+        **snapshot,
     }
+    if not running:
+        result["error"] = errors[-1] if errors else f"FFmpeg exited with code {process.returncode}"
+    return result
 
 
 def stop_program_recording() -> dict:
     global _program_recording
-    item, _program_recording = _program_recording, None
+    with _lock:
+        item = _program_recording
     if not item:
-        return {"state":"STOPPED"}
-    process=item["process"]
+        return {"state": "STOPPED"}
+
+    process = item["process"]
+    # Ask FFmpeg to quit through its command input first. This lets Matroska
+    # write indexes/trailers cleanly instead of depending on an OS signal.
     if process.poll() is None:
-        process.terminate()
-        try: process.wait(timeout=5)
-        except subprocess.TimeoutExpired: process.kill()
+        try:
+            if process.stdin is not None:
+                process.stdin.write("q\n")
+                process.stdin.flush()
+            process.wait(timeout=10)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+
+    thread = item.get("progress_thread")
+    if thread and thread.is_alive():
+        thread.join(timeout=1)
+    for stream in (process.stdin, process.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass
+
     path = Path(item["path"])
     size = path.stat().st_size if path.exists() else 0
-    return {"state":"RECORDED" if size else "FAILED","path":str(path),
-            "duration_seconds":round(time.time()-item["started_at"],1),"bytes":size}
+    valid, verification_error = _validate_recording_file(path)
+    with _lock:
+        errors = list(item.get("errors", []))
+        if _program_recording is item:
+            _program_recording = None
+
+    result = {
+        "state": "RECORDED" if valid else "FAILED",
+        "path": str(path),
+        "duration_seconds": round(time.time() - item["started_at"], 1),
+        "bytes": size,
+        "verified": valid,
+    }
+    if not valid:
+        result["error"] = verification_error or (errors[-1] if errors else "recording failed verification")
+    return result

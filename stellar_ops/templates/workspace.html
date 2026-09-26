@@ -67,6 +67,8 @@
     <button data-time="REPLAY">REPLAY</button>
     <select id="time-window" aria-label="Telemetry time window"><option value="30">30 SEC</option><option value="120">2 MIN</option><option value="600">10 MIN</option><option value="0">FULL RUN</option></select>
     <button id="jump-ignition" title="Bench simulation only — no physical output">IGNITION TEST</button>
+    <button id="pressure-log" title="Open high-rate pressure capture log">PRESSURE LOG</button>
+    <button id="mission-video-record" title="Start or stop Program video recording">VIDEO REC</button>
     <span id="mission-time">T−00:00:10.000</span>
   </div>
   <button id="kiosk">KIOSK</button>
@@ -105,11 +107,21 @@
   </form>
 </dialog>
 
+<dialog id="pressure-capture-dialog" class="pressure-capture-dialog">
+  <div class="dialog-shell pressure-capture-shell">
+    <header><span>PRESSURE CAPTURE · 200 Hz</span><button type="button" id="pressure-capture-close" aria-label="Close pressure capture log">×</button></header>
+    <div class="pressure-capture-note">Capture is armed before the relay command. It includes 2 seconds of pre-trigger data and stops automatically only after pressure has risen above 0.5 bar and then remained at or below 0.5 bar for 200 ms.</div>
+    <div id="pressure-capture-body"></div>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 <script>window.__INITIAL__={{initial|tojson}};</script>
 <script src="{{url_for('static',filename='workspace.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='workspace_stability.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='bench_ignition.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='pressure_capture.js',v=system_identity.commit)}}"></script>
+<script src="{{url_for('static',filename='mission_video_recording.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='weather_panel.js',v=system_identity.commit)}}"></script>
 <script src="{{url_for('static',filename='airspace_panel_v12.js',v=system_identity.commit)}}"></script>
 </body>

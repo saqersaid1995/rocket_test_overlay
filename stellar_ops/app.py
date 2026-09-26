@@ -24,6 +24,7 @@ from .media_frame_preview import media_frame_preview
 from .media_stream_runtime import install_media_stream_optimizations
 from .operations import operations
 from .pressure_edge import ensure_pressure_edge_integration
+from .pressure_capture_api import pressure_capture_api
 from .runtime_context import get_runtime_context
 from .site_config import site_config
 from .telemetry_runtime import recording_status
@@ -40,6 +41,7 @@ app.register_blueprint(operations)
 app.register_blueprint(weather)
 app.register_blueprint(airspace)
 app.register_blueprint(site_config)
+app.register_blueprint(pressure_capture_api)
 app.before_request(begin_request)
 
 
