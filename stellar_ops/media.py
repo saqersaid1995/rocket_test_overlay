@@ -905,18 +905,47 @@ def broadcast_action():
             db.execute("UPDATE broadcast_sessions SET state='OFF_AIR',recording=0,updated_at=? WHERE operation_id=?", (now(), OPERATION_ID)); detail = "Broadcast session stopped"
         elif action in {"START_RECORDING", "STOP_RECORDING"}:
             value = int(action == "START_RECORDING")
+            recording_result = {"state": "RECORDING" if value else "STOPPED"}
             if not current_app.config.get("TESTING"):
                 if value:
                     program_scene = db.execute("SELECT * FROM broadcast_scenes WHERE id=?", (session["program_scene_id"],)).fetchone()
                     cameras = _program_cameras(db, dict(program_scene))
                     try:
                         probe_program_bus()
-                        start_program_recording(cameras, _scene_payload(program_scene), Path(current_app.instance_path) / "public-program")
+                        recording_result = start_program_recording(
+                            cameras,
+                            _scene_payload(program_scene),
+                            Path(current_app.instance_path) / "public-program",
+                        )
                     except RuntimeError as exc:
                         return jsonify(error=str(exc)), 409
                 else:
-                    stop_program_recording()
-            db.execute("UPDATE broadcast_sessions SET recording=?,updated_at=? WHERE operation_id=?", (value, now(), OPERATION_ID)); detail = action.replace("_", " ").title()
+                    recording_result = stop_program_recording()
+            db.execute(
+                "UPDATE broadcast_sessions SET recording=?,updated_at=? WHERE operation_id=?",
+                (value, now(), OPERATION_ID),
+            )
+            detail = action.replace("_", " ").title()
+            if recording_result.get("path"):
+                detail += f": {recording_result['path']}"
+            db.execute(
+                "INSERT INTO broadcast_events(operation_id,occurred_at,action,detail) VALUES(?,?,?,?)",
+                (OPERATION_ID, now(), action, detail),
+            )
+            event(
+                db,
+                "BROADCAST",
+                "BROADCAST_DIRECTOR",
+                "INFO" if recording_result.get("state") != "FAILED" else "WARNING",
+                detail if recording_result.get("state") != "FAILED"
+                else f"{detail} — {recording_result.get('error', 'recording verification failed')}",
+            )
+            if recording_result.get("state") == "FAILED":
+                return jsonify(
+                    error=recording_result.get("error", "recording verification failed"),
+                    recording=recording_result,
+                ), 409
+            return jsonify(ok=True, detail=detail, recording=recording_result)
         else: return jsonify(error="unsupported broadcast action"), 400
         db.execute("INSERT INTO broadcast_events(operation_id,occurred_at,action,detail) VALUES(?,?,?,?)", (OPERATION_ID, now(), action, detail))
         event(db, "BROADCAST", "BROADCAST_DIRECTOR", "WARNING" if action == "EMERGENCY" else "INFO", detail)
