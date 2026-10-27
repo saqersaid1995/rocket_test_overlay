@@ -255,5 +255,46 @@
     img.addEventListener("error", () => setTimeout(() => (img.src = img.dataset.src + "?t=" + Date.now()), 3000));
   });
 
+  // ---------------- updates + power ----------------
+  const updModal = $("update-modal"), updBody = $("upd-body"), updApply = $("upd-apply");
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  $("upd-close").addEventListener("click", () => (updModal.hidden = true));
+  $("btn-update").addEventListener("click", async () => {
+    updModal.hidden = false; updApply.hidden = true;
+    $("upd-title").textContent = "Updates";
+    updBody.textContent = "Checking GitHub for a new version…";
+    let j;
+    try { j = await (await fetch("/api/update/check", { method: "POST" })).json(); }
+    catch (e) { updBody.textContent = "Server not reachable."; return; }
+    if (!j.ok) { updBody.textContent = j.error; return; }
+    const cur = `Installed: v${esc(j.version)} (${esc(j.commit || "?")}, branch ${esc(j.branch)})`;
+    if (!j.update_available) { updBody.innerHTML = `<b>You have the latest version.</b><span class="muted">${cur}</span>`; return; }
+    updBody.innerHTML = `<b>${j.behind} update(s) available` + (j.remote_version ? ` — v${esc(j.remote_version)}` : "") +
+      `</b><span class="muted">${cur}</span><ul>` +
+      j.changes.map((c) => `<li>${esc(c.date)} · ${esc(c.title)}</li>`).join("") + "</ul>" +
+      `<span class="muted">The console restarts after the update (about 10 seconds). Ignition must be SAFE.</span>`;
+    updApply.hidden = false;
+  });
+  updApply.addEventListener("click", async () => {
+    updApply.hidden = true;
+    updBody.textContent = "Downloading and installing the update…";
+    const j = await api("/api/update/apply");
+    if (!j.ok) { updBody.textContent = j.error || "Update failed"; return; }
+    updBody.textContent = `Updated ${j.from} → ${j.to}. Restarting…`;
+    const t0 = Date.now();
+    await new Promise((r) => setTimeout(r, 2500));
+    const wait = async () => {
+      try { const r = await fetch("/health", { cache: "no-store" }); if (r.ok) { location.reload(); return; } } catch (e) {}
+      if (Date.now() - t0 > 60000) { updBody.textContent = "Restart is taking long. Close and open SFT STELLAR again."; return; }
+      setTimeout(wait, 1000);
+    };
+    wait();
+  });
+  $("btn-power").addEventListener("click", async () => {
+    if (!window.confirm("Close SFT STELLAR? Cameras and telemetry will stop.")) return;
+    const j = await api("/api/system/shutdown");
+    if (j.ok) document.body.innerHTML = '<div class="closed">SFT STELLAR is closed. You can close this window.</div>';
+  });
+
   poll(); chartLoop(); requestAnimationFrame(frame);
 })();

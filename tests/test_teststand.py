@@ -240,3 +240,55 @@ def test_second_node_with_same_id_is_rejected(hub):
     snap = hub.snapshot()
     assert snap["link"] == "LIVE" and snap["gaps"] == 0
     a.stop(); b.stop()
+
+
+# ---------------- updater ----------------
+def _run(*cmd, cwd=None):
+    import subprocess
+    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
+
+
+def test_updater_detects_and_applies_update(tmp_path, monkeypatch):
+    from teststand import updater
+    bare, work, dev = tmp_path / "remote.git", tmp_path / "install", tmp_path / "dev"
+    _run("git", "init", "-q", "--bare", "-b", "teststand/console", str(bare))
+    _run("git", "clone", "-q", str(bare), str(dev))
+    for repo in (dev,):
+        _run("git", "config", "user.email", "t@t", cwd=repo); _run("git", "config", "user.name", "t", cwd=repo)
+    (dev / "VERSION").write_text("1.0.0\n")
+    _run("git", "checkout", "-q", "-b", "teststand/console", cwd=dev)
+    _run("git", "add", "-A", cwd=dev); _run("git", "commit", "-qm", "v1", cwd=dev)
+    _run("git", "push", "-q", "origin", "teststand/console", cwd=dev)
+    _run("git", "clone", "-q", "-b", "teststand/console", str(bare), str(work))
+    (work / "config.yaml").write_text("local settings\n")  # untracked, must survive
+    monkeypatch.setattr(updater, "ROOT", work)
+    monkeypatch.setattr(updater, "VERSION_FILE", work / "VERSION")
+
+    assert updater.check()["update_available"] is False
+    (dev / "VERSION").write_text("1.1.0\n")
+    _run("git", "commit", "-qam", "New feature", cwd=dev)
+    _run("git", "push", "-q", "origin", "teststand/console", cwd=dev)
+
+    info = updater.check()
+    assert info["update_available"] and info["behind"] == 1 and info["remote_version"] == "1.1.0"
+    assert info["changes"][0]["title"] == "New feature"
+    result = updater.apply()
+    assert result["version"] == "1.1.0"
+    assert (work / "config.yaml").read_text() == "local settings\n"
+    assert updater.check()["update_available"] is False
+
+
+def test_update_refused_while_armed(tmp_path):
+    from teststand.app import System
+    from teststand.web.server import create_app
+    cfg = load_config(None)
+    cfg["telemetry"].update(listen_host="127.0.0.1", listen_port=0)
+    cfg["recorder"]["directory"] = str(tmp_path)
+    system = System(cfg)
+    system.ignition.state = "ARMED"
+    client = create_app(system).test_client()
+    r = client.post("/api/update/apply")
+    assert r.status_code == 409 and "SAFE" in r.get_json()["error"]
+    r = client.post("/api/system/shutdown")
+    assert r.status_code == 409
+    system.ignition.state = "SAFE"

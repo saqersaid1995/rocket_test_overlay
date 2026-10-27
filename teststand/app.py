@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
+import socket
 import sys
+import time
 from pathlib import Path
 
-from . import events
+from . import events, updater
 from .cameras.camera import CameraBank
 from .config import load_config
 from .ignition.controller import IgnitionController
@@ -50,11 +53,35 @@ class System:
         self.hub.stop()
 
 
+def _port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
+def _wait_for_ports(ports: list[int], timeout: float = 20) -> None:
+    """After an update-restart, wait until the old process has released its ports."""
+    end = time.time() + timeout
+    while time.time() < end and not all(_port_free(p) for p in ports):
+        time.sleep(0.25)
+
+
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Stellar Kinetics test-stand console")
+    parser = argparse.ArgumentParser(description="SFT STELLAR - test-stand console")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--port", type=int, help="web port (overrides config)")
+    parser.add_argument("--log", help="write console output to this file (used by the desktop launcher)")
     args = parser.parse_args(argv)
+
+    if args.log:
+        Path(args.log).parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(args.log, "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log_file
+    elif sys.stdout is None:  # started with pythonw and no log file
+        sys.stdout = sys.stderr = open(os.devnull, "w")
 
     cfg_path = Path(args.config)
     if not cfg_path.exists():
@@ -63,6 +90,9 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config(cfg_path)
     if args.port:
         cfg["web"]["port"] = args.port
+
+    if os.environ.pop("SFT_WAIT_FOR_PORTS", None):
+        _wait_for_ports([cfg["web"]["port"], cfg["telemetry"]["listen_port"]])
 
     system = System(cfg)
     system.start()
@@ -80,13 +110,13 @@ def main(argv: list[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, shutdown)
 
     ign = cfg["ignition"]
-    print("\n  Stellar Kinetics - Test Stand Console")
+    print(f"\n  SFT STELLAR {updater.version()} - Stellar Kinetics test-stand console")
     print(f"  Console:    http://localhost:{cfg['web']['port']}")
     print(f"  Telemetry:  waiting for ESP32 on TCP port {cfg['telemetry']['listen_port']}")
     print(f"  Ignition:   {ign['driver'].upper()} driver"
           + ("  (PHYSICAL OUTPUT)" if ign["driver"] == "esp32" else "  (no physical output)"))
     print(f"  Cameras:    {len(cfg['cameras'])}\n")
-    events.log("SYSTEM", "Console started")
+    events.log("SYSTEM", f"SFT STELLAR {updater.version()} started")
     app.run(host=cfg["web"]["host"], port=cfg["web"]["port"], threaded=True, use_reloader=False)
 
 

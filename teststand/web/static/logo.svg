@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#11222b"/>
+      <stop offset="1" stop-color="#060b0e"/>
+    </linearGradient>
+    <linearGradient id="plume" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffb02e"/>
+      <stop offset="0.45" stop-color="#ff6a1a" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#ff3d1a" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#fff3c4" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#36c6e8" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#36c6e8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#bg)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="51.5" fill="none" stroke="#2a4a57" stroke-width="3"/>
+  <!-- star -->
+  <circle cx="128" cy="78" r="44" fill="url(#glow)"/>
+  <path d="M128 40 C132 66 140 74 166 78 C140 82 132 90 128 116 C124 90 116 82 90 78 C116 74 124 66 128 40 Z" fill="#36c6e8"/>
+  <!-- motor case + nozzle (horizontal static-fire) -->
+  <rect x="44" y="136" width="96" height="34" rx="6" fill="#d9e6ea"/>
+  <path d="M140 141 L162 133 L162 173 L140 165 Z" fill="#8fa9b3"/>
+  <!-- plume -->
+  <path d="M162 134 C188 128 214 134 240 153 C214 172 188 178 162 172 Z" fill="url(#plume)"/>
+  <path d="M162 143 L182 148 L192 153 L182 158 L162 163 Z" fill="url(#core)"/>
+  <path d="M196 153 L203 148 L210 153 L203 158 Z" fill="#fff3c4" opacity="0.85"/>
+  <path d="M216 153 L221 149.5 L226 153 L221 156.5 Z" fill="#fff3c4" opacity="0.55"/>
+  <!-- test stand base -->
+  <rect x="40" y="182" width="108" height="8" rx="3" fill="#36c6e8"/>
+  <rect x="56" y="170" width="8" height="14" fill="#36c6e8"/>
+  <rect x="120" y="170" width="8" height="14" fill="#36c6e8"/>
+  <!-- wordmark -->
+  <text x="128" y="224" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="800" font-size="30" letter-spacing="4" fill="#d9e6ea">SFT</text>
+</svg>

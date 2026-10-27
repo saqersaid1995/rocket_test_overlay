@@ -1,4 +1,6 @@
-# Stellar Kinetics — Test Stand Console
+# SFT STELLAR — Stellar Kinetics Test Stand Console
+
+<img src="assets/logo-256.png" width="96" alt="SFT STELLAR">
 
 A small, focused operator console for static-fire tests: **live pressure, ignition, cameras, recording.** Nothing else.
 
@@ -18,7 +20,16 @@ This branch (`teststand/console`) replaces the large all-in-one Stellar Ops syst
 The sections are wired together in one place only: `teststand/app.py`.
 A camera that freezes or disconnects cannot slow down pressure or ignition — cameras run as separate processes and restart by themselves.
 
-## Start
+## Install on Windows (no code needed)
+
+1. Run `install/Install SFT STELLAR.bat` (double-click).
+2. It installs Git/Python if missing, downloads SFT STELLAR from GitHub to `%USERPROFILE%\SFT STELLAR`, sets up Python, and creates **SFT STELLAR** icons on the Desktop and Start Menu.
+3. Double-click the icon: the console starts in the background and opens in its own window.
+
+**Updates:** press **Check for updates** in the top bar. It shows what is new and installs it with one click (only when ignition is SAFE and nothing is recording), then restarts. Your `config.yaml` and test data are never touched.
+**Close:** the power button stops the console. Log file: `data/logs/console.log`.
+
+## Start (developer)
 
 ```bash
 pip install -r requirements.txt

@@ -14,7 +14,14 @@ code{font-family:var(--mono);color:var(--accent)}
 
 .topbar{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:1px solid var(--line);background:#0a1115}
 .brand{display:flex;align-items:center;gap:10px;letter-spacing:.08em}
-.brand .mark{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+.brand .logo{width:30px;height:30px;display:block}
+.sysmenu{display:flex;gap:6px}
+.sysmenu button{padding:6px 10px;font-size:12px}
+#btn-power{font-size:15px;line-height:1}
+.upd-body{font-size:13px;display:grid;gap:6px}
+.upd-body ul{margin:0;padding-left:18px;font:12px/1.5 var(--mono);color:var(--muted)}
+.modal .box.info{border-color:var(--accent)}
+.modal .box.info h3{color:var(--accent)}
 .brand .sub{color:var(--muted);font-size:12px}
 .pills{display:flex;gap:8px;flex:1;justify-content:center}
 .pill{font:600 12px var(--mono);padding:5px 10px;border-radius:20px;border:1px solid var(--line);color:var(--muted)}
@@ -109,3 +116,5 @@ body[data-state=COUNTDOWN] .countdown,body[data-state=FIRING] .countdown{visibil
   .readout .value{font-size:60px}
   .topbar{flex-wrap:wrap}
 }
+
+.closed{display:flex;height:100vh;align-items:center;justify-content:center;color:var(--muted);font-size:18px}

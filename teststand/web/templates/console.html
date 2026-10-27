@@ -3,18 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Test Stand Console</title>
+<title>SFT STELLAR</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='console.css') }}">
 </head>
 <body data-state="SAFE">
 <header class="topbar">
-  <div class="brand"><span class="mark"></span><b>STELLAR KINETICS</b><span class="sub">TEST STAND CONSOLE</span></div>
+  <div class="brand"><img class="logo" src="{{ url_for('static', filename='logo.svg') }}" alt=""><b>SFT STELLAR</b><span class="sub">STELLAR KINETICS · v{{ version }}</span></div>
   <div class="pills">
     <span class="pill" id="pill-link">TELEMETRY —</span>
     <span class="pill" id="pill-ign">IGNITION —</span>
     <span class="pill" id="pill-rec">REC —</span>
   </div>
   <div class="clock"><span id="clock">--:--:--</span><span class="tminus" id="tminus"></span></div>
+  <div class="sysmenu">
+    <button id="btn-update" title="Check GitHub for a new version">Check for updates</button>
+    <button id="btn-power" title="Close SFT STELLAR">⏻</button>
+  </div>
 </header>
 
 <div id="offline" class="offline" hidden>CONSOLE LOST CONNECTION TO THE SERVER — ignition auto-aborts after 3 s</div>
@@ -97,6 +102,14 @@
     <label><input type="checkbox" class="chk"> Igniter connected and stand is ready</label>
     <label><input type="checkbox" class="chk"> Cameras and pressure checked</label>
     <div class="row"><button id="arm-cancel">Cancel</button><button class="arm" id="arm-confirm" disabled>ARM</button></div>
+  </div>
+</div>
+
+<div class="modal" id="update-modal" hidden>
+  <div class="box info">
+    <h3 id="upd-title">Updates</h3>
+    <div id="upd-body" class="upd-body">Checking…</div>
+    <div class="row"><button id="upd-close">Close</button><button class="arm" id="upd-apply" hidden>Update now</button></div>
   </div>
 </div>
 

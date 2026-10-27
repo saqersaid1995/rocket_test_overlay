@@ -9,12 +9,13 @@ closed, laptop asleep, network cable pulled), ignition is aborted to SAFE.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
-from .. import events
+from .. import events, updater
 from ..ignition.controller import ARMED, COUNTDOWN, IgnitionError
 
 CONSOLE_TIMEOUT_S = 3.0
@@ -41,7 +42,8 @@ def create_app(system) -> Flask:
 
     @app.get("/")
     def console():
-        return render_template("console.html", cameras=system.cameras.snapshot(), cfg=system.cfg)
+        return render_template("console.html", cameras=system.cameras.snapshot(), cfg=system.cfg,
+                               version=updater.version())
 
     @app.get("/api/state")
     def state():
@@ -143,6 +145,60 @@ def create_app(system) -> Flask:
 
         return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame",
                         headers={"Cache-Control": "no-store"})
+
+    # ----- system: version, updates, shutdown -----
+    def _busy() -> str | None:
+        if system.ignition.state != "SAFE":
+            return "Ignition must be SAFE"
+        if system.recorder.active:
+            return "Stop the recording first"
+        return None
+
+    @app.get("/api/system")
+    def system_info():
+        return jsonify(ok=True, **updater.current())
+
+    @app.post("/api/update/check")
+    def update_check():
+        try:
+            info = updater.check()
+        except Exception as exc:  # noqa: BLE001
+            events.log("UPDATE", f"Update check failed: {exc}", "WARN")
+            return fail(f"Update check failed: {exc}", 502)
+        events.log("UPDATE", f"{info['behind']} new update(s) available" if info["update_available"]
+                   else "Already up to date")
+        return ok(**info)
+
+    @app.post("/api/update/apply")
+    def update_apply():
+        reason = _busy()
+        if reason:
+            return fail(f"Cannot update now: {reason}")
+        try:
+            result = updater.apply()
+        except Exception as exc:  # noqa: BLE001
+            events.log("UPDATE", f"Update failed: {exc}", "WARN")
+            return fail(f"Update failed: {exc}", 502)
+        events.log("UPDATE", "Restarting with the new version…")
+        updater.restart_later(on_exit=system.stop)
+        return ok(restarting=True, **result)
+
+    @app.post("/api/system/shutdown")
+    def shutdown():
+        reason = _busy()
+        if reason:
+            return fail(f"Cannot shut down now: {reason}")
+        events.log("SYSTEM", "Shut down from the console")
+
+        def _bye():
+            time.sleep(0.5)
+            try:
+                system.stop()
+            finally:
+                os._exit(0)
+
+        threading.Thread(target=_bye, daemon=True).start()
+        return ok()
 
     @app.get("/health")
     def health():
