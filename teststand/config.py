@@ -69,6 +69,7 @@ def load_config(path: str | Path | None = None) -> dict:
     for i, cam in enumerate(cfg["cameras"]):
         cam.setdefault("id", f"cam{i + 1}")
         cam.setdefault("name", cam["id"].upper())
+        cam.setdefault("url", cam.get("preview_url") or cam.get("record_url"))
         if not cam.get("url"):
-            raise ValueError(f"camera {cam['id']} needs a url")
+            raise ValueError(f"camera {cam['id']} needs a url (or preview_url / record_url)")
     return cfg

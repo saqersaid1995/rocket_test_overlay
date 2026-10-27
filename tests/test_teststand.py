@@ -292,3 +292,10 @@ def test_update_refused_while_armed(tmp_path):
     r = client.post("/api/system/shutdown")
     assert r.status_code == 409
     system.ignition.state = "SAFE"
+
+
+def test_example_config_loads():
+    from pathlib import Path
+    cfg = load_config(Path(__file__).resolve().parent.parent / "config.example.yaml")
+    assert cfg["ignition"]["driver"] == "simulation"
+    assert all(c["url"] for c in cfg["cameras"])
