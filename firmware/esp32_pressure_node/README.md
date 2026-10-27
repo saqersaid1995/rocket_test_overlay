@@ -19,7 +19,7 @@ The Wi-Fi interface is intentionally local to the pressure node. It provides:
 - calibration zero voltage and slope
 - zero-from-current-voltage action
 - Ethernet static IP / gateway / subnet / DNS
-- Stellar Ops receiver IP and TCP port
+- Test-stand console receiver IP and TCP port
 - Ethernet reconnect
 - sequence, dropped-batch and ACK diagnostics
 
@@ -86,3 +86,18 @@ When Stellar Ops starts it now:
 5. exposes the data through the existing LIVE telemetry runtime
 
 The previous HTTP `/reading` polling path is no longer used by the operational application startup.
+
+## Ignition module — `ignition.ino`
+
+The sketch folder has two tabs. `esp32_pressure_node.ino` is the pressure node; `ignition.ino` is the ignition module. The main sketch only calls three functions: `ignitionSetup()` (first line of `setup()`), `ignitionHandleLine()` (each line received from the console) and `ignitionService()` (every `loop()`).
+
+Commands from the console (same TCP link, `SMTCS-EDGE/1`, CRC32 checked): `IGN_ARM` (also the keep-alive, every 300 ms), `IGN_FIRE` (`pulse_ms`), `IGN_SAFE`. The node answers with `IGN_STATUS` (`SAFE` / `ARMED` / `FIRING`, `fire_count`) every 500 ms and on every change.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `IGN_FIRE_PIN` | GPIO 4 | fire relay / MOSFET, HIGH during the pulse |
+| `IGN_ARM_PIN` | GPIO 13 | arming relay, HIGH while armed (`-1` = not used) |
+| `IGN_DEADMAN_MS` | 1500 | no keep-alive for this long → SAFE |
+| `IGN_MAX_PULSE_MS` | 3000 | longest allowed pulse |
+
+**Before the first live test:** confirm the pins match the wiring, then run the full sequence with a lamp or LED in place of the igniter.

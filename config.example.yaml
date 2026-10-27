@@ -1,76 +1,44 @@
-# Input files
-video: input/test_video.mp4
-data: input/telemetry.xlsx
-output: output/rocket_test_overlay.mp4
+# Test Stand Console — configuration
+# Copy this file to config.yaml and edit it. config.yaml is not committed to Git.
 
-# Excel sheet: name or zero-based index
-sheet: 0
+web:
+  host: 0.0.0.0
+  port: 5050                 # open http://localhost:5050
 
-# Set these exactly if automatic detection does not match your Excel headings.
-time_column: Time (s)
-pressure_column: Pressure (bar)
-thrust_column: Thrust (N)
+telemetry:
+  listen_port: 9100          # must match "Receiver TCP port" on the ESP32 page
+  device_id: PT-01
+  stale_after_s: 1.0         # no data for 1 s -> link shown as STALE / LOST
 
-# Synchronization:
-# Example: ignition visibly starts at 4.52 seconds in the video.
-ignition_video_s: 4.52
+pressure:
+  max_expected_bar: 100      # sensor range (0-100 bar transducer)
+  alarm_bar: 80              # reading turns red above this
 
-# Optional synchronized cameras:
-# video_2: input/camera_2.mp4
-# video_3: input/camera_3.mp4
-# camera_2_ignition_s: 2.18
-# camera_3_ignition_s: 6.04
-# camera_mode: split  # single, switch, split, or pip
-# camera_3_switch_delay_s: 2.0
+ignition:
+  # simulation : no physical output (training, screen checks)
+  # esp32      : real output through the ESP32 ignition module (ignition.ino)
+  driver: simulation
+  device_id: PT-01
+  countdown_s: 10
+  pulse_ms: 1000             # igniter on-time (max 3000, also capped in firmware)
+  hold_to_start_s: 1.5       # START must be held this long
+  arm_timeout_s: 120         # ARMED with no action -> back to SAFE
+  require_telemetry: true    # cannot ARM, and auto-ABORT, without live pressure data
 
-# Timestamp in Excel that should become telemetry t=0.
-# Leave null to detect the first sustained chamber-pressure response.
-telemetry_zero_s: null
+recorder:
+  directory: data/sessions
+  pre_trigger_s: 10          # keep 10 s of pressure from before recording starts
+  auto_record: true          # countdown start -> recording starts automatically
+  auto_stop_after_fire_s: 30
 
-# Use 0.001 when Excel time is in milliseconds.
-time_scale: 1.0
-
-title: RNX-TEST-L819-V2
-subtitle: Pressure & Derived Thrust
-pressure_unit: bar
-thrust_unit: N
-run_number: RUN-019
-motor_type: L819
-propellant: LOX / PROPANE
-oxidizer: LOX
-fuel: PROPANE
-ablative_material: PHENOLIC ABLATIVE
-test_date: "2026-08-09"
-organization_name: STELLAR KINETICS
-test_site: ETLAQ SPACEPORT - DUQM, OMAN
-coordinates_text: "19°39'N 57°42'E"
-footer_tagline: STELLAR KINETICS - ENGINEERING THE VOID
-camera_label: CAM 01
-capture_fps: 120 FPS
-
-# Broadcast Edition overlay
-broadcast_theme: launch  # launch, mission_control, or stellar_console
-# Optional direct ROTPL use from the CLI. The web registry fills these fields
-# automatically and pins the immutable SHA-256 to every export job.
-# template_id: stellar.duqm.qualification
-# template_version: 1.0.0
-# template_sha256: e24ff0c73f8396212a7f7e4f9ee442e32a90acfd657d780624e3538d3bbf8bfd
-# template_path: UPLOAD_TEMPLATE_HERE/stellar-kinetics-1.0.0.rotpl
-accent: "#38BDF8"
-show_chart: true
-show_phases: true
-
-width: 1920
-height: 1080
-video_fraction: 0.70
-
-chart_window_before_s: 1.0
-chart_window_after_s: 1.0
-
-# Optional transparent PNG logo
-logo: null
-
-keep_audio: true
-codec: mp4v
-crf: 15
-preserve_source_quality: false  # enable only for archival HLG Main10 delivery
+# IP cameras (RTSP). Use the camera's low-resolution sub-stream for preview
+# and the main stream for recording. Remove the list (cameras: []) for none.
+cameras:
+  - id: cam1
+    name: STAND
+    preview_url: rtsp://admin:password@192.168.1.60:554/stream2
+    record_url:  rtsp://admin:password@192.168.1.60:554/stream1
+  - id: cam2
+    name: WIDE
+    url: rtsp://admin:password@192.168.1.61:554/stream1
+    enabled: false           # set true when the camera is connected

@@ -1,0 +1,151 @@
+"""Web section: the operator console (one page) and its small JSON API.
+
+The web layer only forwards operator commands to the other sections and shows
+their status. It has no ignition logic of its own.
+
+Console watchdog: the page polls /api/state ~10 times per second. If the system
+is ARMED or counting down and no console has polled for 3 seconds (browser
+closed, laptop asleep, network cable pulled), ignition is aborted to SAFE.
+"""
+from __future__ import annotations
+
+import threading
+import time
+
+from flask import Flask, Response, abort, jsonify, render_template, request
+
+from .. import events
+from ..ignition.controller import ARMED, COUNTDOWN, IgnitionError
+
+CONSOLE_TIMEOUT_S = 3.0
+
+
+def create_app(system) -> Flask:
+    app = Flask(__name__)
+    app.config["JSON_SORT_KEYS"] = False
+    last_poll = {"t": time.time()}
+
+    def watchdog():
+        while True:
+            time.sleep(0.25)
+            if system.ignition.state in (ARMED, COUNTDOWN) and time.time() - last_poll["t"] > CONSOLE_TIMEOUT_S:
+                system.ignition.abort("operator console lost contact")
+
+    threading.Thread(target=watchdog, name="console-watchdog", daemon=True).start()
+
+    def ok(**extra):
+        return jsonify(ok=True, **extra)
+
+    def fail(message: str, code: int = 409):
+        return jsonify(ok=False, error=message), code
+
+    @app.get("/")
+    def console():
+        return render_template("console.html", cameras=system.cameras.snapshot(), cfg=system.cfg)
+
+    @app.get("/api/state")
+    def state():
+        last_poll["t"] = time.time()
+        after = int(request.args.get("events_after", 0))
+        return jsonify(
+            server_time=time.time(),
+            telemetry=system.hub.snapshot(),
+            pressure_cfg=system.cfg["pressure"],
+            ignition=system.ignition.snapshot(),
+            recorder=system.recorder.snapshot(),
+            cameras=system.cameras.snapshot(),
+            events=events.recent(after),
+        )
+
+    @app.get("/api/history")
+    def history():
+        seconds = min(float(request.args.get("s", 30)), 60)
+        return jsonify(points=system.hub.history(seconds), server_time=time.time())
+
+    # ----- ignition -----
+    @app.post("/api/ignition/<action>")
+    def ignition(action: str):
+        ign = system.ignition
+        try:
+            if action == "arm":
+                ign.arm()
+            elif action == "disarm":
+                ign.disarm()
+            elif action == "start":
+                body = request.get_json(silent=True) or {}
+                if float(body.get("held_s", 0)) < ign.cfg["hold_to_start_s"] - 0.05:
+                    return fail("Hold the START button longer")
+                ign.start_countdown()
+            elif action == "abort":
+                ign.abort("operator ABORT")
+            else:
+                abort(404)
+        except IgnitionError as exc:
+            events.log("IGNITION", f"Refused: {exc}", "WARN")
+            return fail(str(exc))
+        return ok(ignition=ign.snapshot())
+
+    # ----- pressure -----
+    @app.post("/api/pressure/<action>")
+    def pressure(action: str):
+        hub = system.hub
+        if action == "zero":
+            if system.ignition.state != "SAFE":
+                return fail("Zero only when SAFE")
+            if hub.tare() is None:
+                return fail("No pressure data yet")
+        elif action == "clear-zero":
+            hub.clear_tare()
+        elif action == "reset-peak":
+            hub.reset_peak()
+        else:
+            abort(404)
+        return ok()
+
+    # ----- recording -----
+    @app.post("/api/record/<action>")
+    def record(action: str):
+        if action == "start":
+            system.recorder.start("manual")
+        elif action == "stop":
+            system.recorder.stop("manual")
+        else:
+            abort(404)
+        return ok(recorder=system.recorder.snapshot())
+
+    @app.post("/api/note")
+    def note():
+        text = ((request.get_json(silent=True) or {}).get("text") or "").strip()[:300]
+        if text:
+            events.log("OPERATOR", text)
+        return ok()
+
+    # ----- cameras -----
+    @app.get("/camera/<cam_id>.mjpg")
+    def camera_stream(cam_id: str):
+        cam = system.cameras.cameras.get(cam_id)
+        if cam is None:
+            abort(404)
+
+        def gen():
+            last = 0.0
+            idle_since = time.time()
+            while True:
+                frame, t = cam.wait_frame(last, timeout=2.0)
+                if frame is None or t == last:
+                    if time.time() - idle_since > 20:
+                        return  # camera down: free this thread; the page reconnects by itself
+                    continue
+                idle_since = time.time()
+                last = t
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                       + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+
+        return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/health")
+    def health():
+        return jsonify(ok=True, telemetry=system.hub.snapshot()["link"], ignition=system.ignition.state)
+
+    return app

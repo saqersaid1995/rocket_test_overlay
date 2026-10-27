@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test Stand Console</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='console.css') }}">
+</head>
+<body data-state="SAFE">
+<header class="topbar">
+  <div class="brand"><span class="mark"></span><b>STELLAR KINETICS</b><span class="sub">TEST STAND CONSOLE</span></div>
+  <div class="pills">
+    <span class="pill" id="pill-link">TELEMETRY —</span>
+    <span class="pill" id="pill-ign">IGNITION —</span>
+    <span class="pill" id="pill-rec">REC —</span>
+  </div>
+  <div class="clock"><span id="clock">--:--:--</span><span class="tminus" id="tminus"></span></div>
+</header>
+
+<div id="offline" class="offline" hidden>CONSOLE LOST CONNECTION TO THE SERVER — ignition auto-aborts after 3 s</div>
+
+<main class="grid">
+  <!-- PRESSURE -->
+  <section class="panel pressure">
+    <div class="panel-h"><h2>Chamber pressure</h2><span class="muted" id="p-meta">PT-01</span></div>
+    <div class="readout">
+      <div class="value"><span id="p-now">—</span><small>bar</small></div>
+      <div class="side">
+        <div><label>PEAK</label><b id="p-peak">—</b> bar</div>
+        <div><label>PSI</label><b id="p-psi">—</b></div>
+        <div><label>ZERO OFFSET</label><b id="p-tare">0.000</b> bar</div>
+      </div>
+    </div>
+    <div class="gauge"><div class="fill" id="p-fill"></div><div class="alarm" id="p-alarm"></div></div>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+      <div class="chart-tools">
+        <button class="seg" data-win="10">10 s</button><button class="seg on" data-win="30">30 s</button><button class="seg" data-win="60">60 s</button>
+      </div>
+    </div>
+    <div class="row">
+      <button id="btn-zero">Zero</button>
+      <button id="btn-clearzero">Clear zero</button>
+      <button id="btn-peak">Reset peak</button>
+      <span class="muted grow" id="link-detail"></span>
+    </div>
+  </section>
+
+  <!-- IGNITION -->
+  <section class="panel ignition">
+    <div class="panel-h"><h2>Ignition</h2><span class="muted" id="ign-driver"></span></div>
+    <div class="ign-state" id="ign-state">SAFE</div>
+    <div class="countdown" id="countdown">T-10</div>
+    <div class="ign-hw muted" id="ign-hw"></div>
+    <div class="ign-buttons">
+      <button class="arm" id="btn-arm">ARM</button>
+      <button class="start" id="btn-start"><span class="hold" id="hold-fill"></span><span class="lbl">HOLD TO START COUNTDOWN</span></button>
+      <button class="abort" id="btn-abort">ABORT<small>Esc / Space</small></button>
+    </div>
+    <p class="muted small" id="ign-note"></p>
+  </section>
+
+  <!-- CAMERAS -->
+  <section class="panel cameras">
+    <div class="panel-h"><h2>Cameras</h2></div>
+    <div class="cam-grid" style="--n: {{ [cameras|length, 1]|max }}">
+      {% for cam in cameras %}
+      <figure class="cam" id="cam-{{ cam.id }}">
+        <img src="/camera/{{ cam.id }}.mjpg" alt="{{ cam.name }}" data-src="/camera/{{ cam.id }}.mjpg">
+        <figcaption><b>{{ cam.name }}</b><span class="cam-status">—</span></figcaption>
+      </figure>
+      {% else %}
+      <div class="empty">No cameras configured. Add them under <code>cameras:</code> in config.yaml.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- RECORDING + LOG -->
+  <section class="panel log">
+    <div class="panel-h"><h2>Recording</h2><span class="muted" id="rec-session"></span></div>
+    <div class="row">
+      <button id="btn-rec">Start recording</button>
+      <span class="muted grow" id="rec-detail">Starts by itself at countdown (auto-record).</span>
+    </div>
+    <div class="last" id="rec-last"></div>
+    <div class="panel-h"><h2>Event log</h2></div>
+    <ol class="events" id="events"></ol>
+    <form class="row" id="note-form"><input id="note" placeholder="Add a note to the log…" maxlength="300"><button>Add</button></form>
+  </section>
+</main>
+
+<div class="modal" id="arm-modal" hidden>
+  <div class="box">
+    <h3>Arm ignition</h3>
+    <p>Confirm before arming:</p>
+    <label><input type="checkbox" class="chk"> Range is clear of all personnel</label>
+    <label><input type="checkbox" class="chk"> Igniter connected and stand is ready</label>
+    <label><input type="checkbox" class="chk"> Cameras and pressure checked</label>
+    <div class="row"><button id="arm-cancel">Cancel</button><button class="arm" id="arm-confirm" disabled>ARM</button></div>
+  </div>
+</div>
+
+<script>window.TS = {{ {"hold_s": cfg.ignition.hold_to_start_s, "alarm": cfg.pressure.alarm_bar, "max": cfg.pressure.max_expected_bar} | tojson }};</script>
+<script src="{{ url_for('static', filename='console.js') }}"></script>
+</body>
+</html>

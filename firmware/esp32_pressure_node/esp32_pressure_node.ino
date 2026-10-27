@@ -146,7 +146,7 @@ String frameFromCanonical(const String &canonical) {
 String makeHelloFrame() {
   // Keys intentionally match Python json.dumps(sort_keys=True,separators=(",",":"))
   String canonical = "{\"boot_id\":\"" + bootId +
-    "\",\"channels\":[\"pressure_mbar\",\"voltage_uv\"],\"device_id\":\"PT-01\",\"firmware\":\"esp32-pressure-edge/1\",\"protocol\":\"SMTCS-EDGE/1\",\"type\":\"HELLO\"}";
+    "\",\"channels\":[\"pressure_mbar\",\"voltage_uv\"],\"device_id\":\"PT-01\",\"firmware\":\"esp32-pressure-ign/2\",\"protocol\":\"SMTCS-EDGE/1\",\"type\":\"HELLO\"}";
   return frameFromCanonical(canonical);
 }
 
@@ -207,6 +207,7 @@ void serviceEdgeReplies() {
   while (edgeClient.connected() && edgeClient.available()) {
     String line = edgeClient.readStringUntil('\n');
     if (line.indexOf("\"type\":\"ACK\"") >= 0) lastEdgeAckMs = millis();
+    else ignitionHandleLine(line);   // ignition.ino
   }
 }
 
@@ -382,6 +383,7 @@ void setupWeb() {
 }
 
 void setup() {
+  ignitionSetup();   // ignition.ino — outputs LOW before anything else
   Serial.begin(115200);
   loadConfig();
   bootId = String((uint32_t)ESP.getEfuseMac(), HEX) + "-" + String(millis());
@@ -408,6 +410,7 @@ void loop() {
   server.handleClient();
   serviceEdgeReplies();
   maintainEdgeConnection();
+  ignitionService();   // ignition.ino — dead-man, pulse end, status
 
   if (!adsReady) {
     delay(10);
