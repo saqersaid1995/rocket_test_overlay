@@ -6,6 +6,7 @@ web:
   port: 5050                 # open http://localhost:5050
 
 telemetry:
+  esp_ip: 192.168.1.50       # ESP32 Ethernet address (System check pings it)
   listen_port: 9100          # must match "Receiver TCP port" on the ESP32 page
   device_id: PT-01
   stale_after_s: 1.0         # no data for 1 s -> link shown as STALE / LOST
@@ -24,6 +25,7 @@ ignition:
   hold_to_start_s: 1.5       # START must be held this long
   arm_timeout_s: 120         # ARMED with no action -> back to SAFE
   require_telemetry: true    # cannot ARM, and auto-ABORT, without live pressure data
+  relay_test_ms: 300         # RELAY TEST click length (one relay at a time, max 1000)
 
 recorder:
   directory: data/sessions
@@ -31,6 +33,7 @@ recorder:
   auto_record: true          # countdown start -> recording starts automatically
   auto_stop_after_fire_s: 30
 
+# IP cameras — easiest from the app: Settings → Cameras (scan, add, test).
 # IP cameras (RTSP). Use the camera's low-resolution sub-stream for preview
 # and the main stream for recording. Remove the list (cameras: []) for none.
 cameras:

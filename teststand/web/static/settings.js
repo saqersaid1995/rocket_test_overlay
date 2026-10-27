@@ -1,0 +1,191 @@
+/* SFT STELLAR settings page */
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  let original = null;   // settings as loaded
+  let dirty = false;
+
+  function toast(msg) {
+    const t = document.createElement("div");
+    t.className = "toast"; t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 4000);
+  }
+  async function post(url, body) {
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      return await r.json();
+    } catch (e) { return { ok: false, error: "Server not reachable" }; }
+  }
+
+  // ---------------- tabs ----------------
+  function showTab(name) {
+    document.querySelectorAll(".tab").forEach((t) => (t.hidden = t.id !== "tab-" + name));
+    document.querySelectorAll(".side-nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === name));
+    if (name === "check" && !$("checks").childElementCount) runCheck();
+  }
+  window.addEventListener("hashchange", () => showTab(location.hash.slice(1) || "check"));
+
+  // ---------------- simple fields ----------------
+  const fields = () => document.querySelectorAll(".tab [name]");
+  function fill(s) {
+    fields().forEach((el) => {
+      const [sec, key] = el.name.split(".");
+      const v = s[sec] ? s[sec][key] : undefined;
+      if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
+    });
+    const pc = s.pc_ip;
+    $("esp-help").innerHTML =
+      `On the ESP32 setup page (Wi-Fi <b>PressureMonitor</b> → <code>http://192.168.4.1</code>) set:<br>` +
+      `• Stellar Ops receiver IP = <b class="ip">${esc(pc || "this PC's Ethernet IP")}</b><br>` +
+      `• Receiver TCP port = <b class="ip">${esc(s.telemetry.listen_port)}</b><br>` +
+      `then press <b>SAVE &amp; RESTART ETHERNET</b>.` +
+      (pc ? "" : `<br><br>This PC has no address on the ESP32 network. Give its Ethernet card a fixed IP such as <code>192.168.1.10</code>.`);
+  }
+  function collect() {
+    const out = {};
+    fields().forEach((el) => {
+      const [sec, key] = el.name.split(".");
+      (out[sec] = out[sec] || {})[key] = el.type === "checkbox" ? el.checked : el.value;
+    });
+    out.cameras = [...document.querySelectorAll(".cam-card")].map(readCam);
+    return out;
+  }
+  function markDirty() { dirty = true; $("savebar").hidden = false; }
+  document.addEventListener("input", (e) => { if (e.target.closest(".tab:not(#tab-check)")) markDirty(); });
+  document.addEventListener("change", (e) => { if (e.target.closest(".tab:not(#tab-check)")) markDirty(); });
+
+  // ---------------- cameras ----------------
+  let camSeq = 0;
+  function addCam(c) {
+    const node = $("cam-tpl").content.firstElementChild.cloneNode(true);
+    c = c || { name: "Camera " + (document.querySelectorAll(".cam-card").length + 1), enabled: true, brand: "generic" };
+    node.dataset.id = c.id || "cam" + Date.now().toString(36) + (camSeq++);
+    node.querySelectorAll("[data-f]").forEach((el) => {
+      const v = c[el.dataset.f];
+      if (el.type === "checkbox") el.checked = v !== false; else if (v !== undefined && v !== null) el.value = v;
+    });
+    const advanced = !c.ip && (c.url || c.preview_url || c.record_url);
+    if (advanced) {
+      if (!c.preview_url && c.url) node.querySelector('[data-f="preview_url"]').value = c.url;
+      setMode(node, true);
+    }
+    $("cam-list").appendChild(node);
+    return node;
+  }
+  function setMode(node, advanced) {
+    node.querySelector(".simple").hidden = advanced;
+    node.querySelector(".advanced").hidden = !advanced;
+    node.querySelector('[data-act="mode"]').textContent = advanced ? "Use IP form" : "Use full URL";
+    node.dataset.mode = advanced ? "url" : "ip";
+  }
+  function readCam(node) {
+    const c = { id: node.dataset.id };
+    const adv = node.dataset.mode === "url";
+    node.querySelectorAll("[data-f]").forEach((el) => {
+      const f = el.dataset.f;
+      const inSimple = !!el.closest(".simple"), inAdv = !!el.closest(".advanced");
+      if ((adv && inSimple) || (!adv && inAdv)) return;
+      c[f] = el.type === "checkbox" ? el.checked : el.value.trim();
+    });
+    return c;
+  }
+  $("cam-list").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const node = btn.closest(".cam-card");
+    const act = btn.dataset.act;
+    if (act === "remove") { node.remove(); markDirty(); return; }
+    if (act === "mode") { setMode(node, node.dataset.mode !== "url"); markDirty(); return; }
+    if (act === "test" || act === "test-rec") {
+      const c = readCam(node);
+      const msg = node.querySelector(".test-msg"), img = node.querySelector(".test-img");
+      const body = c.ip ? { ...c, which: act === "test" ? "preview" : "record" }
+                        : { url: act === "test" ? (c.preview_url || c.record_url) : (c.record_url || c.preview_url) };
+      msg.className = "muted small test-msg"; msg.textContent = "Connecting to the camera…"; btn.disabled = true;
+      const j = await post("/api/cameras/test", body);
+      btn.disabled = false;
+      if (j.ok) {
+        img.src = j.image; img.hidden = false;
+        msg.className = "small test-msg ok"; msg.textContent = `Picture received in ${j.seconds}s · ${j.url}`;
+      } else {
+        img.hidden = true;
+        msg.className = "small test-msg bad"; msg.textContent = j.error || "Failed";
+      }
+    }
+  });
+  $("cam-add").addEventListener("click", () => { addCam().querySelector('[data-f="ip"]').focus(); markDirty(); });
+  $("cam-scan").addEventListener("click", async () => {
+    const box = $("scan-result");
+    box.hidden = false; box.innerHTML = '<span class="muted">Searching the network for cameras (about 5 seconds)…</span>';
+    $("cam-scan").disabled = true;
+    const j = await post("/api/cameras/scan");
+    $("cam-scan").disabled = false;
+    if (!j.ok) { box.innerHTML = `<span class="muted">${esc(j.error)}</span>`; return; }
+    if (!j.found.length) {
+      box.innerHTML = '<span class="muted">No cameras found. Check that the camera and this PC are on the same network, or add it by IP.</span>';
+      return;
+    }
+    box.innerHTML = '<b class="small muted">Found on the network:</b>' + j.found.map((f) =>
+      `<div class="hit"><span>${esc(f.ip)}</span><span class="muted">${esc(f.info)}</span><span class="grow"></span>` +
+      `<button class="small" data-ip="${esc(f.ip)}">Add</button></div>`).join("");
+  });
+  $("scan-result").addEventListener("click", (e) => {
+    const ip = e.target.dataset && e.target.dataset.ip;
+    if (!ip) return;
+    const node = addCam({ name: "Camera " + ip.split(".").pop(), enabled: true, brand: "generic", ip });
+    node.querySelector('[data-f="user"]').focus();
+    markDirty();
+  });
+
+  // ---------------- load / save ----------------
+  async function load() {
+    const j = await (await fetch("/api/settings", { cache: "no-store" })).json();
+    original = j.settings;
+    fill(original);
+    $("cam-list").innerHTML = "";
+    (original.cameras || []).forEach(addCam);
+    dirty = false; $("savebar").hidden = true;
+  }
+  $("discard").addEventListener("click", load);
+  $("save").addEventListener("click", async () => {
+    $("save").disabled = true; $("save-msg").textContent = "Saving…";
+    const j = await post("/api/settings", collect());
+    if (!j.ok) { $("save").disabled = false; $("save-msg").textContent = j.error; toast(j.error); return; }
+    $("save-msg").textContent = "Saved. Restarting SFT STELLAR…";
+    const t0 = Date.now();
+    await new Promise((r) => setTimeout(r, 2500));
+    const wait = async () => {
+      try { const r = await fetch("/health", { cache: "no-store" }); if (r.ok) { location.reload(); return; } } catch (e) {}
+      if (Date.now() - t0 > 60000) { $("save-msg").textContent = "Restart is taking long — open SFT STELLAR again."; return; }
+      setTimeout(wait, 1000);
+    };
+    wait();
+  });
+  window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+  // ---------------- system check ----------------
+  async function runCheck() {
+    $("checks").innerHTML = '<li class="INFO"><span class="st">…</span><div><b>Checking</b><div class="d">Network, ESP32, firewall, cameras… a few seconds.</div></div></li>';
+    $("check-run").disabled = true;
+    let j;
+    try { j = await (await fetch("/api/check", { cache: "no-store" })).json(); }
+    catch (e) { j = { checks: [] }; }
+    $("check-run").disabled = false;
+    $("checks").innerHTML = j.checks.map((c) =>
+      `<li class="${c.status}"><span class="st">${c.status}</span><div><b>${esc(c.name)}</b>` +
+      `<div class="d">${esc(c.detail)}</div>${c.fix ? `<div class="fix">${esc(c.fix)}</div>` : ""}</div></li>`).join("");
+    $("fw-fix").hidden = !j.checks.some((c) => c.id === "firewall" && (c.status === "FAIL" || c.status === "WARN"));
+  }
+  $("check-run").addEventListener("click", runCheck);
+  $("fw-fix").addEventListener("click", async () => {
+    $("fw-fix").disabled = true; toast("Accept the Windows prompt (administrator)…");
+    const j = await post("/api/check/fix-firewall");
+    $("fw-fix").disabled = false;
+    toast(j.message || j.error || "Done");
+    runCheck();
+  });
+
+  load().then(() => showTab(location.hash.slice(1) || "check"));
+})();

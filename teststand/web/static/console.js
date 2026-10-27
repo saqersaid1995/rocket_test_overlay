@@ -49,7 +49,7 @@
     const t = s.telemetry, ign = s.ignition, rec = s.recorder;
 
     // top bar
-    pill($("pill-link"), `TELEMETRY ${t.link}`, t.link === "LIVE" ? "ok" : t.link === "STALE" ? "warn" : "bad");
+    pill($("pill-link"), `TELEMETRY ${t.link}`, t.link === "LIVE" ? "ok" : (t.link === "STALE" || t.link === "NO DATA") ? "warn" : "bad");
     pill($("pill-ign"), `IGNITION ${ign.state}` + (ign.physical ? "" : " · SIM"),
       ign.state === "SAFE" ? "ok" : ign.state === "ARMED" ? "warn" : "bad");
     pill($("pill-rec"), rec.active ? `● REC ${rec.elapsed_s}s` : "REC OFF", rec.active ? "rec" : "");
@@ -66,7 +66,8 @@
     $("p-fill").style.width = p === null ? "0" : Math.min(100, (p / CFG.max) * 100) + "%";
     $("p-alarm").style.left = Math.min(100, (CFG.alarm / CFG.max) * 100) + "%";
     $("p-meta").textContent = t.firmware ? `${t.firmware} · ${t.remote || ""}` : "waiting for ESP32…";
-    $("link-detail").textContent = t.link === "OFFLINE" ? "No connection from the ESP32"
+    $("link-detail").textContent = t.port_error ? t.port_error
+      : t.link === "OFFLINE" ? `No connection from the ESP32 (listening on port ${t.port})`
       : `${t.rate_hz} Hz · ${t.samples} samples · gaps ${t.gaps} · bad frames ${t.bad_frames}` +
         (t.voltage_v !== null ? ` · ${fmt(t.voltage_v, 4)} V` : "");
 
@@ -85,10 +86,11 @@
     $("btn-arm").textContent = ign.state === "ARMED" ? "DISARM" : "ARM";
     $("btn-arm").disabled = !(ign.state === "SAFE" || ign.state === "ARMED");
     $("btn-start").disabled = ign.state !== "ARMED";
+    $("btn-relay-arm").disabled = $("btn-relay-fire").disabled = ign.state !== "SAFE";
     let note = "";
     if (ign.state === "ARMED" && ign.arm_remaining_s !== null) note = `Auto-disarm in ${ign.arm_remaining_s}s if no action.`;
     else if (ign.state === "SAFE" && ign.last_abort_reason) note = `Last abort: ${ign.last_abort_reason}`;
-    else if (ign.state === "SAFE" && t.link !== "LIVE") note = "ARM is blocked until telemetry is LIVE.";
+    else if (ign.state === "SAFE" && t.link !== "LIVE") note = "ARM is blocked until pressure data is LIVE (see SYSTEMS above).";
     $("ign-note").textContent = note;
 
     // cameras
@@ -113,6 +115,8 @@
         (L.fired ? "" : " · not fired") + ` · ${L.samples} samples`;
     }
 
+    renderSystems(s);
+
     // events
     if (s.events.length) {
       const ol = $("events");
@@ -128,6 +132,82 @@
       while (ol.children.length > 300) ol.lastChild.remove();
     }
   }
+
+  // ---------------- systems bar ----------------
+  function chip(el, text, cls, title) { el.textContent = text; el.className = "chip " + cls; el.title = title || ""; }
+  function renderSystems(s) {
+    const t = s.telemetry, hw = s.ignition.hardware;
+    if (t.port_error) chip($("chip-net"), "ESP32 LINK", "bad", t.port_error);
+    else if (t.link === "LIVE") chip($("chip-net"), "ESP32 LINK", "ok", `Connected from ${t.remote}`);
+    else if (t.link === "NO DATA" || t.link === "STALE") chip($("chip-net"), "ESP32 LINK", "warn", t.link);
+    else chip($("chip-net"), "ESP32 LINK", "bad", "ESP32 not connected — run the system check");
+    if (t.link !== "LIVE") chip($("chip-sensor"), "SENSOR", t.link === "NO DATA" ? "bad" : "", "No pressure data");
+    else if (t.voltage_v !== null && (t.voltage_v < 0.01 || t.voltage_v > 4.9)) chip($("chip-sensor"), "SENSOR", "warn", `${t.voltage_v} V`);
+    else chip($("chip-sensor"), "SENSOR", "ok", `${t.rate_hz} Hz`);
+    if (!s.ignition.physical) chip($("chip-ign"), "IGNITION · SIM", "warn", "Simulation: no relay switches");
+    else if (hw.module) chip($("chip-ign"), "IGNITION", "ok", `ESP32 ignition module: ${hw.state}`);
+    else chip($("chip-ign"), "IGNITION", "bad", "No ignition module answering on the ESP32");
+    const box = $("chip-cams");
+    if (box.childElementCount !== s.cameras.length) {
+      box.innerHTML = "";
+      for (const c of s.cameras) { const e = document.createElement("span"); e.id = "chip-cam-" + c.id; box.appendChild(e); }
+    }
+    for (const c of s.cameras) {
+      const e = $("chip-cam-" + c.id);
+      chip(e, c.name, c.status === "LIVE" ? "ok" : c.status === "DISABLED" ? "" : "bad", c.error || c.status);
+    }
+  }
+  document.querySelector(".sysbar").addEventListener("click", (e) => { if (e.target.classList.contains("chip")) openCheck(); });
+
+  // ---------------- system check ----------------
+  const checkModal = $("check-modal");
+  const escH = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  async function openCheck() {
+    checkModal.hidden = false;
+    $("check-list").innerHTML = '<li class="muted">Checking network, ESP32, firewall, cameras… (a few seconds)</li>';
+    $("check-summary").textContent = ""; $("check-fw").hidden = true;
+    let j;
+    try { j = await (await fetch("/api/check", { cache: "no-store" })).json(); }
+    catch (e) { $("check-list").innerHTML = '<li class="muted">Server not reachable.</li>'; return; }
+    $("check-summary").textContent = "· " + j.summary;
+    $("check-list").innerHTML = j.checks.map((c) =>
+      `<li class="${c.status}"><span class="st">${c.status}</span><div><b>${escH(c.name)}</b>` +
+      `<div class="d">${escH(c.detail)}</div>${c.fix ? `<div class="fix">${escH(c.fix)}</div>` : ""}</div></li>`).join("");
+    $("check-fw").hidden = !j.checks.some((c) => c.id === "firewall" && (c.status === "FAIL" || c.status === "WARN"));
+  }
+  $("btn-check").addEventListener("click", openCheck);
+  $("check-again").addEventListener("click", openCheck);
+  $("check-close").addEventListener("click", () => (checkModal.hidden = true));
+  $("check-fw").addEventListener("click", async () => {
+    $("check-fw").disabled = true;
+    $("check-summary").textContent = "· Accept the Windows prompt…";
+    const j = await api("/api/check/fix-firewall");
+    $("check-fw").disabled = false;
+    if (j.ok) toast(j.message);
+    openCheck();
+  });
+
+  // ---------------- relay test ----------------
+  const relayModal = $("relay-modal");
+  let relayWhich = null;
+  function openRelay(which) {
+    if (state && state.ignition.state !== "SAFE") { toast("Relay test only when ignition is SAFE"); return; }
+    relayWhich = which;
+    $("relay-text").textContent = which === "arm"
+      ? "Clicks the ARM relay alone for a short moment. The FIRE relay stays open."
+      : "Clicks the FIRE relay alone for a short moment. The ARM relay stays open, so with the two relays in series the igniter gets no current.";
+    $("relay-chk").checked = false; $("relay-go").disabled = true;
+    relayModal.hidden = false;
+  }
+  $("btn-relay-arm").addEventListener("click", () => openRelay("arm"));
+  $("btn-relay-fire").addEventListener("click", () => openRelay("fire"));
+  $("relay-chk").addEventListener("change", () => ($("relay-go").disabled = !$("relay-chk").checked));
+  $("relay-cancel").addEventListener("click", () => (relayModal.hidden = true));
+  $("relay-go").addEventListener("click", async () => {
+    relayModal.hidden = true;
+    const j = await api("/api/relay-test/" + relayWhich);
+    if (j.ok) $("relay-note").textContent = `${relayWhich.toUpperCase()} relay clicked ${j.pulse_ms} ms`;
+  });
 
   // ---------------- countdown + clock (smooth, 60 fps) ----------------
   function frame() {

@@ -11,6 +11,7 @@ disconnects, only that camera's picture is affected; it restarts by itself.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import threading
@@ -180,7 +181,8 @@ class Camera:
         if status == "LIVE" and age is not None and age > 3:
             status = "FROZEN"
         rec_failed = self._rec_proc is not None and self._rec_proc.poll() is not None
-        return {"id": self.id, "name": self.name, "status": status, "error": self.error,
+        error = re.sub(r"//[^/@\s]+@", "//****@", self.error) if self.error else None
+        return {"id": self.id, "name": self.name, "status": status, "error": error,
                 "recording": self.recording, "record_failed": rec_failed,
                 "record_s": round(time.time() - self._rec_started) if self.recording else None}
 

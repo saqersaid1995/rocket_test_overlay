@@ -11,6 +11,7 @@ about ignition, cameras or the web page. Other sections can:
 """
 from __future__ import annotations
 
+import os
 import socket
 import socketserver
 import threading
@@ -42,12 +43,20 @@ class TelemetryHub:
             "connected": False, "remote": None, "firmware": None, "boot_id": None,
             "last_rx": 0.0, "batches": 0, "samples": 0, "gaps": 0, "bad_frames": 0,
             "last_sequence": None, "rate_hz": 0.0, "voltage_v": None,
+            "last_batch": 0.0, "last_attempt": None, "ignored_device": None,
         }
+        self.port_error: str | None = None
         self.peak_bar = 0.0
         self._server: socketserver.ThreadingTCPServer | None = None
 
     # ---------- lifecycle ----------
     def start(self) -> None:
+        """Open the receiver port. If another program holds it, keep retrying in the background
+        and report it (the console keeps running)."""
+        if not self._try_bind():
+            threading.Thread(target=self._bind_retry_loop, name="telemetry-bind", daemon=True).start()
+
+    def _try_bind(self) -> bool:
         hub = self
 
         class Handler(socketserver.StreamRequestHandler):
@@ -55,12 +64,36 @@ class TelemetryHub:
                 hub._serve(self.request, self.rfile, f"{self.client_address[0]}:{self.client_address[1]}")
 
         class Server(socketserver.ThreadingTCPServer):
-            allow_reuse_address = True
+            # On Windows SO_REUSEADDR lets two programs share a port silently (the ESP32 may then
+            # talk to the other one). Use an exclusive bind there instead.
+            allow_reuse_address = os.name != "nt"
             daemon_threads = True
 
-        self._server = Server((self.cfg["listen_host"], int(self.cfg["listen_port"])), Handler)
+            def server_bind(self):
+                if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                super().server_bind()
+
+        port = int(self.cfg["listen_port"])
+        try:
+            self._server = Server((self.cfg["listen_host"], port), Handler)
+        except OSError as exc:
+            if self.port_error is None:
+                events.log("TELEMETRY", f"Cannot open port {port}: it is used by another program ({exc})", "ALARM")
+            self.port_error = f"Port {port} is used by another program"
+            return False
+        if self.port_error:
+            events.log("TELEMETRY", f"Port {port} is free again")
+        self.port_error = None
         threading.Thread(target=self._server.serve_forever, name="telemetry-rx", daemon=True).start()
-        events.log("TELEMETRY", f"Receiver listening on port {self.cfg['listen_port']}")
+        events.log("TELEMETRY", f"Receiver listening on port {self.port}")
+        return True
+
+    def _bind_retry_loop(self) -> None:
+        while self._server is None:
+            time.sleep(5)
+            if self._try_bind():
+                return
 
     def stop(self) -> None:
         if self._server:
@@ -73,6 +106,8 @@ class TelemetryHub:
 
     # ---------- connection handling ----------
     def _serve(self, sock: socket.socket, rfile, remote: str) -> None:
+        with self._lock:
+            self.stats["last_attempt"] = {"t": time.time(), "from": remote}
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sock.settimeout(5.0)  # a silent ESP is dropped after 5 s
         registered = False
@@ -86,6 +121,11 @@ class TelemetryHub:
                     self._reply(sock, {"type": "NACK", "device_id": "STAND", "reason": str(exc)})
                     continue
                 if msg["device_id"] != self.device_id:
+                    if self.stats["ignored_device"] != msg["device_id"] and msg["type"] == "HELLO":
+                        events.log("TELEMETRY", f"Ignored device '{msg['device_id']}' from {remote} "
+                                                f"(expected '{self.device_id}')", "WARN")
+                    with self._lock:
+                        self.stats["ignored_device"] = msg["device_id"]
                     continue
                 if msg["type"] == "HELLO":
                     if self._conn is not None and self._conn is not sock and self.link_ok():
@@ -160,7 +200,7 @@ class TelemetryHub:
             last = self.stats["last_sequence"]
             if last is not None and msg["sequence"] > last + 1:
                 self.stats["gaps"] += msg["sequence"] - last - 1
-            self.stats.update(last_sequence=msg["sequence"], last_rx=now,
+            self.stats.update(last_sequence=msg["sequence"], last_rx=now, last_batch=now,
                               batches=self.stats["batches"] + 1, samples=self.stats["samples"] + n,
                               rate_hz=round(1e6 / period, 1),
                               voltage_v=(volts[-1] / 1e6) if volts else None)
@@ -190,8 +230,9 @@ class TelemetryHub:
                 return False
 
     def link_ok(self) -> bool:
+        """True only while pressure samples are actually arriving."""
         with self._lock:
-            return self.stats["connected"] and (time.time() - self.stats["last_rx"]) < self.stale_after
+            return self.stats["connected"] and (time.time() - self.stats["last_batch"]) < self.stale_after
 
     def current_bar(self) -> float | None:
         with self._lock:
@@ -201,11 +242,20 @@ class TelemetryHub:
         with self._lock:
             age = time.time() - self.stats["last_rx"] if self.stats["last_rx"] else None
             state = "OFFLINE"
+            batch_age = time.time() - self.stats["last_batch"] if self.stats["last_batch"] else None
             if self.stats["connected"]:
-                state = "LIVE" if age is not None and age < self.stale_after else "STALE"
+                if batch_age is not None and batch_age < self.stale_after:
+                    state = "LIVE"
+                elif age is not None and age < 3:
+                    state = "NO DATA"   # ESP32 connected but sends no pressure samples
+                else:
+                    state = "STALE"
             return {
                 "link": state, "age_s": None if age is None else round(age, 2),
                 "pressure_bar": self._history[-1][2] if self._history and state == "LIVE" else None,
+                "port": int(self.cfg["listen_port"]), "port_error": self.port_error,
+                "last_attempt": self.stats["last_attempt"], "ignored_device": self.stats["ignored_device"],
+                "boot_id": self.stats["boot_id"],
                 "peak_bar": self.peak_bar, "tare_bar": self.tare_bar,
                 **{k: self.stats[k] for k in ("remote", "firmware", "batches", "samples", "gaps",
                                               "bad_frames", "rate_hz", "voltage_v")},

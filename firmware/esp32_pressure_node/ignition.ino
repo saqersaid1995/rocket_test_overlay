@@ -16,6 +16,9 @@
 //    * Frames with a bad CRC32 or a different target are ignored.
 //    * Ethernet link to the console lost -> SAFE immediately.
 //    * After a fire pulse the node returns to SAFE (must be re-armed).
+//    * Relay test (IGN_TEST): from SAFE only, ONE relay at a time, max 1000 ms.
+//      A FIRE-relay test is refused when no arm relay is configured, because a
+//      single fire relay would then fire the igniter.
 //
 //  !! CHECK IGN_ARM_PIN / IGN_FIRE_PIN AGAINST YOUR WIRING BEFORE UPLOADING !!
 //  !! First test with an LED or a lamp instead of an igniter.              !!
@@ -27,15 +30,17 @@ static const bool IGN_ACTIVE_HIGH = true;
 static const uint32_t IGN_DEADMAN_MS = 1500;
 static const uint32_t IGN_MAX_PULSE_MS = 3000;
 static const uint32_t IGN_STATUS_PERIOD_MS = 500;
+static const uint32_t IGN_MAX_TEST_MS = 1000;
 static const char *IGN_DEVICE_ID = "PT-01";
 
-enum IgnState { IGN_SAFE_STATE, IGN_ARMED_STATE, IGN_FIRING_STATE };
+enum IgnState { IGN_SAFE_STATE, IGN_ARMED_STATE, IGN_FIRING_STATE, IGN_TEST_STATE };
 IgnState ignState = IGN_SAFE_STATE;
 uint32_t ignLastArmMs = 0;
 uint32_t ignFireStartMs = 0;
 uint32_t ignPulseMs = 0;
 uint32_t ignFireCount = 0;
 uint32_t ignLastStatusMs = 0;
+int ignTestPin = -1;
 
 void ignWrite(int pin, bool on) {
   if (pin < 0) return;
@@ -53,6 +58,7 @@ const char *ignStateName() {
   switch (ignState) {
     case IGN_ARMED_STATE:  return "ARMED";
     case IGN_FIRING_STATE: return "FIRING";
+    case IGN_TEST_STATE:   return "TEST";
     default:               return "SAFE";
   }
 }
@@ -60,10 +66,12 @@ const char *ignStateName() {
 void ignSendStatus() {
   if (!edgeClient.connected()) return;
   // keys in sorted order so the PC can verify the CRC
-  String canonical = "{\"boot_id\":\"" + bootId +
+  String canonical = String("{\"ads_ready\":") + (adsReady ? "true" : "false") +
+    ",\"boot_id\":\"" + bootId +
     "\",\"device_id\":\"" + String(IGN_DEVICE_ID) +
     "\",\"fire_count\":" + String(ignFireCount) +
-    ",\"protocol\":\"SMTCS-EDGE/1\",\"state\":\"" + String(ignStateName()) +
+    ",\"protocol\":\"SMTCS-EDGE/1\",\"sd_ready\":" + (sdReady ? "true" : "false") +
+    ",\"state\":\"" + String(ignStateName()) +
     "\",\"type\":\"IGN_STATUS\"}";
   String frame = frameFromCanonical(canonical);
   edgeClient.write((const uint8_t *)frame.c_str(), frame.length());
@@ -103,10 +111,30 @@ void ignitionHandleLine(const String &line) {
   if (!ignFrameValid(line)) { Serial.println("[IGN] frame rejected: CRC"); return; }
   if (line.indexOf(String("\"target\":\"") + IGN_DEVICE_ID + "\"") < 0) return;
 
-  if (line.indexOf("\"type\":\"IGN_SAFE\"") >= 0) {
+  if (line.indexOf("\"type\":\"IGN_TEST\"") >= 0) {
+    bool fireRelay = line.indexOf("\"relay\":\"fire\"") >= 0;
+    bool armRelay = line.indexOf("\"relay\":\"arm\"") >= 0;
+    int pin = fireRelay ? IGN_FIRE_PIN : (armRelay ? IGN_ARM_PIN : -1);
+    if (ignState != IGN_SAFE_STATE || pin < 0 || (fireRelay && IGN_ARM_PIN < 0)) {
+      Serial.println("[IGN] relay test refused");
+      ignSendStatus();
+      return;
+    }
+    long pulse = ignIntField(line, "pulse_ms", 300);
+    if (pulse < 50) pulse = 50;
+    if (pulse > (long)IGN_MAX_TEST_MS) pulse = IGN_MAX_TEST_MS;
+    ignTestPin = pin;
+    ignPulseMs = (uint32_t)pulse;
+    ignFireStartMs = millis();
+    ignState = IGN_TEST_STATE;
+    ignWrite(pin, true);   // only this one relay
+    Serial.print("[IGN] relay test "); Serial.println(fireRelay ? "FIRE" : "ARM");
+    ignSendStatus();
+  } else if (line.indexOf("\"type\":\"IGN_SAFE\"") >= 0) {
     ignGoSafe("IGN_SAFE from console");
     ignSendStatus();
   } else if (line.indexOf("\"type\":\"IGN_ARM\"") >= 0) {
+    if (ignState == IGN_TEST_STATE) return;
     ignLastArmMs = millis();
     if (ignState == IGN_SAFE_STATE) {
       ignState = IGN_ARMED_STATE;
@@ -142,6 +170,8 @@ void ignitionService() {
   }
   if (ignState == IGN_ARMED_STATE && now - ignLastArmMs > IGN_DEADMAN_MS) {
     ignGoSafe("dead-man: no ARM keep-alive");
+  } else if (ignState == IGN_TEST_STATE && now - ignFireStartMs >= ignPulseMs) {
+    ignGoSafe("relay test complete");
   } else if (ignState == IGN_FIRING_STATE && now - ignFireStartMs >= ignPulseMs) {
     ignWrite(IGN_FIRE_PIN, false);
     ignGoSafe("pulse complete");

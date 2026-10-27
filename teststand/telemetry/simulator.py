@@ -31,6 +31,7 @@ class FakeNode:
         self.fire_count = 0
         self.burn_start: float | None = None
         self.fire_end = 0.0
+        self.test_relays: list[str] = []
         self._stop = threading.Event()
         self.sock: socket.socket | None = None
         self.lock = threading.Lock()
@@ -41,7 +42,8 @@ class FakeNode:
                 self.sock.sendall(encode({"device_id": self.device_id, "boot_id": self.boot_id, **msg}))
 
     def _status(self) -> None:
-        self._send({"type": "IGN_STATUS", "state": self.state, "fire_count": self.fire_count})
+        self._send({"type": "IGN_STATUS", "state": self.state, "fire_count": self.fire_count,
+                    "ads_ready": True, "sd_ready": True})
 
     def pressure(self, t: float) -> float:
         noise = random.gauss(0, 0.03)
@@ -80,6 +82,13 @@ class FakeNode:
                     self.burn_start = time.time() + 0.3
                     print("  >>> FIRE received — simulating burn")
                 self._status()
+            elif kind == "IGN_TEST":
+                if self.state == "SAFE" and msg.get("relay") in ("arm", "fire"):
+                    self.state = "TEST"
+                    self.test_relays.append(msg["relay"])
+                    self.fire_end = time.time() + min(int(msg.get("pulse_ms", 300)), 1000) / 1000
+                    print(f"  relay test: {msg['relay']}")
+                self._status()
             elif kind == "IGN_SAFE":
                 self.state = "SAFE"
                 self._status()
@@ -100,7 +109,7 @@ class FakeNode:
                 self.state = "SAFE"
                 print("  dead-man: ARM keep-alive stopped → SAFE")
                 self._status()
-            if self.state == "FIRING" and now >= self.fire_end:
+            if self.state in ("FIRING", "TEST") and now >= self.fire_end:
                 self.state = "SAFE"
                 self._status()
             p = [self.pressure(now - (n - 1 - i) * period_us / 1e6) for i in range(n)]

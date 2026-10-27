@@ -30,8 +30,9 @@ from .telemetry.receiver import TelemetryHub
 
 
 class System:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, cfg_path: str | Path | None = None):
         self.cfg = cfg
+        self.cfg_path = Path(cfg_path) if cfg_path else Path("config.yaml")
         self.hub = TelemetryHub(cfg["telemetry"])
         self.cameras = CameraBank(cfg["cameras"])
         self.recorder = Recorder(cfg["recorder"], self.hub, self.cameras)
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> None:
     if os.environ.pop("SFT_WAIT_FOR_PORTS", None):
         _wait_for_ports([cfg["web"]["port"], cfg["telemetry"]["listen_port"]])
 
-    system = System(cfg)
+    system = System(cfg, cfg_path)
     system.start()
 
     from .web.server import create_app

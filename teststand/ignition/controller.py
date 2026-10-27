@@ -100,6 +100,25 @@ class IgnitionController:
             events.log("IGNITION", f"ABORT → SAFE ({reason})", "ALARM")
             self._emit("safe", reason)
 
+    def test_relay(self, relay: str) -> int:
+        """Click one relay on its own (bench check). Only from SAFE, never both relays together.
+
+        With the arm relay and the fire relay wired in series, one relay alone cannot fire the
+        igniter. The ESP32 refuses a FIRE-relay test when no arm relay is configured.
+        """
+        if relay not in ("arm", "fire"):
+            raise IgnitionError("Unknown relay")
+        ms = int(self.cfg.get("relay_test_ms", 300))
+        ms = max(50, min(ms, 1000))
+        with self._lock:
+            if self.state != SAFE:
+                raise IgnitionError("Relay test only when ignition is SAFE")
+            if not self.driver.test_relay(relay, ms):
+                raise IgnitionError("Relay test failed: the ESP32 is not connected")
+        events.log("IGNITION", f"Relay test: {relay.upper()} relay {ms} ms"
+                               + ("" if self.driver.physical else " (simulation)"), "WARN")
+        return ms
+
     def disarm(self) -> None:
         with self._lock:
             if self.state not in (ARMED,):

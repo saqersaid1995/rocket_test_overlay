@@ -200,6 +200,9 @@ def create_app(system) -> Flask:
         threading.Thread(target=_bye, daemon=True).start()
         return ok()
 
+    from .settings_routes import register as register_settings
+    register_settings(app, system)
+
     @app.get("/health")
     def health():
         return jsonify(ok=True, telemetry=system.hub.snapshot()["link"], ignition=system.ignition.state)

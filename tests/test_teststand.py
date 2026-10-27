@@ -299,3 +299,120 @@ def test_example_config_loads():
     cfg = load_config(Path(__file__).resolve().parent.parent / "config.example.yaml")
     assert cfg["ignition"]["driver"] == "simulation"
     assert all(c["url"] for c in cfg["cameras"])
+
+
+# ---------------- v1.1: relay test, settings, system check, port in use ----------------
+def test_relay_test_rules_simulation():
+    ctl = IgnitionController(ign_cfg(), SimulationDriver(), link_ok=lambda: True)
+    ctl.start()
+    assert ctl.test_relay("arm") == 300
+    with pytest.raises(IgnitionError):
+        ctl.test_relay("both")
+    ctl.arm()
+    with pytest.raises(IgnitionError):
+        ctl.test_relay("fire")   # only from SAFE
+    ctl.stop()
+
+
+def test_relay_test_reaches_fake_esp32(hub):
+    node = FakeNode("127.0.0.1", hub.port)
+    threading.Thread(target=node.run, daemon=True).start()
+    assert wait_for(hub.link_ok, 5)
+    driver = Esp32Driver(hub, "PT-01")
+    ctl = IgnitionController(ign_cfg(), driver, link_ok=hub.link_ok)
+    ctl.start()
+    ctl.test_relay("fire")
+    assert wait_for(lambda: node.test_relays == ["fire"], 2)
+    assert node.fire_count == 0
+    assert wait_for(lambda: driver.hardware_state()["module"] and driver.hardware_state()["ads_ready"], 3)
+    ctl.stop(); node.stop()
+
+
+def test_port_in_use_is_reported_not_fatal():
+    import socket as so
+    blocker = so.socket(); blocker.bind(("127.0.0.1", 0)); blocker.listen()
+    port = blocker.getsockname()[1]
+    h = TelemetryHub(dict(DEFAULTS["telemetry"], listen_host="127.0.0.1", listen_port=port))
+    h.start()
+    assert h.snapshot()["port_error"] and h.snapshot()["link"] == "OFFLINE"
+    blocker.close()
+    assert wait_for(lambda: h.snapshot()["port_error"] is None, 8)
+    h.stop()
+
+
+def _system(tmp_path, extra=None):
+    from teststand.app import System
+    import yaml
+    path = tmp_path / "config.yaml"
+    data = {"telemetry": {"listen_host": "127.0.0.1", "listen_port": 0},
+            "recorder": {"directory": str(tmp_path / "rec")}, **(extra or {})}
+    path.write_text(yaml.safe_dump(data))
+    cfg = load_config(path)
+    return System(cfg, path), path
+
+
+def test_settings_save_cameras_and_password_kept(tmp_path, monkeypatch):
+    from teststand import updater
+    from teststand.web.server import create_app
+    import yaml
+    system, path = _system(tmp_path)
+    monkeypatch.setattr(updater, "restart_later", lambda **kw: None)
+    client = create_app(system).test_client()
+    body = {"ignition": {"countdown_s": "7", "driver": "esp32"},
+            "cameras": [{"id": "c1", "name": "STAND", "enabled": True, "ip": "192.168.1.60", "brand": "tapo",
+                         "user": "admin", "password": "s3cret"}]}
+    r = client.post("/api/settings", json=body)
+    assert r.get_json()["ok"], r.get_json()
+    saved = yaml.safe_load(path.read_text())
+    assert saved["ignition"]["countdown_s"] == 7 and saved["cameras"][0]["password"] == "s3cret"
+    cfg = load_config(path)
+    assert cfg["cameras"][0]["record_url"] == "rtsp://admin:s3cret@192.168.1.60:554/stream1"
+    assert cfg["cameras"][0]["preview_url"].endswith("/stream2")
+    # page never receives the password, and saving it back unchanged keeps it
+    got = client.get("/api/settings").get_json()["settings"]["cameras"][0]
+    assert got["password"] == "********"
+    r = client.post("/api/settings", json={"cameras": [got]})
+    assert r.get_json()["ok"]
+    assert yaml.safe_load(path.read_text())["cameras"][0]["password"] == "s3cret"
+    # invalid settings are refused and not written
+    r = client.post("/api/settings", json={"ignition": {"driver": "gpio"}})
+    assert r.status_code == 400
+    assert yaml.safe_load(path.read_text())["ignition"]["driver"] == "esp32"
+
+
+def test_settings_refused_while_armed(tmp_path):
+    from teststand.web.server import create_app
+    system, _ = _system(tmp_path)
+    system.ignition.state = "ARMED"
+    r = create_app(system).test_client().post("/api/settings", json={})
+    assert r.status_code == 409
+    system.ignition.state = "SAFE"
+
+
+def test_system_check_runs(tmp_path):
+    from teststand.web.server import create_app
+    system, _ = _system(tmp_path, {"telemetry": {"listen_host": "127.0.0.1", "listen_port": 0, "esp_ip": "127.0.0.1"}})
+    system.hub.start()
+    j = create_app(system).test_client().get("/api/check").get_json()
+    ids = {c["id"]: c for c in j["checks"]}
+    assert {"network", "port", "firewall", "esp_ping", "esp_link", "adc", "ignition", "disk"} <= set(ids)
+    assert ids["esp_link"]["status"] == "FAIL" and ids["esp_link"]["fix"]
+    assert j["summary"] == "FAIL"
+    system.hub.stop()
+
+
+def test_camera_test_with_local_video(tmp_path):
+    import subprocess
+    from teststand.cameras.camera import ffmpeg_path
+    from teststand.web.server import create_app
+    if not ffmpeg_path():
+        pytest.skip("no ffmpeg")
+    clip = tmp_path / "c.mp4"
+    subprocess.run([ffmpeg_path(), "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=5",
+                    "-t", "1", str(clip)], check=True)
+    system, _ = _system(tmp_path)
+    client = create_app(system).test_client()
+    j = client.post("/api/cameras/test", json={"url": str(clip)}).get_json()
+    assert j["ok"] and j["image"].startswith("data:image/jpeg;base64,")
+    j = client.post("/api/cameras/test", json={"url": str(tmp_path / "missing.mp4")}).get_json()
+    assert not j["ok"]

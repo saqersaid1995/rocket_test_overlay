@@ -16,11 +16,24 @@
     <span class="pill" id="pill-rec">REC —</span>
   </div>
   <div class="clock"><span id="clock">--:--:--</span><span class="tminus" id="tminus"></span></div>
+  <nav class="nav">
+    <a href="/" class="on">Console</a>
+    <a href="/settings">Settings</a>
+  </nav>
   <div class="sysmenu">
-    <button id="btn-update" title="Check GitHub for a new version">Check for updates</button>
+    <button id="btn-update" title="Check GitHub for a new version">Updates</button>
     <button id="btn-power" title="Close SFT STELLAR">⏻</button>
   </div>
 </header>
+<div class="sysbar">
+  <span class="sys-label">SYSTEMS</span>
+  <span class="chip" id="chip-net">ESP32 LINK</span>
+  <span class="chip" id="chip-sensor">SENSOR</span>
+  <span class="chip" id="chip-ign">IGNITION</span>
+  <span id="chip-cams"></span>
+  <span class="grow"></span>
+  <button class="small" id="btn-check">Run system check</button>
+</div>
 
 <div id="offline" class="offline" hidden>CONSOLE LOST CONNECTION TO THE SERVER — ignition auto-aborts after 3 s</div>
 
@@ -63,6 +76,12 @@
       <button class="abort" id="btn-abort">ABORT<small>Esc / Space</small></button>
     </div>
     <p class="muted small" id="ign-note"></p>
+    <div class="relaytest">
+      <span class="muted small">RELAY TEST</span>
+      <button class="small" id="btn-relay-arm" title="Click the ARM relay alone">ARM relay</button>
+      <button class="small" id="btn-relay-fire" title="Click the FIRE relay alone">FIRE relay</button>
+      <span class="muted small" id="relay-note">only when SAFE</span>
+    </div>
   </section>
 
   <!-- CAMERAS -->
@@ -110,6 +129,24 @@
     <h3 id="upd-title">Updates</h3>
     <div id="upd-body" class="upd-body">Checking…</div>
     <div class="row"><button id="upd-close">Close</button><button class="arm" id="upd-apply" hidden>Update now</button></div>
+  </div>
+</div>
+
+<div class="modal" id="check-modal" hidden>
+  <div class="box info wide">
+    <h3>System check <span class="muted small" id="check-summary"></span></h3>
+    <ol class="checks" id="check-list"><li class="muted">Checking…</li></ol>
+    <div class="row"><button id="check-fw" hidden>Fix firewall</button><span class="grow"></span>
+      <button id="check-again">Check again</button><button id="check-close">Close</button></div>
+  </div>
+</div>
+
+<div class="modal" id="relay-modal" hidden>
+  <div class="box">
+    <h3>Relay test</h3>
+    <p id="relay-text"></p>
+    <label><input type="checkbox" id="relay-chk"> The igniter is NOT connected (or a lamp / LED is connected instead)</label>
+    <div class="row"><button id="relay-cancel">Cancel</button><button class="arm" id="relay-go" disabled>Click relay</button></div>
   </div>
 </div>
 

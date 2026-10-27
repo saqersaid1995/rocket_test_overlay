@@ -143,10 +143,10 @@ if ($rule) {
     Ok 'Already present'
 } else {
     Write-Host '    Windows will ask for permission (UAC) to open port 9100 for the ESP32.'
-    $cmd = "New-NetFirewallRule -DisplayName '$AppName telemetry' -Direction Inbound -Protocol TCP -LocalPort 9100 -Action Allow -Profile Private,Domain | Out-Null"
+    $cmd = "New-NetFirewallRule -DisplayName '$AppName telemetry' -Direction Inbound -Protocol TCP -LocalPort 9100 -Action Allow -Profile Any | Out-Null"
     try {
         Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', $cmd
-        Ok 'Port 9100 opened (private / domain networks)'
+        Ok 'Port 9100 opened'
     } catch {
         Write-Host '    Skipped. If the ESP32 cannot connect, allow Python when Windows asks.' -ForegroundColor Yellow
     }

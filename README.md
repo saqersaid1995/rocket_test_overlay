@@ -27,6 +27,9 @@ A camera that freezes or disconnects cannot slow down pressure or ignition — c
 3. Double-click the icon: the console starts in the background and opens in its own window.
 
 **Updates:** press **Check for updates** in the top bar. It shows what is new and installs it with one click (only when ignition is SAFE and nothing is recording), then restarts. Your `config.yaml` and test data are never touched.
+**Settings** (top right): System check · Cameras (scan network, add by IP + brand, test picture) · ESP32 & network · Ignition · Pressure · Recording. Saving restarts the console (about 5 s).
+**SYSTEMS bar:** ESP32 link, sensor, ignition module and each camera, green / amber / red. Click it for the full System check with what to do.
+**RELAY TEST** (ignition panel): clicks the ARM relay or the FIRE relay alone, only when SAFE.
 **Close:** the power button stops the console. Log file: `data/logs/console.log`.
 
 ## Start (developer)

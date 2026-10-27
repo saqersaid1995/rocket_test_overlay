@@ -34,8 +34,12 @@ class SimulationDriver:
     def safe(self) -> None:
         self._armed = False
 
+    def test_relay(self, relay: str, pulse_ms: int) -> bool:
+        return not self._armed
+
     def hardware_state(self) -> dict:
-        return {"state": "ARMED" if self._armed else "SAFE", "age_s": 0.0, "confirmed": True}
+        return {"state": "ARMED" if self._armed else "SAFE", "age_s": 0.0, "confirmed": True,
+                "module": True, "ads_ready": None, "sd_ready": None}
 
 
 class Esp32Driver:
@@ -47,14 +51,15 @@ class Esp32Driver:
         self.target = target
         self._seq = 0
         self._lock = threading.Lock()
-        self._status = {"state": "UNKNOWN", "t": 0.0, "fire_count": None}
+        self._status = {"state": "UNKNOWN", "t": 0.0, "fire_count": None, "ads_ready": None, "sd_ready": None}
         hub.add_frame_listener(self._on_frame)
 
     def _on_frame(self, msg: dict) -> None:
         if msg.get("type") == "IGN_STATUS" and msg.get("device_id") == self.target:
             with self._lock:
                 self._status = {"state": msg.get("state", "UNKNOWN"), "t": time.time(),
-                                "fire_count": msg.get("fire_count")}
+                                "fire_count": msg.get("fire_count"), "ads_ready": msg.get("ads_ready"),
+                                "sd_ready": msg.get("sd_ready")}
 
     def _send(self, kind: str, **extra) -> bool:
         with self._lock:
@@ -71,6 +76,9 @@ class Esp32Driver:
     def fire(self, pulse_ms: int) -> bool:
         return self._send("IGN_FIRE", pulse_ms=int(pulse_ms))
 
+    def test_relay(self, relay: str, pulse_ms: int) -> bool:
+        return self._send("IGN_TEST", relay=relay, pulse_ms=int(pulse_ms))
+
     def safe(self) -> None:
         # sent twice: a lost SAFE is the one frame we never want to lose
         self._send("IGN_SAFE")
@@ -81,7 +89,9 @@ class Esp32Driver:
             st = dict(self._status)
         age = time.time() - st["t"] if st["t"] else None
         return {"state": st["state"], "age_s": None if age is None else round(age, 2),
-                "confirmed": age is not None and age < 1.5, "fire_count": st["fire_count"]}
+                "confirmed": age is not None and age < 1.5, "fire_count": st["fire_count"],
+                "module": age is not None and age < 5,   # ignition.ino is running on the ESP32
+                "ads_ready": st["ads_ready"], "sd_ready": st["sd_ready"]}
 
 
 def make_driver(cfg: dict, hub):
