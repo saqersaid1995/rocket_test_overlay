@@ -110,6 +110,9 @@ def _local_ips() -> list[str]:
     return sorted(ip for ip in ips if not ip.startswith("127."))
 
 
+ONVIF_XADDRS: dict[str, str] = {}   # ip -> ONVIF device service URL from the last scan
+
+
 def onvif_discover(timeout: float = 2.5) -> dict[str, str]:
     """{ip: description} for cameras answering ONVIF WS-Discovery."""
     found: dict[str, str] = {}
@@ -131,6 +134,9 @@ def onvif_discover(timeout: float = 2.5) -> dict[str, str]:
                 text = data.decode(errors="replace")
                 scopes = " ".join(re.findall(r"onvif://www\.onvif\.org/(?:name|hardware)/([^\s<]+)", text))
                 found[addr[0]] = ("ONVIF " + scopes.replace("%20", " ")).strip()
+                xaddrs = re.findall(r"XAddrs>([^<]+)<", text)
+                if xaddrs:
+                    ONVIF_XADDRS[addr[0]] = xaddrs[0].split()[0]
             s.close()
         except OSError:
             continue
@@ -168,4 +174,5 @@ def scan() -> list[dict]:
             result[ip] = desc
         for ip, desc in a.result().items():
             result[ip] = desc + ("" if ip not in result else " · RTSP 554")
-    return [{"ip": ip, "info": info} for ip, info in sorted(result.items(), key=lambda kv: socket.inet_aton(kv[0]))]
+    return [{"ip": ip, "info": info, "onvif_url": ONVIF_XADDRS.get(ip)}
+            for ip, info in sorted(result.items(), key=lambda kv: socket.inet_aton(kv[0]))]

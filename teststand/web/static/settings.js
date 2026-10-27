@@ -98,6 +98,31 @@
     const act = btn.dataset.act;
     if (act === "remove") { node.remove(); markDirty(); return; }
     if (act === "mode") { setMode(node, node.dataset.mode !== "url"); markDirty(); return; }
+    if (act === "onvif") {
+      const ipEl = node.querySelector('[data-f="ip"]');
+      const user = node.querySelector('[data-f="user"]').value.trim();
+      let pass = node.querySelector('[data-f="password"]').value;
+      const msg = node.querySelector(".test-msg");
+      if (!ipEl.value.trim()) { msg.className = "small test-msg bad"; msg.textContent = "Enter the camera IP first"; return; }
+      msg.className = "muted small test-msg"; msg.textContent = "Asking the camera for its streams…"; btn.disabled = true;
+      const j = await post("/api/cameras/onvif", { ip: ipEl.value.trim(), user, password: pass === "********" ? "" : pass });
+      btn.disabled = false;
+      if (!j.ok || !j.streams || !j.streams.length) {
+        msg.className = "small test-msg bad";
+        msg.textContent = (j.error || "No streams returned") + (j.rtsp_ports && j.rtsp_ports.length ? ` · RTSP port open: ${j.rtsp_ports.join(", ")}` : "");
+        return;
+      }
+      const withCred = (u) => user && !/\/\/[^/]*@/.test(u) ? u.replace("//", `//${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`) : u;
+      const px = (st) => (+st.width || 0) * (+st.height || 0);
+      const sorted = [...j.streams].sort((a, b) => px(b) - px(a));
+      setMode(node, true);
+      node.querySelector('[data-f="record_url"]').value = withCred(sorted[0].uri);
+      node.querySelector('[data-f="preview_url"]').value = withCred(sorted[sorted.length - 1].uri);
+      msg.className = "small test-msg ok";
+      msg.textContent = `${j.model || "Camera"}: ${j.streams.length} stream(s) found — press Test preview.`;
+      markDirty();
+      return;
+    }
     if (act === "test" || act === "test-rec") {
       const c = readCam(node);
       const msg = node.querySelector(".test-msg"), img = node.querySelector(".test-img");

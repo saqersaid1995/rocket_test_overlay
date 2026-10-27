@@ -202,7 +202,8 @@ def register(app, system) -> None:
         ip = str(body.get("ip", "")).strip()
         if not ip:
             return fail("Enter the camera IP", 400)
-        return ok(**onvif.probe(ip, str(body.get("user", "")), str(body.get("password", ""))))
+        return ok(**onvif.probe(ip, str(body.get("user", "")), str(body.get("password", "")),
+                                body.get("onvif_url") or None))
 
     # ---------------- relay test ----------------
     @app.post("/api/relay-test/<relay>")

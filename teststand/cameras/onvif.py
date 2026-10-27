@@ -68,13 +68,17 @@ def open_ports(ip: str, ports, timeout: float = 0.6) -> list[int]:
     return found
 
 
-def probe(ip: str, user: str = "", password: str = "") -> dict:
+def probe(ip: str, user: str = "", password: str = "", onvif_url: str | None = None) -> dict:
     """Return {'onvif_url', 'model', 'rtsp_ports', 'streams': [{name, width, height, uri}], 'error'}."""
     out: dict = {"ip": ip, "onvif_url": None, "model": None, "streams": [], "error": None,
                  "rtsp_ports": open_ports(ip, RTSP_PORTS)}
     device = None
-    for port in open_ports(ip, ONVIF_PORTS):
-        url = f"http://{ip}:{port}/onvif/device_service"
+    if not onvif_url:
+        from .discovery import ONVIF_XADDRS
+        onvif_url = ONVIF_XADDRS.get(ip)
+    candidates = [onvif_url] if onvif_url else []
+    candidates += [f"http://{ip}:{p}/onvif/device_service" for p in open_ports(ip, ONVIF_PORTS)]
+    for url in candidates:
         try:
             _soap(url, "<tds:GetSystemDateAndTime/>")
             device = url
