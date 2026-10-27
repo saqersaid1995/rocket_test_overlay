@@ -27,7 +27,8 @@ EDITABLE = {
 }
 CAMERA_FIELDS = {"id": str, "name": str, "enabled": bool, "ip": str, "user": str, "password": str,
                  "port": int, "brand": str, "record_path": str, "preview_path": str,
-                 "url": str, "record_url": str, "preview_url": str}
+                 "url": str, "record_url": str, "preview_url": str,
+                 "preview_width": int, "preview_fps": int}
 
 
 def _coerce(kind, value):

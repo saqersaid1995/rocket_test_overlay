@@ -50,7 +50,7 @@ class Camera:
         self.preview_url = cfg.get("preview_url") or cfg["url"]
         self.record_url = cfg.get("record_url") or cfg["url"]
         self.preview_fps = int(cfg.get("preview_fps", 10))
-        self.preview_width = int(cfg.get("preview_width", 640))
+        self.preview_width = int(cfg.get("preview_width", 640))   # 0 = full camera resolution
         self.enabled = bool(cfg.get("enabled", True))
         self._frame: bytes | None = None
         self._frame_t = 0.0
@@ -85,7 +85,7 @@ class Camera:
                 continue
             cmd = [exe, "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
                    *_input_args(self.preview_url), "-an",
-                   "-vf", f"fps={self.preview_fps},scale={self.preview_width}:-2",
+                   "-vf", f"fps={self.preview_fps}" + (f",scale={self.preview_width}:-2" if self.preview_width > 0 else ""),
                    "-q:v", "6", "-f", "mjpeg", "pipe:1"]
             started = time.time()
             try:
