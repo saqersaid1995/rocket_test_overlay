@@ -206,6 +206,41 @@ def register(app, system) -> None:
         return ok(**onvif.probe(ip, str(body.get("user", "")), str(body.get("password", "")),
                                 body.get("onvif_url") or None))
 
+    def _cam_login(body: dict) -> tuple[str, str, str]:
+        ip, user, pw = str(body.get("ip", "")).strip(), str(body.get("user", "")), str(body.get("password", ""))
+        if pw in ("", "********"):
+            prev = next((c for c in load_user_config(system.cfg_path).get("cameras") or []
+                         if c.get("id") == body.get("id")), {})
+            pw = prev.get("password", "")
+            ip = ip or prev.get("ip", "")
+            user = user or prev.get("user", "")
+        if not ip:
+            raise ValueError("Enter the camera IP")
+        return ip, user, pw
+
+    @app.post("/api/cameras/device/read")
+    def camera_device_read():
+        from ..cameras import hikvision
+        try:
+            ip, user, pw = _cam_login(request.get_json(silent=True) or {})
+            return ok(**hikvision.read(ip, user, pw))
+        except (ValueError, hikvision.CameraError) as exc:
+            return fail(str(exc), 502)
+
+    @app.post("/api/cameras/device/apply")
+    def camera_device_apply():
+        from ..cameras import hikvision
+        body = request.get_json(silent=True) or {}
+        if system.recorder.active:
+            return fail("Stop the recording first")
+        try:
+            ip, user, pw = _cam_login(body)
+            done = hikvision.apply(ip, user, pw, body.get("changes") or {})
+        except (ValueError, hikvision.CameraError) as exc:
+            return fail(str(exc), 502)
+        events.log("CAMERA", f"Camera {ip} settings changed: {', '.join(done) or 'nothing'}")
+        return ok(done=done)
+
     # ---------------- relay test ----------------
     @app.post("/api/relay-test/<relay>")
     def relay_test(relay: str):

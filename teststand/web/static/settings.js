@@ -61,6 +61,7 @@
   function addCam(c) {
     const node = $("cam-tpl").content.firstElementChild.cloneNode(true);
     c = c || { name: "Camera " + (document.querySelectorAll(".cam-card").length + 1), enabled: true, brand: "generic" };
+    c = { preview_width: 640, preview_fps: 10, ...c };
     node.dataset.id = c.id || "cam" + Date.now().toString(36) + (camSeq++);
     node.querySelectorAll("[data-f]").forEach((el) => {
       const v = c[el.dataset.f];
@@ -98,6 +99,8 @@
     const act = btn.dataset.act;
     if (act === "remove") { node.remove(); markDirty(); return; }
     if (act === "mode") { setMode(node, node.dataset.mode !== "url"); markDirty(); return; }
+    if (act === "device") { loadDevice(node, btn); return; }
+    if (act === "device-apply") { applyDevice(node, btn); return; }
     if (act === "onvif") {
       const ipEl = node.querySelector('[data-f="ip"]');
       const user = node.querySelector('[data-f="user"]').value.trim();
@@ -140,6 +143,67 @@
       }
     }
   });
+  // ---------------- camera device settings (Hikvision ISAPI) ----------------
+  function camLogin(node) {
+    const g = (f) => { const el = node.querySelector(`[data-f="${f}"]`); return el ? el.value.trim() : ""; };
+    let ip = g("ip"), user = g("user"), password = node.querySelector('[data-f="password"]').value;
+    if (!ip) {   // full-URL mode: take IP / user from the address
+      const m = /^rtsp:\/\/(?:([^:@/]*)(?::([^@/]*))?@)?([^:/]+)/.exec(g("record_url") || g("preview_url"));
+      if (m) { user = decodeURIComponent(m[1] || ""); password = decodeURIComponent(m[2] || ""); ip = m[3]; }
+    }
+    return { id: node.dataset.id, ip, user, password };
+  }
+  function opt(v, label, cur) { return `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(label)}</option>`; }
+  async function loadDevice(node, btn) {
+    const box = node.querySelector(".device");
+    box.hidden = false; box.innerHTML = '<span class="muted small">Reading settings from the camera…</span>';
+    btn.disabled = true;
+    const j = await post("/api/cameras/device/read", camLogin(node));
+    btn.disabled = false;
+    if (!j.ok) { box.innerHTML = `<span class="small test-msg bad">${esc(j.error)}</span>`; return; }
+    let html = `<div class="dev-h"><b>${esc(j.model || "Camera")}</b> <span class="muted small">firmware ${esc(j.firmware)}</span></div><div class="form">`;
+    for (const [name, st] of Object.entries(j.streams)) {
+      const label = name === "main" ? "Main stream (recording)" : "Sub stream";
+      html += `<label>${label} — resolution<select data-dev="${name}.resolution">` +
+        st.resolutions.map((r) => opt(r, r, st.resolution)).join("") + `</select></label>` +
+        `<label>${label} — frame rate<select data-dev="${name}.fps">` +
+        st.fps_options.map((f) => opt(f, f + " fps", st.fps)).join("") + `</select></label>`;
+    }
+    html += "</div>";
+    if (j.osd) {
+      html += `<div class="form"><label class="check"><input type="checkbox" data-dev="osd.date_time"${j.osd.date_time ? " checked" : ""}> Show date and time on the picture</label>` +
+        `<label class="check"><input type="checkbox" data-dev="osd.camera_name"${j.osd.camera_name ? " checked" : ""}> Show camera name on the picture</label>`;
+      for (const t of j.osd.texts) {
+        html += `<label class="check"><input type="checkbox" data-dev-text="${esc(t.id)}"${t.enabled ? " checked" : ""}> Text ${esc(t.id)}: ` +
+          `<input data-dev-textval="${esc(t.id)}" value="${esc(t.text)}" style="flex:1"></label>`;
+      }
+      html += "</div>";
+    }
+    if (j.errors.length) html += `<div class="small test-msg bad">${esc(j.errors.join(" · "))}</div>`;
+    html += `<div class="row"><button class="small primary" data-act="device-apply">Apply to camera</button><span class="small muted dev-msg"></span></div>`;
+    box.innerHTML = html;
+  }
+  async function applyDevice(node, btn) {
+    const box = node.querySelector(".device");
+    const changes = { streams: {}, osd: {} };
+    box.querySelectorAll("select[data-dev]").forEach((el) => {
+      const [name, key] = el.dataset.dev.split(".");
+      (changes.streams[name] = changes.streams[name] || {})[key] = el.value;
+    });
+    box.querySelectorAll("input[type=checkbox][data-dev]").forEach((el) => (changes.osd[el.dataset.dev.split(".")[1]] = el.checked));
+    const texts = [...box.querySelectorAll("[data-dev-text]")].map((el) => ({
+      id: el.dataset.devText, enabled: el.checked,
+      text: box.querySelector(`[data-dev-textval="${el.dataset.devText}"]`).value }));
+    if (texts.length) changes.osd.texts = texts;
+    if (!Object.keys(changes.osd).length) delete changes.osd;
+    const msg = box.querySelector(".dev-msg");
+    msg.textContent = "Sending to the camera…"; btn.disabled = true;
+    const j = await post("/api/cameras/device/apply", { ...camLogin(node), changes });
+    btn.disabled = false;
+    msg.className = "small dev-msg " + (j.ok ? "test-msg ok" : "test-msg bad");
+    msg.textContent = j.ok ? "Saved in the camera. The picture restarts in a few seconds." : j.error;
+  }
+
   $("cam-add").addEventListener("click", () => { addCam().querySelector('[data-f="ip"]').focus(); markDirty(); });
   $("cam-scan").addEventListener("click", async () => {
     const box = $("scan-result");

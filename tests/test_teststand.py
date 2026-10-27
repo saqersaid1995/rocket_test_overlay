@@ -416,3 +416,75 @@ def test_camera_test_with_local_video(tmp_path):
     assert j["ok"] and j["image"].startswith("data:image/jpeg;base64,")
     j = client.post("/api/cameras/test", json={"url": str(tmp_path / "missing.mp4")}).get_json()
     assert not j["ok"]
+
+
+# ---------------- Hikvision ISAPI camera settings ----------------
+def test_hikvision_read_and_apply():
+    import base64
+    import http.server
+    from teststand.cameras import hikvision
+    NS = 'xmlns="http://www.hikvision.com/ver20/XMLSchema"'
+    state = {"w": "2560", "h": "1440", "fps": "2000", "dt": "true", "name": "true", "t1": "false", "t1txt": "OLD"}
+    puts = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+
+        def _auth(self):
+            if self.headers.get("Authorization") != "Basic " + base64.b64encode(b"admin:pw").decode():
+                self.send_response(401); self.send_header("WWW-Authenticate", 'Basic realm="cam"'); self.end_headers()
+                return False
+            return True
+
+        def _send(self, xml):
+            self.send_response(200); self.send_header("Content-Type", "application/xml"); self.end_headers()
+            self.wfile.write(xml.encode())
+
+        def do_GET(self):
+            if not self._auth(): return
+            p = self.path
+            if p == "/ISAPI/System/deviceInfo":
+                self._send(f'<DeviceInfo {NS}><model>DS-TEST</model><firmwareVersion>V5</firmwareVersion></DeviceInfo>')
+            elif p.endswith("/capabilities"):
+                self._send(f'<StreamingChannel {NS}><Video><videoResolutionWidth opt="3200,2560,1920">x</videoResolutionWidth>'
+                           f'<videoResolutionHeight opt="1800,1440,1080">x</videoResolutionHeight>'
+                           f'<maxFrameRate opt="2000,1500,1000,50">x</maxFrameRate></Video></StreamingChannel>')
+            elif p.startswith("/ISAPI/Streaming/channels/"):
+                self._send(f'<StreamingChannel {NS}><id>{p[-3:]}</id><Video><videoCodecType>H.264</videoCodecType>'
+                           f'<videoResolutionWidth>{state["w"]}</videoResolutionWidth><videoResolutionHeight>{state["h"]}'
+                           f'</videoResolutionHeight><maxFrameRate>{state["fps"]}</maxFrameRate></Video></StreamingChannel>')
+            elif p.endswith("/overlays"):
+                self._send(f'<VideoOverlay {NS}><TextOverlayList><TextOverlay><id>1</id><enabled>{state["t1"]}</enabled>'
+                           f'<displayText>{state["t1txt"]}</displayText></TextOverlay></TextOverlayList>'
+                           f'<DateTimeOverlay><enabled>{state["dt"]}</enabled></DateTimeOverlay>'
+                           f'<channelNameOverlay><enabled>{state["name"]}</enabled></channelNameOverlay></VideoOverlay>')
+
+        def do_PUT(self):
+            if not self._auth(): return
+            body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+            puts.append((self.path, body))
+            assert "ns0:" not in body
+            import re
+            if "Streaming" in self.path:
+                state["w"] = re.search(r"<videoResolutionWidth>(\d+)<", body).group(1)
+                state["fps"] = re.search(r"<maxFrameRate>(\d+)<", body).group(1)
+            else:
+                state["dt"] = re.search(r"<DateTimeOverlay><enabled>(\w+)<", body).group(1)
+                state["t1txt"] = re.search(r"<displayText>([^<]*)<", body).group(1)
+            self._send(f'<ResponseStatus {NS}><statusCode>1</statusCode></ResponseStatus>')
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    ip = f"127.0.0.1:{srv.server_address[1]}"
+    with pytest.raises(hikvision.CameraError):
+        hikvision.read(ip, "admin", "wrong")
+    info = hikvision.read(ip, "admin", "pw")
+    main = info["streams"]["main"]
+    assert info["model"] == "DS-TEST" and main["resolution"] == "2560x1440" and main["fps"] == 20
+    assert main["resolutions"] == ["3200x1800", "2560x1440", "1920x1080"] and main["fps_options"][0] == 20
+    assert info["osd"] == {"date_time": True, "camera_name": True, "texts": [{"id": "1", "enabled": False, "text": "OLD"}]}
+    done = hikvision.apply(ip, "admin", "pw", {"streams": {"main": {"resolution": "3200x1800", "fps": "15"}},
+                                                "osd": {"date_time": False, "texts": [{"id": "1", "enabled": True, "text": "SK"}]}})
+    assert len(done) == 2 and state["w"] == "3200" and state["fps"] == "1500"
+    assert state["dt"] == "false" and state["t1txt"] == "SK"
+    srv.shutdown()
