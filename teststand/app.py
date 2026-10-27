@@ -41,6 +41,9 @@ class System:
         self.ignition.on("countdown", self.recorder.on_countdown)
         self.ignition.on("fire", self.recorder.on_fire)
         self.ignition.on("safe", self.recorder.on_safe)
+        from .firmware import FirmwareManager
+        data_dir = Path(cfg["recorder"]["directory"]).resolve().parent
+        self.firmware = FirmwareManager(cfg["firmware"], data_dir, self.hub)
 
     def start(self) -> None:
         self.hub.start()

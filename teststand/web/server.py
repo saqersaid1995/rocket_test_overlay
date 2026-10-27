@@ -202,6 +202,8 @@ def create_app(system) -> Flask:
 
     from .settings_routes import register as register_settings
     register_settings(app, system)
+    from .firmware_routes import register as register_firmware
+    register_firmware(app, system)
 
     @app.get("/health")
     def health():

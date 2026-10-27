@@ -13,8 +13,9 @@ import zlib
 PROTOCOL = "SMTCS-EDGE/1"
 MAX_FRAME_BYTES = 64_000
 MAX_BATCH_SAMPLES = 2_000
-INBOUND_TYPES = {"HELLO", "BATCH", "HEARTBEAT", "IGN_STATUS", "ACK", "NACK"}   # ESP32 -> console
-COMMAND_TYPES = {"ACK", "NACK", "IGN_ARM", "IGN_FIRE", "IGN_SAFE", "IGN_TEST"}             # console -> ESP32
+INBOUND_TYPES = {"HELLO", "BATCH", "HEARTBEAT", "IGN_STATUS", "ACK", "NACK",
+                 "OTA_READY", "OTA_PROGRESS", "OTA_DONE", "OTA_FAIL"}   # ESP32 -> console
+COMMAND_TYPES = {"ACK", "NACK", "IGN_ARM", "IGN_FIRE", "IGN_SAFE", "IGN_TEST", "OTA_BEGIN"}             # console -> ESP32
 
 
 class ProtocolError(ValueError):

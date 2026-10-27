@@ -44,6 +44,10 @@ DEFAULTS: dict = {
         "auto_record": True,          # countdown start -> start recording
         "auto_stop_after_fire_s": 30, # stop recording this long after the fire pulse
     },
+    "firmware": {
+        "fqbn": "esp32:esp32:esp32",  # board for arduino-cli (ESP32 Dev Module)
+        "sketch": "esp32_pressure_ota",
+    },
     "cameras": [],
 }
 

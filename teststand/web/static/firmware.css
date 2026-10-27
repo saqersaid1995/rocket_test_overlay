@@ -1,0 +1,18 @@
+.fw-page{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.grow{flex:1}
+button.primary{border-color:var(--accent);color:var(--accent)}
+.fw-bar{display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--line);background:#091014;flex-wrap:wrap}
+.fw-file{display:flex;align-items:center;gap:6px}
+.fw-file input{font-size:12px;padding:3px;max-width:220px}
+.fw-main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:8px;padding:8px;min-height:0}
+#code{width:100%;height:100%;box-sizing:border-box;resize:none;background:#070b0e;color:#d9e6ea;border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px;font:13px/1.5 var(--mono);tab-size:2;white-space:pre;overflow:auto}
+#code:focus{outline:none;border-color:#27414d}
+.fw-side{display:flex;flex-direction:column;gap:8px;min-height:0}
+.fw-status{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--panel)}
+.fw-status .bar{height:6px;background:#0a1013;border-radius:3px;margin-top:8px;overflow:hidden}
+.fw-status .bar div{height:100%;width:0;background:var(--accent);transition:width .2s}
+.fw-status b.ok{color:var(--ok)} .fw-status b.bad{color:var(--bad)} .fw-status b.run{color:var(--warn)}
+#fw-log{flex:1;margin:0;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#070b0e;padding:8px 10px;
+  font:11.5px/1.45 var(--mono);color:#9fb6be;white-space:pre-wrap;word-break:break-word}
+@media (max-width: 1000px){ .fw-main{grid-template-columns:1fr;grid-template-rows:1fr 260px} }

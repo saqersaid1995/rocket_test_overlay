@@ -32,6 +32,7 @@ class FakeNode:
         self.burn_start: float | None = None
         self.fire_end = 0.0
         self.test_relays: list[str] = []
+        self.ota_images: list[bytes] = []
         self._stop = threading.Event()
         self.sock: socket.socket | None = None
         self.lock = threading.Lock()
@@ -67,6 +68,9 @@ class FakeNode:
             except ProtocolError:
                 continue
             kind = msg["type"]
+            if kind == "OTA_BEGIN":
+                self._ota(f, msg)
+                return
             if msg.get("target") not in (None, self.device_id):
                 continue
             if kind == "IGN_ARM":
@@ -93,13 +97,38 @@ class FakeNode:
                 self.state = "SAFE"
                 self._status()
 
+    def _ota(self, f, msg) -> None:
+        """Receive a firmware image like the real ESP32, then 'restart'."""
+        import hashlib
+        size = int(msg["size"])
+        self._send({"type": "OTA_READY"})
+        got = b""
+        while len(got) < size:
+            chunk = f.read(min(65536, size - len(got)))
+            if not chunk:
+                return
+            got += chunk
+            self._send({"type": "OTA_PROGRESS", "received": len(got)})
+        if hashlib.md5(got).hexdigest() != msg.get("md5"):
+            self._send({"type": "OTA_FAIL", "message": "MD5 check failed"})
+            return
+        self.ota_images.append(got)
+        self._send({"type": "OTA_DONE", "received": len(got)})
+        print(f"  OTA image received ({size} bytes) — restarting")
+        self.boot_id = f"sim-{time.time():.3f}"
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)   # run() reconnects with a new boot_id, like a reboot
+            self.sock.close()
+        except OSError:
+            pass
+
     def run_once(self) -> None:
         self.sock = socket.create_connection((self.host, self.port), timeout=5)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.sock.settimeout(None)
         f = self.sock.makefile("rb")
         threading.Thread(target=self._reader, args=(f,), daemon=True).start()
-        self._send({"type": "HELLO", "firmware": "sim-node/1", "channels": ["pressure_mbar", "voltage_uv"]})
+        self._send({"type": "HELLO", "firmware": "sim-node/1+ota", "channels": ["pressure_mbar", "voltage_uv"]})
         seq, period_us, n = 0, 5000, 20
         t_dev = 0
         next_t = time.time()

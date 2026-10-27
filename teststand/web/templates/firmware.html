@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SFT STELLAR · Firmware</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='console.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='firmware.css') }}">
+</head>
+<body class="fw-page">
+<header class="topbar">
+  <div class="brand"><img class="logo" src="{{ url_for('static', filename='logo.svg') }}" alt=""><b>SFT STELLAR</b><span class="sub">STELLAR KINETICS · v{{ version }}</span></div>
+  <span class="grow"></span>
+  <nav class="nav">
+    <a href="/">Console</a>
+    <a href="/firmware" class="on">Firmware</a>
+    <a href="/settings">Settings</a>
+  </nav>
+</header>
+
+<div class="fw-bar">
+  <span class="chip" id="fw-device">ESP32 —</span>
+  <span class="muted small" id="fw-info"></span>
+  <span class="grow"></span>
+  <button id="fw-save">Save</button>
+  <button id="fw-compile">Compile</button>
+  <button id="fw-upload">Upload to ESP32</button>
+  <button class="primary" id="fw-both">Compile &amp; Upload</button>
+  <label class="small muted fw-file">or upload a .bin <input type="file" id="fw-file" accept=".bin"></label>
+</div>
+
+<main class="fw-main">
+  <textarea id="code" spellcheck="false" wrap="off"></textarea>
+  <section class="fw-side">
+    <div class="fw-status"><b id="fw-job">Ready</b><div class="bar"><div id="fw-progress"></div></div></div>
+    <pre id="fw-log"></pre>
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='firmware.js') }}"></script>
+</body>
+</html>

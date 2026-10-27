@@ -488,3 +488,41 @@ def test_hikvision_read_and_apply():
     assert len(done) == 2 and state["w"] == "3200" and state["fps"] == "1500"
     assert state["dt"] == "false" and state["t1txt"] == "SK"
     srv.shutdown()
+
+
+# ---------------- firmware over Ethernet ----------------
+def test_ota_upload_to_fake_esp32(hub):
+    import hashlib
+    node = FakeNode("127.0.0.1", hub.port)
+    threading.Thread(target=node.run, daemon=True).start()
+    assert wait_for(hub.link_ok, 5)
+    boot = hub.snapshot()["boot_id"]
+    image = bytes([0xE9]) + bytes(range(256)) * 1200
+    progress = []
+    hub.ota_upload(image, hashlib.md5(image).hexdigest(), progress.append)
+    assert node.ota_images == [image] and progress[-1] == len(image)
+    assert wait_for(lambda: hub.link_ok() and hub.snapshot()["boot_id"] != boot, 8)
+    with pytest.raises(RuntimeError):
+        hub.ota_upload(image, "0" * 32)   # wrong MD5 -> ESP32 refuses
+    node.stop()
+
+
+def test_firmware_manager_upload_and_source(hub, tmp_path):
+    from teststand.firmware import FirmwareManager
+    node = FakeNode("127.0.0.1", hub.port)
+    threading.Thread(target=node.run, daemon=True).start()
+    assert wait_for(hub.link_ok, 5)
+    fm = FirmwareManager({}, tmp_path, hub)
+    assert "OTA_BEGIN" in fm.read()          # seeded from firmware/esp32_pressure_ota
+    fm.write("void setup(){}\nvoid loop(){}\n")
+    assert fm.read().startswith("void setup")
+    with pytest.raises(RuntimeError):
+        fm.start_upload()                    # nothing compiled yet
+    fm.start_upload(b"not a firmware")
+    assert wait_for(lambda: fm.job["state"] == "FAILED", 3)
+    image = bytes([0xE9]) + b"\x00" * 50000
+    fm.start_upload(image)
+    assert wait_for(lambda: fm.job["state"] in ("DONE", "FAILED"), 20)
+    assert fm.job["state"] == "DONE", fm.job["log"]
+    assert node.ota_images[-1] == image
+    node.stop()

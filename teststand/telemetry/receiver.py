@@ -109,7 +109,7 @@ class TelemetryHub:
         with self._lock:
             self.stats["last_attempt"] = {"t": time.time(), "from": remote}
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.settimeout(5.0)  # a silent ESP is dropped after 5 s
+        sock.settimeout(20.0)  # a silent ESP is dropped after 20 s (firmware update pauses data)
         registered = False
         try:
             for line in rfile:
@@ -228,6 +228,55 @@ class TelemetryHub:
                 return True
             except OSError:
                 return False
+
+    def ota_upload(self, data: bytes, md5: str, progress=None, log=None, timeout: float = 15.0) -> None:
+        """Send a firmware image to the ESP32 over the telemetry link (see firmware.py)."""
+        import queue
+        replies: queue.Queue = queue.Queue()
+
+        def on_frame(msg: dict) -> None:
+            if str(msg.get("type", "")).startswith("OTA_"):
+                replies.put(msg)
+
+        def wait_for(kinds: set, secs: float) -> dict:
+            end = time.time() + secs
+            while time.time() < end:
+                try:
+                    msg = replies.get(timeout=max(0.05, end - time.time()))
+                except queue.Empty:
+                    break
+                if msg["type"] == "OTA_FAIL":
+                    raise RuntimeError(f"ESP32 refused: {msg.get('message', '?')}")
+                if msg["type"] == "OTA_PROGRESS":
+                    if log:
+                        log(f"  ESP32 received {msg.get('received')} bytes\n")
+                    end = time.time() + secs   # still alive
+                    continue
+                if msg["type"] in kinds:
+                    return msg
+            raise RuntimeError("No answer from the ESP32")
+
+        self._frame_listeners.append(on_frame)
+        try:
+            with self._conn_lock:
+                sock = self._conn
+            if sock is None:
+                raise RuntimeError("ESP32 is not connected")
+            if not self.send({"type": "OTA_BEGIN", "device_id": "STAND", "size": len(data), "md5": md5}):
+                raise RuntimeError("Could not send to the ESP32")
+            wait_for({"OTA_READY"}, timeout)
+            sent, chunk = 0, 1024
+            while sent < len(data):
+                with self._conn_lock:
+                    sock.sendall(data[sent:sent + chunk])
+                sent += min(chunk, len(data) - sent)
+                if progress:
+                    progress(sent)
+            if log:
+                log("  all bytes sent, waiting for the ESP32 to check them…\n")
+            wait_for({"OTA_DONE"}, 30)
+        finally:
+            self._frame_listeners.remove(on_frame)
 
     def link_ok(self) -> bool:
         """True only while pressure samples are actually arriving."""
