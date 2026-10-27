@@ -140,6 +140,23 @@ def fix_firewall(port: int) -> str:
     return "Firewall updated"
 
 
+def security_firewalls() -> list[str]:
+    """Firewall products registered with Windows Security Center other than Windows' own."""
+    if not IS_WIN:
+        return []
+    code, out = _ps("Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct "
+                    "-ErrorAction SilentlyContinue | ForEach-Object { 'FW=' + $_.displayName }")
+    return [ln[3:].strip() for ln in out.splitlines() if ln.startswith("FW=") and ln[3:].strip()]
+
+
+def network_category(adapter: str) -> str:
+    if not IS_WIN or "'" in adapter:
+        return ""
+    code, out = _ps(f"(Get-NetConnectionProfile -InterfaceAlias '{adapter}' -ErrorAction SilentlyContinue)"
+                    ".NetworkCategory")
+    return out.strip().splitlines()[-1] if out.strip() else ""
+
+
 # ---------------------------------------------------------------- network cards (Windows)
 def network_adapters() -> list[dict]:
     """All network cards with status, type and IPv4 addresses (Windows)."""
@@ -265,8 +282,10 @@ def run_all(system) -> list[dict]:
                                  "Press 'Undo' to put it back to automatic address.")
                           | {"adapter": a["name"], "action": "dhcp"})
     if pc_ip and same_subnet24(pc_ip, esp_ip):
+        cat = network_category(wired["name"]) if wired else ""
         checks.append(_check("network", "PC network", "OK",
-                             f"This PC is {pc_ip} on the ESP32 network ({esp_ip.rsplit('.', 1)[0]}.x)."))
+                             f"This PC is {pc_ip} on the ESP32 network ({esp_ip.rsplit('.', 1)[0]}.x)"
+                             + (f", Windows network type: {cat}." if cat else ".")))
     elif wired:
         checks.append(_check("network", "PC network", "FAIL",
                              f"Ethernet card '{wired['name']}' ({wired['description']}) has "
@@ -312,6 +331,15 @@ def run_all(system) -> list[dict]:
                              "Press 'Fix firewall' and accept the Windows prompt."))
     else:
         checks.append(_check("firewall", "Windows firewall", "OK", f"Port {port} is allowed."))
+
+    # 3b. Other firewall software (e.g. Norton) — Windows rules do not apply to it
+    others = security_firewalls()
+    if others:
+        checks.append(_check("firewall3", "Other firewall", "WARN",
+                             f"Firewall software running: {', '.join(others)}. It can block the ESP32 even "
+                             "when the Windows firewall allows it.",
+                             f"In {others[0]}: allow 'pythonw.exe' / 'python.exe' from the SFT STELLAR folder, or "
+                             "mark the Ethernet network as trusted (Home / Private)."))
 
     # 4. ESP32 reachable
     connected = snap["link"] in ("LIVE", "NO DATA", "STALE")
