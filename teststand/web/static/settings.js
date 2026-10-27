@@ -53,8 +53,10 @@
     return out;
   }
   function markDirty() { dirty = true; $("savebar").hidden = false; }
-  document.addEventListener("input", (e) => { if (e.target.closest(".tab:not(#tab-check)")) markDirty(); });
-  document.addEventListener("change", (e) => { if (e.target.closest(".tab:not(#tab-check)")) markDirty(); });
+  // camera-device controls are sent with "Apply to camera", not with Save
+  const counts = (t) => t.closest(".tab:not(#tab-check)") && !t.closest(".device");
+  document.addEventListener("input", (e) => { if (counts(e.target)) markDirty(); });
+  document.addEventListener("change", (e) => { if (counts(e.target)) markDirty(); });
 
   // ---------------- cameras ----------------
   let camSeq = 0;
@@ -252,7 +254,16 @@
     };
     wait();
   });
-  window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+  // leaving with unsaved changes: ask inside the page (Save / Don't save / Stay)
+  document.querySelectorAll(".nav a").forEach((a) => a.addEventListener("click", (e) => {
+    if (!dirty) return;
+    e.preventDefault();
+    $("leave-modal").hidden = false;
+    $("leave-modal").dataset.href = a.getAttribute("href");
+  }));
+  $("leave-stay").addEventListener("click", () => ($("leave-modal").hidden = true));
+  $("leave-discard").addEventListener("click", () => { dirty = false; location.href = $("leave-modal").dataset.href; });
+  $("leave-save").addEventListener("click", () => { $("leave-modal").hidden = true; $("save").click(); });
 
   // ---------------- system check ----------------
   async function runCheck() {

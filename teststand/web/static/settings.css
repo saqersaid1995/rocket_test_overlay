@@ -46,3 +46,5 @@ select{font:inherit;color:var(--text);background:#091014;border:1px solid var(--
 .form[hidden]{display:none}
 .device{border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:6px 0;background:#091014}
 .dev-h{margin-bottom:4px}
+.form input[type=checkbox]{width:auto}
+.form label.check{grid-column:span 1}
