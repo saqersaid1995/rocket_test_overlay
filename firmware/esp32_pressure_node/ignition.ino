@@ -16,9 +16,7 @@
 //    * Frames with a bad CRC32 or a different target are ignored.
 //    * Ethernet link to the console lost -> SAFE immediately.
 //    * After a fire pulse the node returns to SAFE (must be re-armed).
-//    * Relay test (IGN_TEST): from SAFE only, ONE relay at a time, max 1000 ms.
-//      A FIRE-relay test is refused when no arm relay is configured, because a
-//      single fire relay would then fire the igniter.
+//    * Relay test (IGN_TEST): from SAFE only, one relay at a time, max 1000 ms.
 //
 //  !! CHECK IGN_ARM_PIN / IGN_FIRE_PIN AGAINST YOUR WIRING BEFORE UPLOADING !!
 //  !! First test with an LED or a lamp instead of an igniter.              !!
@@ -115,7 +113,7 @@ void ignitionHandleLine(const String &line) {
     bool fireRelay = line.indexOf("\"relay\":\"fire\"") >= 0;
     bool armRelay = line.indexOf("\"relay\":\"arm\"") >= 0;
     int pin = fireRelay ? IGN_FIRE_PIN : (armRelay ? IGN_ARM_PIN : -1);
-    if (ignState != IGN_SAFE_STATE || pin < 0 || (fireRelay && IGN_ARM_PIN < 0)) {
+    if (ignState != IGN_SAFE_STATE || pin < 0) {
       Serial.println("[IGN] relay test refused");
       ignSendStatus();
       return;

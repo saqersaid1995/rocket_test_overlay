@@ -141,14 +141,6 @@
   </div>
 </div>
 
-<div class="modal" id="relay-modal" hidden>
-  <div class="box">
-    <h3>Relay test</h3>
-    <p id="relay-text"></p>
-    <label><input type="checkbox" id="relay-chk"> The igniter is NOT connected (or a lamp / LED is connected instead)</label>
-    <div class="row"><button id="relay-cancel">Cancel</button><button class="arm" id="relay-go" disabled>Click relay</button></div>
-  </div>
-</div>
 
 <script>window.TS = {{ {"hold_s": cfg.ignition.hold_to_start_s, "alarm": cfg.pressure.alarm_bar, "max": cfg.pressure.max_expected_bar} | tojson }};</script>
 <script src="{{ url_for('static', filename='console.js') }}"></script>

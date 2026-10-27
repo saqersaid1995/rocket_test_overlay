@@ -140,41 +140,101 @@ def fix_firewall(port: int) -> str:
     return "Firewall updated"
 
 
-# ---------------------------------------------------------------- Ethernet IP (Windows)
-def apipa_adapters() -> list[str]:
-    """Windows network cards that are connected but got no address (169.254.x.x)."""
+# ---------------------------------------------------------------- network cards (Windows)
+def network_adapters() -> list[dict]:
+    """All network cards with status, type and IPv4 addresses (Windows)."""
     if not IS_WIN:
         return []
-    code, out = _ps("Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
-                    "Where-Object { $_.IPAddress -like '169.254.*' } | "
-                    "ForEach-Object { 'IF=' + $_.InterfaceAlias }")
-    return [ln[3:].strip() for ln in out.splitlines() if ln.startswith("IF=")]
+    script = (
+        "Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { $a = $_; "
+        "$ips = (Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+        "ForEach-Object { $_.IPAddress + '/' + $_.PrefixLength + ':' + $_.PrefixOrigin }) -join ','; "
+        "$dhcp = (Get-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp; "
+        "'ADP|' + $a.Name + '|' + $a.InterfaceDescription + '|' + $a.Status + '|' + $a.HardwareInterface + '|' "
+        "+ $a.MediaType + '|' + $ips + '|' + $dhcp }"
+    )
+    code, out = _ps(script, timeout=25)
+    result = []
+    for ln in out.splitlines():
+        if not ln.startswith("ADP|"):
+            continue
+        parts = ln.split("|")
+        if len(parts) < 8:
+            continue
+        _, name, desc, status, hw, media, ips, dhcp = parts[:8]
+        ip_list = [x.split("/")[0] for x in ips.split(",") if x]
+        wireless = bool(re.search(r"wi-?fi|wireless|802\.11|wlan", desc + " " + media, re.I))
+        virtual = hw.strip().lower() != "true" or bool(re.search(r"virtual|vpn|hyper-v|vmware|wsl|"
+                                                                   r"loopback|bluetooth|tap-|wan miniport",
+                                                                   desc, re.I))
+        result.append({"name": name, "description": desc, "status": status, "wired": not wireless,
+                       "physical": not virtual, "ips": ip_list, "dhcp": dhcp.strip()})
+    return result
+
+
+def wired_ethernet(adapters: list[dict]) -> dict | None:
+    """The physical, wired, connected network card (the one the ESP32 cable goes into)."""
+    cands = [a for a in adapters if a["physical"] and a["wired"] and a["status"].lower() == "up"]
+    return cands[0] if cands else None
 
 
 def suggested_pc_ip(esp_ip: str) -> str:
     return esp_ip.rsplit(".", 1)[0] + ".10"
 
 
+def _elevated(lines: list[str], name: str) -> tuple[bool, str]:
+    """Run PowerShell lines as administrator; return (ok, message from the script)."""
+    tmp = Path(os.environ.get("TEMP", "."))
+    script, result = tmp / f"sft_{name}.ps1", tmp / f"sft_{name}.result.txt"
+    try:
+        result.unlink()
+    except OSError:
+        pass
+    body = ["$ErrorActionPreference = 'Stop'", "try {", *["  " + ln for ln in lines],
+            f"  'OK' | Out-File -Encoding ascii '{result}'",
+            "} catch {", f"  ('ERROR ' + $_.Exception.Message) | Out-File -Encoding ascii '{result}'", "}"]
+    script.write_text("\r\n".join(body) + "\r\n", encoding="utf-8")
+    _ps("Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
+        f"'-NoProfile -ExecutionPolicy Bypass -File \"{script}\"'", timeout=120)
+    try:
+        text = result.read_text(encoding="ascii", errors="replace").strip()
+    except OSError:
+        return False, "Cancelled (the Windows permission prompt was not accepted)"
+    return text.startswith("OK"), text
+
+
 def set_ethernet_ip(adapter: str, ip: str, prefix: int = 24) -> str:
-    """Give `adapter` a fixed IPv4 address (Windows asks for administrator permission)."""
+    """Give `adapter` a fixed IPv4 address, then check that it really has it."""
     if not IS_WIN:
         return "Only needed on Windows"
     if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) or "'" in adapter:
         return "Invalid adapter or address"
-    script = Path(os.environ.get("TEMP", ".")) / "sft_stellar_ethernet.ps1"
-    lines = [
-        "$ErrorActionPreference = 'SilentlyContinue'",
+    ok, msg = _elevated([
         f"$a = '{adapter}'",
-        "Set-NetIPInterface -InterfaceAlias $a -Dhcp Disabled",
-        "Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 | Remove-NetIPAddress -Confirm:$false",
-        f"New-NetIPAddress -InterfaceAlias $a -IPAddress '{ip}' -PrefixLength {prefix} | Out-Null",
-    ]
-    script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
-    code, _ = _ps("Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
-                  f"'-NoProfile -ExecutionPolicy Bypass -File \"{script}\"'", timeout=120)
-    if code != 0:
-        return "Network change was cancelled or failed"
-    return f"'{adapter}' is now {ip}"
+        "Set-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -Dhcp Disabled",
+        "Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+        "Remove-NetIPAddress -Confirm:$false",
+        f"New-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -IPAddress '{ip}' -PrefixLength {prefix} | Out-Null",
+    ], "ethernet")
+    if not ok:
+        return f"Failed: {msg}"
+    now = next((a for a in network_adapters() if a["name"] == adapter), None)
+    if now and ip in now["ips"]:
+        return f"'{adapter}' is now {ip}"
+    return f"Windows accepted the change but '{adapter}' shows {', '.join(now['ips']) if now else '?'}"
+
+
+def restore_dhcp(adapter: str) -> str:
+    """Put a network card back to automatic address (DHCP)."""
+    if not IS_WIN or "'" in adapter:
+        return "Not possible"
+    ok, msg = _elevated([
+        f"$a = '{adapter}'",
+        "Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -PrefixOrigin Manual -ErrorAction SilentlyContinue | "
+        "Remove-NetIPAddress -Confirm:$false",
+        "Set-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -Dhcp Enabled",
+    ], "dhcp")
+    return f"'{adapter}' is back to automatic address" if ok else f"Failed: {msg}"
 
 
 # ---------------------------------------------------------------- full check
@@ -191,23 +251,33 @@ def run_all(system) -> list[dict]:
     # 1. PC network
     pc_ip = local_ip_towards(esp_ip)
     all_ips = local_ipv4s()
+    adapters = network_adapters()
+    want = suggested_pc_ip(esp_ip)
+    wired = wired_ethernet(adapters)
+    # a fixed ESP-network address on a card that is not the wired Ethernet card = wrong card
+    for a in adapters:
+        if a is not wired and want in a["ips"] and a["dhcp"].lower() == "disabled":
+            checks.append(_check("network_wrong", f"Network card '{a['name']}'", "WARN",
+                                 f"'{a['name']}' ({a['description']}) has the fixed address {want}, "
+                                 "but it is not the Ethernet card for the ESP32.",
+                                 "Press 'Undo' to put it back to automatic address.")
+                          | {"adapter": a["name"], "action": "dhcp"})
     if pc_ip and same_subnet24(pc_ip, esp_ip):
         checks.append(_check("network", "PC network", "OK",
                              f"This PC is {pc_ip} on the ESP32 network ({esp_ip.rsplit('.', 1)[0]}.x)."))
+    elif wired:
+        checks.append(_check("network", "PC network", "FAIL",
+                             f"Ethernet card '{wired['name']}' ({wired['description']}) has "
+                             f"{', '.join(wired['ips']) or 'no address'} — not on the ESP32 network "
+                             f"({esp_ip.rsplit('.', 1)[0]}.x).",
+                             f"Press 'Set Ethernet IP' to give it {want} (Windows will ask for permission).")
+                      | {"adapter": wired["name"], "ip": want, "action": "static"})
+        pc_ip = None
     else:
-        want = suggested_pc_ip(esp_ip)
-        apipa = apipa_adapters()
-        if apipa:
-            checks.append(_check("network", "PC network", "FAIL",
-                                 f"The Ethernet card '{apipa[0]}' is connected but has no address "
-                                 f"(169.254.x.x). The ESP32 network is {esp_ip.rsplit('.', 1)[0]}.x.",
-                                 f"Press 'Set Ethernet IP' to give it {want} (Windows will ask for permission).")
-                          | {"adapter": apipa[0], "ip": want})
-        else:
-            checks.append(_check("network", "PC network", "FAIL",
-                                 f"No network card on {esp_ip.rsplit('.', 1)[0]}.x. PC addresses: "
-                                 f"{', '.join(all_ips) or 'none'}.",
-                                 "Connect the Ethernet cable to the ESP32 / switch, then run the check again."))
+        checks.append(_check("network", "PC network", "FAIL",
+                             "No wired Ethernet card is connected. PC addresses: "
+                             f"{', '.join(all_ips) or 'none'}.",
+                             "Plug the Ethernet cable from the ESP32 / switch into this PC, then check again."))
         pc_ip = None
 
     # 2. Receiver port

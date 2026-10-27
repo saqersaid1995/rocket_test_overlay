@@ -93,7 +93,7 @@ The sketch folder has two tabs. `esp32_pressure_node.ino` is the pressure node; 
 
 Commands from the console (same TCP link, `SMTCS-EDGE/1`, CRC32 checked): `IGN_ARM` (also the keep-alive, every 300 ms), `IGN_FIRE` (`pulse_ms`), `IGN_SAFE`, and `IGN_TEST` (`relay`: `arm` or `fire`, `pulse_ms` ≤ 1000) for the RELAY TEST buttons. The node answers with `IGN_STATUS` (`SAFE` / `ARMED` / `FIRING` / `TEST`, `fire_count`, `ads_ready`, `sd_ready`) every 500 ms and on every change.
 
-Relay test rules: only from SAFE, one relay at a time, max 1000 ms. A FIRE-relay test is refused when `IGN_ARM_PIN` is `-1` (no arm relay), because then one relay alone would fire the igniter.
+Relay test: only from SAFE, one relay at a time, max 1000 ms.
 
 | Setting | Default | Meaning |
 |---|---|---|

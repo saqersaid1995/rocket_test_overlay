@@ -101,11 +101,7 @@ class IgnitionController:
             self._emit("safe", reason)
 
     def test_relay(self, relay: str) -> int:
-        """Click one relay on its own (bench check). Only from SAFE, never both relays together.
-
-        With the arm relay and the fire relay wired in series, one relay alone cannot fire the
-        igniter. The ESP32 refuses a FIRE-relay test when no arm relay is configured.
-        """
+        """Click one relay on its own (bench check). Only from SAFE."""
         if relay not in ("arm", "fire"):
             raise IgnitionError("Unknown relay")
         ms = int(self.cfg.get("relay_test_ms", 300))

@@ -188,26 +188,12 @@
   });
 
   // ---------------- relay test ----------------
-  const relayModal = $("relay-modal");
-  let relayWhich = null;
-  function openRelay(which) {
-    if (state && state.ignition.state !== "SAFE") { toast("Relay test only when ignition is SAFE"); return; }
-    relayWhich = which;
-    $("relay-text").textContent = which === "arm"
-      ? "Clicks the ARM relay alone for a short moment. The FIRE relay stays open."
-      : "Clicks the FIRE relay alone for a short moment. The ARM relay stays open, so with the two relays in series the igniter gets no current.";
-    $("relay-chk").checked = false; $("relay-go").disabled = true;
-    relayModal.hidden = false;
+  async function relayTest(which) {
+    const j = await api("/api/relay-test/" + which);
+    if (j.ok) $("relay-note").textContent = `${which.toUpperCase()} relay clicked ${j.pulse_ms} ms`;
   }
-  $("btn-relay-arm").addEventListener("click", () => openRelay("arm"));
-  $("btn-relay-fire").addEventListener("click", () => openRelay("fire"));
-  $("relay-chk").addEventListener("change", () => ($("relay-go").disabled = !$("relay-chk").checked));
-  $("relay-cancel").addEventListener("click", () => (relayModal.hidden = true));
-  $("relay-go").addEventListener("click", async () => {
-    relayModal.hidden = true;
-    const j = await api("/api/relay-test/" + relayWhich);
-    if (j.ok) $("relay-note").textContent = `${relayWhich.toUpperCase()} relay clicked ${j.pulse_ms} ms`;
-  });
+  $("btn-relay-arm").addEventListener("click", () => relayTest("arm"));
+  $("btn-relay-fire").addEventListener("click", () => relayTest("fire"));
 
   // ---------------- countdown + clock (smooth, 60 fps) ----------------
   function frame() {

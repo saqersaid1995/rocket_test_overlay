@@ -175,16 +175,34 @@ def register(app, system) -> None:
     @app.post("/api/check/set-ethernet")
     def set_ethernet():
         body = request.get_json(silent=True) or {}
-        adapter, ip = str(body.get("adapter", "")), str(body.get("ip", ""))
-        if not adapter or not ip:
-            return fail("Missing adapter or IP", 400)
+        adapter, ip, action = str(body.get("adapter", "")), str(body.get("ip", "")), body.get("action", "static")
+        if not adapter:
+            return fail("Missing adapter", 400)
         result = {}
-        t = threading.Thread(target=lambda: result.update(msg=diagnostics.set_ethernet_ip(adapter, ip)))
+
+        def work():
+            result["msg"] = (diagnostics.restore_dhcp(adapter) if action == "dhcp"
+                             else diagnostics.set_ethernet_ip(adapter, ip))
+
+        t = threading.Thread(target=work)
         t.start()
-        t.join(130)
+        t.join(150)
         msg = result.get("msg", "Timed out waiting for the Windows prompt")
         events.log("SYSTEM", msg)
         return ok(message=msg)
+
+    @app.get("/api/network/adapters")
+    def adapters():
+        return ok(adapters=diagnostics.network_adapters())
+
+    @app.post("/api/cameras/onvif")
+    def camera_onvif():
+        from ..cameras import onvif
+        body = request.get_json(silent=True) or {}
+        ip = str(body.get("ip", "")).strip()
+        if not ip:
+            return fail("Enter the camera IP", 400)
+        return ok(**onvif.probe(ip, str(body.get("user", "")), str(body.get("password", ""))))
 
     # ---------------- relay test ----------------
     @app.post("/api/relay-test/<relay>")
