@@ -211,6 +211,8 @@ def set_ethernet_ip(adapter: str, ip: str, prefix: int = 24) -> str:
         return "Invalid adapter or address"
     ok, msg = _elevated([
         f"$a = '{adapter}'",
+        f"Get-NetIPAddress -IPAddress '{ip}' -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.InterfaceAlias -ne $a } | Remove-NetIPAddress -Confirm:$false",
         "Set-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -Dhcp Disabled",
         "Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
         "Remove-NetIPAddress -Confirm:$false",
@@ -256,7 +258,7 @@ def run_all(system) -> list[dict]:
     wired = wired_ethernet(adapters)
     # a fixed ESP-network address on a card that is not the wired Ethernet card = wrong card
     for a in adapters:
-        if a is not wired and want in a["ips"] and a["dhcp"].lower() == "disabled":
+        if a is not wired and want in a["ips"]:
             checks.append(_check("network_wrong", f"Network card '{a['name']}'", "WARN",
                                  f"'{a['name']}' ({a['description']}) has the fixed address {want}, "
                                  "but it is not the Ethernet card for the ESP32.",
