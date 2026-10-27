@@ -172,6 +172,20 @@ def register(app, system) -> None:
         events.log("SYSTEM", msg)
         return ok(message=msg)
 
+    @app.post("/api/check/set-ethernet")
+    def set_ethernet():
+        body = request.get_json(silent=True) or {}
+        adapter, ip = str(body.get("adapter", "")), str(body.get("ip", ""))
+        if not adapter or not ip:
+            return fail("Missing adapter or IP", 400)
+        result = {}
+        t = threading.Thread(target=lambda: result.update(msg=diagnostics.set_ethernet_ip(adapter, ip)))
+        t.start()
+        t.join(130)
+        msg = result.get("msg", "Timed out waiting for the Windows prompt")
+        events.log("SYSTEM", msg)
+        return ok(message=msg)
+
     # ---------------- relay test ----------------
     @app.post("/api/relay-test/<relay>")
     def relay_test(relay: str):

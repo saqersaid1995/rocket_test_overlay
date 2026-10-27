@@ -149,3 +149,4 @@ body[data-state=COUNTDOWN] .countdown,body[data-state=FIRING] .countdown{visibil
 .checks .d{color:var(--muted);font-size:12px}
 .checks .fix{color:var(--accent);font-size:12px;margin-top:2px}
 .checks .fix::before{content:"→ "}
+.btnlink{color:var(--accent);text-decoration:none;border:1px solid #27414d;border-radius:5px;padding:5px 11px}

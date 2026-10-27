@@ -177,7 +177,20 @@
       `<li class="${c.status}"><span class="st">${c.status}</span><div><b>${esc(c.name)}</b>` +
       `<div class="d">${esc(c.detail)}</div>${c.fix ? `<div class="fix">${esc(c.fix)}</div>` : ""}</div></li>`).join("");
     $("fw-fix").hidden = !j.checks.some((c) => c.id === "firewall" && (c.status === "FAIL" || c.status === "WARN"));
+    netFix = j.checks.find((c) => c.id === "network" && c.adapter) || null;
+    $("net-fix").hidden = !netFix;
+    if (netFix) $("net-fix").textContent = `Set Ethernet IP to ${netFix.ip}`;
   }
+  let netFix = null;
+  $("net-fix").addEventListener("click", async () => {
+    if (!netFix) return;
+    if (!confirm(`Give the network card '${netFix.adapter}' the fixed address ${netFix.ip} (mask 255.255.255.0)?\nWindows will ask for administrator permission.`)) return;
+    $("net-fix").disabled = true; toast("Accept the Windows prompt (administrator)…");
+    const j = await post("/api/check/set-ethernet", { adapter: netFix.adapter, ip: netFix.ip });
+    $("net-fix").disabled = false;
+    toast(j.message || j.error || "Done");
+    setTimeout(runCheck, 3000);
+  });
   $("check-run").addEventListener("click", runCheck);
   $("fw-fix").addEventListener("click", async () => {
     $("fw-fix").disabled = true; toast("Accept the Windows prompt (administrator)…");

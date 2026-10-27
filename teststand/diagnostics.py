@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -139,6 +140,43 @@ def fix_firewall(port: int) -> str:
     return "Firewall updated"
 
 
+# ---------------------------------------------------------------- Ethernet IP (Windows)
+def apipa_adapters() -> list[str]:
+    """Windows network cards that are connected but got no address (169.254.x.x)."""
+    if not IS_WIN:
+        return []
+    code, out = _ps("Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                    "Where-Object { $_.IPAddress -like '169.254.*' } | "
+                    "ForEach-Object { 'IF=' + $_.InterfaceAlias }")
+    return [ln[3:].strip() for ln in out.splitlines() if ln.startswith("IF=")]
+
+
+def suggested_pc_ip(esp_ip: str) -> str:
+    return esp_ip.rsplit(".", 1)[0] + ".10"
+
+
+def set_ethernet_ip(adapter: str, ip: str, prefix: int = 24) -> str:
+    """Give `adapter` a fixed IPv4 address (Windows asks for administrator permission)."""
+    if not IS_WIN:
+        return "Only needed on Windows"
+    if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) or "'" in adapter:
+        return "Invalid adapter or address"
+    script = Path(os.environ.get("TEMP", ".")) / "sft_stellar_ethernet.ps1"
+    lines = [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        f"$a = '{adapter}'",
+        "Set-NetIPInterface -InterfaceAlias $a -Dhcp Disabled",
+        "Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 | Remove-NetIPAddress -Confirm:$false",
+        f"New-NetIPAddress -InterfaceAlias $a -IPAddress '{ip}' -PrefixLength {prefix} | Out-Null",
+    ]
+    script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    code, _ = _ps("Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
+                  f"'-NoProfile -ExecutionPolicy Bypass -File \"{script}\"'", timeout=120)
+    if code != 0:
+        return "Network change was cancelled or failed"
+    return f"'{adapter}' is now {ip}"
+
+
 # ---------------------------------------------------------------- full check
 def run_all(system) -> list[dict]:
     cfg = system.cfg
@@ -157,11 +195,20 @@ def run_all(system) -> list[dict]:
         checks.append(_check("network", "PC network", "OK",
                              f"This PC is {pc_ip} on the ESP32 network ({esp_ip.rsplit('.', 1)[0]}.x)."))
     else:
-        checks.append(_check("network", "PC network", "FAIL",
-                             f"No network card on {esp_ip.rsplit('.', 1)[0]}.x. PC addresses: "
-                             f"{', '.join(all_ips) or 'none'}.",
-                             f"Connect the Ethernet cable and give the PC a fixed IP such as "
-                             f"{esp_ip.rsplit('.', 1)[0]}.10 (mask 255.255.255.0)."))
+        want = suggested_pc_ip(esp_ip)
+        apipa = apipa_adapters()
+        if apipa:
+            checks.append(_check("network", "PC network", "FAIL",
+                                 f"The Ethernet card '{apipa[0]}' is connected but has no address "
+                                 f"(169.254.x.x). The ESP32 network is {esp_ip.rsplit('.', 1)[0]}.x.",
+                                 f"Press 'Set Ethernet IP' to give it {want} (Windows will ask for permission).")
+                          | {"adapter": apipa[0], "ip": want})
+        else:
+            checks.append(_check("network", "PC network", "FAIL",
+                                 f"No network card on {esp_ip.rsplit('.', 1)[0]}.x. PC addresses: "
+                                 f"{', '.join(all_ips) or 'none'}.",
+                                 "Connect the Ethernet cable to the ESP32 / switch, then run the check again."))
+        pc_ip = None
 
     # 2. Receiver port
     if snap["port_error"]:
@@ -218,8 +265,11 @@ def run_all(system) -> list[dict]:
                              f"expects '{tcfg['device_id']}'.",
                              "Set the device ID in Settings → ESP32 to match."))
     else:
-        hint = (f"On the ESP32 page set 'Stellar Ops receiver IP' = {pc_ip or 'this PC IP'} "
-                f"and port = {port}, then press SAVE & RESTART ETHERNET.")
+        if pc_ip:
+            hint = (f"On the ESP32 page set 'Stellar Ops receiver IP' = {pc_ip} and port = {port}, "
+                    "then press SAVE & RESTART ETHERNET.")
+        else:
+            hint = "Fix 'PC network' first."
         detail = "The ESP32 has not connected."
         if attempt:
             detail += f" Last connection attempt: {attempt['from']}."
