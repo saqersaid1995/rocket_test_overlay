@@ -106,6 +106,11 @@ class FirmwareManager:
         ide_cfg = Path.home() / ".arduinoIDE" / "arduino-cli.yaml"   # same boards/libraries as Arduino IDE
         if ide_cfg.exists():
             cmd[1:1] = ["--config-file", str(ide_cfg)]
+        # Arduino IDE 2 keeps its built-in libraries (Ethernet, Servo, ...) here and passes the
+        # folder to arduino-cli itself; do the same.
+        builtin = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Arduino15" / "libraries"
+        if builtin.is_dir():
+            cmd[-1:-1] = ["--libraries", str(builtin)]
         self._log(f"> arduino-cli compile --fqbn {self.fqbn}\n")
         events.log("FIRMWARE", "Compiling…")
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -113,6 +118,11 @@ class FirmwareManager:
         for line in proc.stdout:
             self._log(line)
         if proc.wait() != 0:
+            import re
+            missing = re.findall(r"fatal error: ([\w./-]+\.h): No such file", self.job["log"])
+            if missing:
+                raise RuntimeError(f"Library not installed for {', '.join(sorted(set(missing)))} — "
+                                   "install it in Arduino IDE (Library Manager) and compile again")
             raise RuntimeError("Compile failed — see the messages above")
         binary = self.build / f"{self.name}.ino.bin"
         if not binary.exists():
