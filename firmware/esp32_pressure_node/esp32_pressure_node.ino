@@ -389,7 +389,7 @@ void setup() {
   Wire.begin(21, 22);
   adsReady = ads.begin();
   if (adsReady) {
-    ads.setGain(GAIN_ONE);
+    ads.setGain(GAIN_TWOTHIRDS);
     ads.setDataRate(RATE_ADS1115_860SPS);
   }
 
