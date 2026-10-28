@@ -38,6 +38,7 @@ class TelemetryHub:
         self._frame_listeners: list[Callable[[dict], None]] = []
         self._conn: socket.socket | None = None
         self._conn_lock = threading.Lock()
+        self._ota_sock = None   # while a firmware image is streaming, nothing else may write to this socket
         self.tare_bar = 0.0
         self.stats = {
             "connected": False, "remote": None, "firmware": None, "boot_id": None,
@@ -176,6 +177,8 @@ class TelemetryHub:
     def _reply(self, sock: socket.socket, frame: dict) -> None:
         try:
             with self._conn_lock:
+                if sock is self._ota_sock:
+                    return
                 sock.sendall(encode(frame))
         except OSError:
             pass
@@ -222,7 +225,7 @@ class TelemetryHub:
         """Send a command frame to the connected ESP32. Returns False if not connected."""
         with self._conn_lock:
             sock = self._conn
-            if sock is None:
+            if sock is None or sock is self._ota_sock:
                 return False
             try:
                 sock.sendall(encode(frame))
@@ -265,6 +268,8 @@ class TelemetryHub:
                 raise RuntimeError("ESP32 is not connected")
             if not self.send({"type": "OTA_BEGIN", "device_id": "STAND", "size": len(data), "md5": md5}):
                 raise RuntimeError("Could not send to the ESP32")
+            with self._conn_lock:
+                self._ota_sock = sock   # from now on only firmware bytes go to the ESP32
             wait_for({"OTA_READY"}, timeout)
             sent, chunk = 0, 1024
             while sent < len(data):
@@ -277,6 +282,8 @@ class TelemetryHub:
                 log("  all bytes sent, waiting for the ESP32 to check them…\n")
             wait_for({"OTA_DONE"}, 30)
         finally:
+            with self._conn_lock:
+                self._ota_sock = None
             self._frame_listeners.remove(on_frame)
 
     def link_ok(self) -> bool:

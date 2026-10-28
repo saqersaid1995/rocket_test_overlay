@@ -556,3 +556,24 @@ def test_hardware_report_from_real_firmware_format():
     line = (Path(__file__).parent / "hw_report_esp32.txt").read_bytes()
     msg = decode(line)
     assert msg["type"] == "HW_REPORT" and msg["i2c_used"] == [72]
+
+
+def test_other_commands_do_not_corrupt_firmware_upload(hub):
+    import hashlib
+    node = FakeNode("127.0.0.1", hub.port)
+    threading.Thread(target=node.run, daemon=True).start()
+    assert wait_for(hub.link_ok, 5)
+    stop = threading.Event()
+
+    def spam():   # e.g. the Hardware page re-scanning while an upload runs
+        while not stop.is_set():
+            hub.send({"type": "HW_SCAN", "device_id": "STAND"})
+            time.sleep(0.001)
+    threading.Thread(target=spam, daemon=True).start()
+    image = bytes([0xE9]) + bytes(range(256)) * 4000
+    try:
+        hub.ota_upload(image, hashlib.md5(image).hexdigest())
+    finally:
+        stop.set()
+    assert node.ota_images[-1] == image
+    node.stop()
