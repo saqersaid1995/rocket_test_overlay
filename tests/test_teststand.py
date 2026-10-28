@@ -496,12 +496,12 @@ def test_ota_upload_to_fake_esp32(hub):
     node = FakeNode("127.0.0.1", hub.port)
     threading.Thread(target=node.run, daemon=True).start()
     assert wait_for(hub.link_ok, 5)
-    boot = hub.snapshot()["boot_id"]
+    sessions = hub.snapshot()["sessions"]
     image = bytes([0xE9]) + bytes(range(256)) * 1200
     progress = []
     hub.ota_upload(image, hashlib.md5(image).hexdigest(), progress.append)
     assert node.ota_images == [image] and progress[-1] == len(image)
-    assert wait_for(lambda: hub.link_ok() and hub.snapshot()["boot_id"] != boot, 8)
+    assert wait_for(lambda: hub.link_ok() and hub.snapshot()["sessions"] > sessions, 8)
     with pytest.raises(RuntimeError):
         hub.ota_upload(image, "0" * 32)   # wrong MD5 -> ESP32 refuses
     node.stop()

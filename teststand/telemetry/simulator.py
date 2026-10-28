@@ -123,7 +123,7 @@ class FakeNode:
         self.ota_images.append(got)
         self._send({"type": "OTA_DONE", "received": len(got)})
         print(f"  OTA image received ({size} bytes) — restarting")
-        self.boot_id = f"sim-{time.time():.3f}"
+        # the real ESP32 can report the same boot_id after a restart; do the same here
         try:
             self.sock.shutdown(socket.SHUT_RDWR)   # run() reconnects with a new boot_id, like a reboot
             self.sock.close()

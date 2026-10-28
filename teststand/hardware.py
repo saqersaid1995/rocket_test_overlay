@@ -29,7 +29,7 @@ I2C_NAMES = {
     0x62: "MCP4725 DAC", 0x68: "MPU6050 / DS3231 RTC / MAX31865?", 0x69: "MPU6050 (alt address)",
     0x70: "TCA9548A I2C multiplexer", 0x76: "BME280 / BMP280 pressure+temp", 0x77: "BME280 / BMP180 / MS5611",
 }
-ANALOG_CONNECTED_MV = 100   # an input-only pin above this has a signal on it
+ANALOG_CONNECTED_MV = 400   # an empty input-only pin reads ~100-200 mV (ADC offset); above this = signal
 
 
 class HardwareMonitor:

@@ -158,11 +158,12 @@ class FirmwareManager:
 
         self.hub.ota_upload(data, md5, progress, self._log)
         self._log("ESP32 accepted the new firmware and is restarting…\n")
-        old_boot = self.hub.snapshot().get("boot_id")
+        # the ESP32's boot_id can be the same after a restart, so wait for a NEW connection
+        old_session = self.hub.snapshot().get("sessions", 0)
         end = time.time() + 40
         while time.time() < end:
             snap = self.hub.snapshot()
-            if snap["link"] == "LIVE" and snap.get("boot_id") != old_boot:
+            if snap["link"] == "LIVE" and snap.get("sessions", 0) > old_session:
                 self._log(f"ESP32 is back: {snap['firmware']}\n")
                 events.log("FIRMWARE", f"ESP32 updated and running ({snap['firmware']})")
                 return {"bytes": len(data), "firmware": snap["firmware"]}

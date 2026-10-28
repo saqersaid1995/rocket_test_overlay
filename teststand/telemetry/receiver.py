@@ -43,7 +43,7 @@ class TelemetryHub:
             "connected": False, "remote": None, "firmware": None, "boot_id": None,
             "last_rx": 0.0, "batches": 0, "samples": 0, "gaps": 0, "bad_frames": 0,
             "last_sequence": None, "rate_hz": 0.0, "voltage_v": None,
-            "last_batch": 0.0, "last_attempt": None, "ignored_device": None,
+            "last_batch": 0.0, "last_attempt": None, "ignored_device": None, "sessions": 0,
         }
         self.port_error: str | None = None
         self.peak_bar = 0.0
@@ -144,7 +144,8 @@ class TelemetryHub:
                     registered = True
                     with self._lock:
                         self.stats.update(connected=True, remote=remote, firmware=msg.get("firmware"),
-                                          boot_id=msg.get("boot_id"), last_sequence=None, last_rx=time.time())
+                                          boot_id=msg.get("boot_id"), last_sequence=None, last_rx=time.time(),
+                                          sessions=self.stats["sessions"] + 1)
                     events.log("TELEMETRY", f"{self.device_id} connected from {remote} ({msg.get('firmware')})")
                     self._reply(sock, {"type": "ACK", "device_id": "STAND", "ack_sequence": -1})
                 elif not registered or self._conn is not sock:
@@ -307,7 +308,7 @@ class TelemetryHub:
                 "boot_id": self.stats["boot_id"],
                 "peak_bar": self.peak_bar, "tare_bar": self.tare_bar,
                 **{k: self.stats[k] for k in ("remote", "firmware", "batches", "samples", "gaps",
-                                              "bad_frames", "rate_hz", "voltage_v")},
+                                              "bad_frames", "rate_hz", "voltage_v", "sessions")},
             }
 
     def history(self, seconds: float = 30, points: int = 600) -> list[list[float]]:
