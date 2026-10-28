@@ -33,6 +33,8 @@ class FakeNode:
         self.fire_end = 0.0
         self.test_relays: list[str] = []
         self.ota_images: list[bytes] = []
+        self.extra_i2c: list[int] = []          # tests: pretend a sensor is plugged in
+        self.pin_states: dict[int, str] = {}
         self._stop = threading.Event()
         self.sock: socket.socket | None = None
         self.lock = threading.Lock()
@@ -93,6 +95,12 @@ class FakeNode:
                     self.fire_end = time.time() + min(int(msg.get("pulse_ms", 300)), 1000) / 1000
                     print(f"  relay test: {msg['relay']}")
                 self._status()
+            elif kind == "HW_SCAN":
+                self._send({"type": "HW_REPORT", "i2c": [0x48] + self.extra_i2c, "i2c_used": [0x48],
+                            "ads_ready": True, "sd_ready": True,
+                            "used": [{"pin": 21, "use": "I2C SDA"}, {"pin": 22, "use": "I2C SCL"}],
+                            "pins": [{"pin": p, "state": self.pin_states.get(p, "open")} for p in (2, 4, 12, 13, 14, 15, 16, 17)]
+                                    + [{"pin": p, "state": "analog", "mv": 0} for p in (34, 35, 36, 39)]})
             elif kind == "IGN_SAFE":
                 self.state = "SAFE"
                 self._status()
@@ -128,7 +136,7 @@ class FakeNode:
         self.sock.settimeout(None)
         f = self.sock.makefile("rb")
         threading.Thread(target=self._reader, args=(f,), daemon=True).start()
-        self._send({"type": "HELLO", "firmware": "sim-node/1+ota", "channels": ["pressure_mbar", "voltage_uv"]})
+        self._send({"type": "HELLO", "firmware": "sim-node/1+ota+hw", "channels": ["pressure_mbar", "voltage_uv"]})
         seq, period_us, n = 0, 5000, 20
         t_dev = 0
         next_t = time.time()

@@ -56,6 +56,7 @@ def create_app(system) -> Flask:
             ignition=system.ignition.snapshot(),
             recorder=system.recorder.snapshot(),
             cameras=system.cameras.snapshot(),
+            hardware=system.hardware.summary(),
             events=events.recent(after),
         )
 
@@ -204,6 +205,8 @@ def create_app(system) -> Flask:
     register_settings(app, system)
     from .firmware_routes import register as register_firmware
     register_firmware(app, system)
+    from .hardware_routes import register as register_hardware
+    register_hardware(app, system)
 
     @app.get("/health")
     def health():

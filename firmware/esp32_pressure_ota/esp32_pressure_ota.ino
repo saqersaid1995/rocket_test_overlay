@@ -148,7 +148,7 @@ String frameFromCanonical(const String &canonical) {
 String makeHelloFrame() {
   // Keys intentionally match Python json.dumps(sort_keys=True,separators=(",",":"))
   String canonical = "{\"boot_id\":\"" + bootId +
-    "\",\"channels\":[\"pressure_mbar\",\"voltage_uv\"],\"device_id\":\"PT-01\",\"firmware\":\"esp32-pressure-edge/1+ota\",\"protocol\":\"SMTCS-EDGE/1\",\"type\":\"HELLO\"}";
+    "\",\"channels\":[\"pressure_mbar\",\"voltage_uv\"],\"device_id\":\"PT-01\",\"firmware\":\"esp32-pressure-edge/1+ota+hw\",\"protocol\":\"SMTCS-EDGE/1\",\"type\":\"HELLO\"}";
   return frameFromCanonical(canonical);
 }
 
@@ -269,6 +269,87 @@ void handleOtaBegin(const String &line) {
 }
 
 // -----------------------------
+// Hardware scan (what is physically connected)
+// -----------------------------
+// On HW_SCAN from SFT STELLAR the ESP32 answers HW_REPORT with:
+//   used : the pins this firmware uses and what for
+//   i2c  : every address that answers on the I2C bus (SDA 21 / SCL 22)
+//   pins : the free pins read as INPUTS only (never driven), each:
+//          "open"  = follows the internal pull-up and pull-down -> nothing connected
+//          "low" / "high" = something holds the pin -> a device or wire is connected
+//          "analog" (34/35/36/39, input-only, no pulls) with the voltage in mV
+struct PinUse { int pin; const char *use; };
+static const PinUse USED_PINS[] = {
+  {5, "SD CS"}, {18, "SD SCK"}, {19, "SD MISO"}, {23, "SD MOSI"},
+  {21, "I2C SDA"}, {22, "I2C SCL"},
+  {25, "ETH SCK"}, {26, "ETH MISO"}, {27, "ETH MOSI"}, {32, "ETH CS"}, {33, "ETH RST"},
+  {1, "USB serial TX"}, {3, "USB serial RX"},
+};
+static const uint8_t I2C_USED[] = {0x48};                           // ADS1115
+// When you add a sensor in code, add its pin(s) to USED_PINS / its address to I2C_USED
+// so SFT STELLAR shows it as "in code" instead of "no code".
+static const int PROBE_PINS[] = {2, 4, 12, 13, 14, 15, 16, 17};   // free, have internal pulls
+static const int ANALOG_PINS[] = {34, 35, 36, 39};                  // free, input-only
+
+String hwReportCanonical() {
+  // keys sorted alphabetically at every level (SFT STELLAR checks the CRC)
+  String i2c = "[";
+  bool first = true;
+  for (uint8_t addr = 0x08; addr <= 0x77; ++addr) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      if (!first) i2c += ',';
+      i2c += String(addr);
+      first = false;
+    }
+  }
+  i2c += "]";
+
+  String pins = "[";
+  first = true;
+  for (int pin : PROBE_PINS) {
+    if ((pin == 16 || pin == 17) && psramFound()) continue;   // WROVER: 16/17 belong to PSRAM
+    pinMode(pin, INPUT_PULLUP);   delayMicroseconds(200); int up = digitalRead(pin);
+    pinMode(pin, INPUT_PULLDOWN); delayMicroseconds(200); int down = digitalRead(pin);
+    pinMode(pin, INPUT);          // back to high impedance
+    const char *state = (up && !down) ? "open" : (!up && !down) ? "low" : (up && down) ? "high" : "odd";
+    if (!first) pins += ',';
+    pins += "{\"pin\":" + String(pin) + ",\"state\":\"" + state + "\"}";
+    first = false;
+  }
+  for (int pin : ANALOG_PINS) {
+    uint32_t mv = analogReadMilliVolts(pin);
+    pins += ",{\"mv\":" + String(mv) + ",\"pin\":" + String(pin) + ",\"state\":\"analog\"}";
+  }
+  pins += "]";
+
+  String i2cUsed = "[";
+  first = true;
+  for (uint8_t a : I2C_USED) { if (!first) i2cUsed += ','; i2cUsed += String(a); first = false; }
+  i2cUsed += "]";
+
+  String used = "[";
+  first = true;
+  for (const PinUse &u : USED_PINS) {
+    if (!first) used += ',';
+    used += "{\"pin\":" + String(u.pin) + ",\"use\":\"" + u.use + "\"}";
+    first = false;
+  }
+  used += "]";
+
+  return "{\"ads_ready\":" + String(adsReady ? "true" : "false") +
+         ",\"boot_id\":\"" + bootId + "\",\"device_id\":\"PT-01\",\"i2c\":" + i2c +
+         ",\"i2c_used\":" + i2cUsed + ",\"pins\":" + pins + ",\"protocol\":\"SMTCS-EDGE/1\",\"sd_ready\":" +
+         String(sdReady ? "true" : "false") + ",\"type\":\"HW_REPORT\",\"used\":" + used + "}";
+}
+
+void handleHwScan(const String &line) {
+  if (!frameCrcValid(line)) return;
+  String frame = frameFromCanonical(hwReportCanonical());
+  edgeClient.write((const uint8_t *)frame.c_str(), frame.length());
+}
+
+// -----------------------------
 // Ethernet telemetry only
 // -----------------------------
 void startEthernet() {
@@ -303,6 +384,7 @@ void serviceEdgeReplies() {
     String line = edgeClient.readStringUntil('\n');
     if (line.indexOf("\"type\":\"ACK\"") >= 0) lastEdgeAckMs = millis();
     else if (line.indexOf("\"type\":\"OTA_BEGIN\"") >= 0) handleOtaBegin(line);
+    else if (line.indexOf("\"type\":\"HW_SCAN\"") >= 0) handleHwScan(line);
   }
 }
 

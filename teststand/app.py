@@ -44,6 +44,8 @@ class System:
         from .firmware import FirmwareManager
         data_dir = Path(cfg["recorder"]["directory"]).resolve().parent
         self.firmware = FirmwareManager(cfg["firmware"], data_dir, self.hub)
+        from .hardware import HardwareMonitor
+        self.hardware = HardwareMonitor(self.hub)
 
     def start(self) -> None:
         self.hub.start()

@@ -156,8 +156,15 @@
       const e = $("chip-cam-" + c.id);
       chip(e, c.name, c.status === "LIVE" ? "ok" : c.status === "DISABLED" ? "" : "bad", c.error || c.status);
     }
+    const h = s.hardware, he = $("chip-hw");
+    he.hidden = !h || !h.report;
+    if (h && h.report) {
+      if (h.no_code) chip(he, `HARDWARE · ${h.no_code} NO CODE`, "warn", "Something is connected that the code does not use");
+      else if (h.missing) chip(he, `HARDWARE · ${h.missing} MISSING`, "bad", "A device the code uses does not answer");
+      else chip(he, "HARDWARE", "ok", "Everything connected is used by the code");
+    }
   }
-  document.querySelector(".sysbar").addEventListener("click", (e) => { if (e.target.classList.contains("chip")) openCheck(); });
+  document.querySelector(".sysbar").addEventListener("click", (e) => { if (e.target.classList.contains("chip") && e.target.id !== "chip-hw") openCheck(); });
 
   // ---------------- system check ----------------
   const checkModal = $("check-modal");

@@ -526,3 +526,33 @@ def test_firmware_manager_upload_and_source(hub, tmp_path):
     assert fm.job["state"] == "DONE", fm.job["log"]
     assert node.ota_images[-1] == image
     node.stop()
+
+
+def test_hardware_scan_flags_device_with_no_code(hub):
+    from teststand.hardware import HardwareMonitor
+    hw = HardwareMonitor(hub)
+    node = FakeNode("127.0.0.1", hub.port)
+    node.extra_i2c = [0x76]          # a BME280 plugged in, not in the code
+    node.pin_states = {14: "low"}    # something wired to GPIO 14
+    threading.Thread(target=node.run, daemon=True).start()
+    assert wait_for(lambda: hw.report is not None, 5)   # scanned automatically on connect
+    rows = {r["where"]: r for r in hw.items()}
+    assert rows["I2C 0x48"]["status"] == "IN USE"
+    assert rows["I2C 0x76"]["status"] == "NO CODE" and "BME280" in rows["I2C 0x76"]["what"]
+    assert rows["GPIO 14"]["status"] == "NO CODE"
+    assert rows["GPIO 2"]["status"] == "FREE"
+    assert hw.summary() == {"report": True, "no_code": 2, "missing": 0}
+    node.extra_i2c = []                # unplug -> re-scan shows it gone
+    first = hw.received
+    assert hw.request() and wait_for(lambda: hw.received != first, 5)
+    assert hw.summary()["no_code"] == 1
+    node.stop()
+
+
+def test_hardware_report_from_real_firmware_format():
+    from teststand.telemetry.protocol import decode
+    # exact line produced by firmware/esp32_pressure_ota (host-compiled) — CRC must verify
+    from pathlib import Path
+    line = (Path(__file__).parent / "hw_report_esp32.txt").read_bytes()
+    msg = decode(line)
+    assert msg["type"] == "HW_REPORT" and msg["i2c_used"] == [72]
