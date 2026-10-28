@@ -31,6 +31,7 @@
 <div id="offline" class="offline" hidden>Console lost connection to the server. Ignition aborts by itself after 3 s.</div>
 
 <main class="grid">
+ <div class="col col-main">
   <!-- PRESSURE -->
   <section class="panel pressure">
     <div class="panel-h"><h2>Chamber pressure</h2><span class="muted small" id="p-meta">PT-01</span></div>
@@ -57,6 +58,24 @@
     </div>
   </section>
 
+  <!-- CAMERAS -->
+  <section class="panel cameras">
+    <div class="panel-h"><h2>Cameras</h2></div>
+    {% set shown = cameras|rejectattr("status", "equalto", "DISABLED")|list %}
+    <div class="cam-grid" style="--n: {{ [shown|length, 1]|max }}">
+      {% for cam in shown %}
+      <figure class="cam" id="cam-{{ cam.id }}">
+        <img src="/camera/{{ cam.id }}.mjpg" alt="{{ cam.name }}" data-src="/camera/{{ cam.id }}.mjpg">
+        <figcaption><b>{{ cam.name }}</b><span class="cam-status">—</span></figcaption>
+      </figure>
+      {% else %}
+      <div class="empty">No camera turned on. <a href="/settings#cameras">Add or turn on a camera</a> in Settings.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+ </div>
+ <div class="col col-side">
   <!-- IGNITION -->
   <section class="panel ignition">
     <div class="panel-h"><h2>Ignition</h2><span class="muted small" id="ign-driver"></span></div>
@@ -77,21 +96,6 @@
     </div>
   </section>
 
-  <!-- CAMERAS -->
-  <section class="panel cameras">
-    <div class="panel-h"><h2>Cameras</h2></div>
-    <div class="cam-grid" style="--n: {{ [cameras|length, 1]|max }}">
-      {% for cam in cameras %}
-      <figure class="cam" id="cam-{{ cam.id }}">
-        <img src="/camera/{{ cam.id }}.mjpg" alt="{{ cam.name }}" data-src="/camera/{{ cam.id }}.mjpg">
-        <figcaption><b>{{ cam.name }}</b><span class="cam-status">—</span></figcaption>
-      </figure>
-      {% else %}
-      <div class="empty">No cameras yet. <a href="/settings#cameras">Add a camera</a> in Settings.</div>
-      {% endfor %}
-    </div>
-  </section>
-
   <!-- RECORDING + LOG -->
   <section class="panel log">
     <div class="panel-h"><h2>Recording</h2><span class="muted small" id="rec-session"></span></div>
@@ -104,6 +108,7 @@
     <ol class="events" id="events"></ol>
     <form class="row" id="note-form"><input id="note" placeholder="Add a note to the log" maxlength="300"><button>Add note</button></form>
   </section>
+ </div>
 </main>
 
 <div class="modal" id="arm-modal" hidden>

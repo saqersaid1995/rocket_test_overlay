@@ -151,11 +151,12 @@
     else if (hw.module) chip($("chip-ign"), "Ignition", "ok", `ESP32 ignition module: ${hw.state}`);
     else chip($("chip-ign"), "Ignition", "bad", "No ignition module answering on the ESP32");
     const box = $("chip-cams");
-    if (box.childElementCount !== s.cameras.length) {
+    const cams = s.cameras.filter((c) => c.status !== "DISABLED");   // only cameras in use
+    if (box.childElementCount !== cams.length) {
       box.innerHTML = "";
-      for (const c of s.cameras) { const e = document.createElement("span"); e.id = "chip-cam-" + c.id; box.appendChild(e); }
+      for (const c of cams) { const e = document.createElement("span"); e.id = "chip-cam-" + c.id; box.appendChild(e); }
     }
-    for (const c of s.cameras) {
+    for (const c of cams) {
       const e = $("chip-cam-" + c.id);
       chip(e, c.name, c.status === "LIVE" ? "ok" : c.status === "DISABLED" ? "" : "bad", c.error || c.status);
     }
