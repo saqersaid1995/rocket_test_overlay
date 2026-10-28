@@ -69,15 +69,18 @@
     try {
       const j = await (await fetch("/api/firmware/status", { cache: "no-store" })).json();
       const dev = $("fw-device");
-      dev.textContent = j.device_firmware ? `ESP32 ${j.device_firmware}` : "ESP32 not connected";
+      dev.textContent = j.device_firmware ? `ESP32: ${j.device_firmware}` : "ESP32 not connected";
       dev.className = "chip " + (j.link === "LIVE" ? (j.ota_capable ? "ok" : "warn") : "bad");
-      $("fw-info").textContent = `board ${j.fqbn}` + (j.bin ? ` · last build ${j.bin.size} bytes, ${new Date(j.bin.time * 1000).toLocaleTimeString()}` : "") +
-        (j.cli ? "" : " · arduino-cli NOT FOUND");
+      $("fw-info").textContent = `Board ${j.fqbn}` + (j.bin ? `, last build ${(j.bin.size / 1024).toFixed(0)} KB at ${new Date(j.bin.time * 1000).toLocaleTimeString()}` : "") +
+        (j.cli ? "" : ". arduino-cli not found: install Arduino IDE 2");
+      $("fw-name").textContent = `${j.sketch}.ino`;
       const job = j.job;
       const running = job.state === "RUNNING";
       ["fw-compile", "fw-upload", "fw-both", "fw-file"].forEach((id) => ($(id).disabled = running));
       $("fw-upload").disabled = running || !j.bin;
-      const label = job.kind ? `${job.kind}: ${job.state}` : "Ready";
+      const names = { compile: "Compile", "compile+upload": "Compile and upload", upload: "Upload" };
+      const states = { RUNNING: "running", DONE: "done", FAILED: "failed", IDLE: "" };
+      const label = job.kind ? `${names[job.kind] || job.kind} ${states[job.state] ?? job.state}` : "Ready";
       $("fw-job").textContent = label + (running && job.kind === "upload" ? ` ${job.progress}%` : "");
       $("fw-job").className = job.state === "DONE" ? "ok" : job.state === "FAILED" ? "bad" : running ? "run" : "";
       $("fw-progress").style.width = (job.kind === "upload" ? job.progress : running ? 100 : 0) + "%";

@@ -1,79 +1,62 @@
+{% import "_ui.html" as ui %}
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SFT STELLAR · Hardware</title>
-<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='console.css') }}">
-<style>
-.hw-page{padding:14px;max-width:1000px;margin:0 auto}
-.hw-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.hw-head h1{font-size:18px;margin:0}
-.grow{flex:1}
-table.hw{width:100%;border-collapse:collapse;font-size:13px}
-table.hw th,table.hw td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
-table.hw th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.06em}
-.st{font-weight:700;font-size:11px;padding:2px 7px;border-radius:4px;border:1px solid currentColor;white-space:nowrap}
-.st.IN-USE{color:var(--ok)} .st.NO-CODE{color:var(--warn)} .st.MISSING{color:var(--bad)} .st.FREE{color:var(--muted)}
-tr.NO-CODE td{background:rgba(255,190,60,.06)}
-.summary{margin:6px 0 12px}
-</style>
+{{ ui.head("SFT STELLAR · Hardware") }}
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><img class="logo" src="{{ url_for('static', filename='logo.svg') }}" alt=""><b>SFT STELLAR</b><span class="sub">STELLAR KINETICS · v{{ version }}</span></div>
-  <span class="grow"></span>
-  <nav class="nav">
-    <a href="/">Console</a>
-    <a href="/hardware" class="on">Hardware</a>
-    <a href="/firmware">Firmware</a>
-    <a href="/settings">Settings</a>
-  </nav>
-</header>
-<main class="hw-page">
-  <div class="hw-head">
-    <h1>Hardware on the ESP32</h1>
-    <span class="muted small" id="hw-meta"></span>
-    <span class="grow"></span>
-    <label class="muted small"><input type="checkbox" id="hw-auto" checked> Re-scan every 5 s</label>
+{{ ui.topbar("hardware", version) }}
+<main class="page">
+  <div class="page-h">
+    <div class="grow">
+      <h1>Hardware on the ESP32</h1>
+      <p id="hw-meta">Waiting for the ESP32…</p>
+    </div>
+    <label class="switch"><input type="checkbox" id="hw-auto" checked> Scan every 5 s</label>
     <button class="primary" id="hw-scan">Scan now</button>
   </div>
-  <div class="summary" id="hw-summary"></div>
-  <table class="hw">
-    <thead><tr><th>WHERE</th><th>WHAT</th><th>STATUS</th><th>DETAIL</th></tr></thead>
-    <tbody id="hw-rows"><tr><td colspan="4" class="muted">Waiting for the ESP32…</td></tr></tbody>
-  </table>
-  <p class="muted small">Free pins are only read as inputs (never switched). <b>NO CODE</b> = something is connected but the firmware does not use it.
-    I2C device names are a guess from the address. After you add a sensor in code, list its pin / address in
-    <code>USED_PINS</code> / <code>I2C_USED</code> in the firmware.</p>
+  <div class="hw-summary" id="hw-summary"></div>
+  <div class="table-wrap">
+    <table class="hw">
+      <thead><tr><th>Where</th><th>What</th><th>Status</th><th>Detail</th></tr></thead>
+      <tbody id="hw-rows"><tr><td colspan="4" class="muted">Waiting for the ESP32…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="footnote">Free pins are only read as inputs, never switched. <b>NO CODE</b> means something is connected but the firmware does not use it.
+    I2C names are a guess from the address. After you add a sensor in code, list its pin in <code>USED_PINS</code> or its address in <code>I2C_USED</code>.</p>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const GROUPS = [["Needs attention", ["NO CODE", "MISSING"]], ["Used by the code", ["IN USE"]], ["Free pins", ["FREE"]]];
 async function load() {
   try {
     const d = await (await fetch("/api/hardware")).json();
     const age = d.received ? Math.round(Date.now() / 1000 - d.received) : null;
-    $("hw-meta").textContent = `ESP32 ${d.link}` + (d.firmware ? ` · ${d.firmware}` : "") + (age !== null ? ` · scanned ${age}s ago` : "");
+    $("hw-meta").textContent = d.link === "OFFLINE" ? "ESP32 not connected."
+      : `ESP32 ${d.link.toLowerCase()}, firmware ${d.firmware || "unknown"}` + (age !== null ? `, scanned ${age} s ago` : "");
     if (!d.items.length) {
-      $("hw-rows").innerHTML = `<tr><td colspan="4" class="muted">${d.link === "OFFLINE" ? "ESP32 not connected." :
-        d.supported ? "No report yet — press Scan now." :
-        "The firmware on the ESP32 does not support hardware scan yet — upload the new firmware from the Firmware page."}</td></tr>`;
-      $("hw-summary").textContent = "";
+      $("hw-rows").innerHTML = `<tr><td colspan="4" class="muted">${d.link === "OFFLINE" ? "Connect the ESP32 to see its pins." :
+        d.supported ? "No report yet. Press Scan now." :
+        "The firmware on the ESP32 cannot scan yet. Upload the new firmware from the Firmware page."}</td></tr>`;
+      $("hw-summary").innerHTML = "";
       return;
     }
-    const order = {"NO CODE": 0, "MISSING": 1, "IN USE": 2, "FREE": 3};
-    const rows = [...d.items].sort((a, b) => order[a.status] - order[b.status]);
-    $("hw-rows").innerHTML = rows.map((r) => {
-      const cls = r.status.replace(" ", "-");
-      return `<tr class="${cls}"><td><b>${esc(r.where)}</b></td><td>${esc(r.what)}</td><td><span class="st ${cls}">${esc(r.status)}</span></td><td class="muted">${esc(r.detail)}</td></tr>`;
-    }).join("");
-    const parts = [];
-    if (d.no_code) parts.push(`<b style="color:var(--warn)">${d.no_code} connected with NO CODE</b>`);
-    if (d.missing) parts.push(`<b style="color:var(--bad)">${d.missing} used in code but not answering</b>`);
-    $("hw-summary").innerHTML = parts.join(" · ") || '<span style="color:var(--ok)">Everything connected is used by the code.</span>';
-  } catch (e) { $("hw-meta").textContent = "server not reachable"; }
+    const count = (st) => d.items.filter((r) => r.status === st).length;
+    const stat = (n, label, cls) => `<div class="stat ${n ? cls : ""}"><b>${n}</b><span>${label}</span></div>`;
+    $("hw-summary").innerHTML = stat(d.no_code, "connected with no code", "warn") + stat(d.missing, "in code but not answering", "bad") +
+      stat(count("IN USE"), "used by the code", "ok") + stat(count("FREE"), "free pins", "");
+    let html = "";
+    for (const [title, sts] of GROUPS) {
+      const rows = d.items.filter((r) => sts.includes(r.status));
+      if (!rows.length) continue;
+      html += `<tr class="group"><td colspan="4">${title}</td></tr>` + rows.map((r) => {
+        const cls = r.status.replace(" ", "-");
+        return `<tr class="${cls}"><td>${esc(r.where)}</td><td>${esc(r.what)}</td><td><span class="st-badge ${cls}">${esc(r.status)}</span></td><td class="muted">${esc(r.detail)}</td></tr>`;
+      }).join("");
+    }
+    $("hw-rows").innerHTML = html;
+  } catch (e) { $("hw-meta").textContent = "SFT STELLAR server not reachable."; }
 }
 async function scan() {
   const r = await (await fetch("/api/hardware/scan", {method: "POST"})).json();

@@ -1,0 +1,24 @@
+{# Shared page chrome for every SFT STELLAR page #}
+{% macro head(title) -%}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title }}</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='console.css') }}">
+{%- endmacro %}
+
+{% macro topbar(page, version) -%}
+<header class="topbar">
+  <a class="brand" href="/" aria-label="SFT STELLAR console">
+    <img class="logo" src="{{ url_for('static', filename='logo.svg') }}" alt="">
+    <span class="wordmark">SFT STELLAR<small>Stellar Kinetics &nbsp;v{{ version }}</small></span>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="/" {% if page == 'console' %}class="on" aria-current="page"{% endif %}>Console</a>
+    <a href="/hardware" {% if page == 'hardware' %}class="on" aria-current="page"{% endif %}>Hardware</a>
+    <a href="/firmware" {% if page == 'firmware' %}class="on" aria-current="page"{% endif %}>Firmware</a>
+    <a href="/settings" {% if page == 'settings' %}class="on" aria-current="page"{% endif %}>Settings</a>
+  </nav>
+  {% if caller %}{{ caller() }}{% endif %}
+</header>
+{%- endmacro %}

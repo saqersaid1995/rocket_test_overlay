@@ -1,30 +1,18 @@
+{% import "_ui.html" as ui %}
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SFT STELLAR · Settings</title>
-<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='console.css') }}">
+{{ ui.head("SFT STELLAR · Settings") }}
 <link rel="stylesheet" href="{{ url_for('static', filename='settings.css') }}">
 </head>
 <body class="settings-page">
-<header class="topbar">
-  <div class="brand"><img class="logo" src="{{ url_for('static', filename='logo.svg') }}" alt=""><b>SFT STELLAR</b><span class="sub">STELLAR KINETICS · v{{ version }}</span></div>
-  <span class="grow"></span>
-  <nav class="nav">
-    <a href="/">Console</a>
-    <a href="/hardware">Hardware</a>
-    <a href="/firmware">Firmware</a>
-    <a href="/settings" class="on">Settings</a>
-  </nav>
-</header>
+{{ ui.topbar("settings", version) }}
 
 <div class="layout">
   <aside class="side-nav">
     <a href="#check" data-tab="check">System check</a>
     <a href="#cameras" data-tab="cameras">Cameras</a>
-    <a href="#esp32" data-tab="esp32">ESP32 &amp; network</a>
+    <a href="#esp32" data-tab="esp32">ESP32 and network</a>
     <a href="#ignition" data-tab="ignition">Ignition</a>
     <a href="#pressure" data-tab="pressure">Pressure</a>
     <a href="#recording" data-tab="recording">Recording</a>
@@ -35,23 +23,23 @@
     <section class="tab" id="tab-check">
       <div class="tab-h"><h1>System check</h1>
         <div class="row"><button id="fw-fix" hidden>Fix firewall</button><button id="check-run" class="primary">Run check</button></div></div>
-      <p class="muted">Checks the PC network, the receiver port, Windows firewall, the ESP32, the pressure sensor, the ignition module, cameras and disk space — and tells you what to do.</p>
+      <p class="lead">Checks the PC network, the receiver port, Windows firewall, the ESP32, the pressure sensor, the ignition module, cameras and disk space, and tells you what to fix.</p>
       <ol class="checks" id="checks"></ol>
     </section>
 
     <!-- CAMERAS -->
     <section class="tab" id="tab-cameras" hidden>
       <div class="tab-h"><h1>Cameras</h1>
-        <div class="row"><button id="cam-scan">Scan network</button><button id="cam-add" class="primary">+ Add camera</button></div></div>
+        <div class="row"><button id="cam-scan">Scan network</button><button id="cam-add" class="primary">Add camera</button></div></div>
       <div id="scan-result" class="scan" hidden></div>
       <div id="cam-list" class="cam-list"></div>
-      <p class="muted small">Preview uses the camera's low-resolution stream; recording saves the main stream at full quality.
+      <p class="muted small">Recording saves the camera's main stream at full quality.
         Passwords are stored only in config.yaml on this PC.</p>
     </section>
 
     <!-- ESP32 -->
     <section class="tab" id="tab-esp32" hidden>
-      <div class="tab-h"><h1>ESP32 &amp; network</h1></div>
+      <div class="tab-h"><h1>ESP32 and network</h1></div>
       <div class="form">
         <label>ESP32 IP address<input name="telemetry.esp_ip" placeholder="192.168.1.50"></label>
         <label>Receiver TCP port (this PC)<input name="telemetry.listen_port" type="number" min="1" max="65535"></label>
@@ -66,8 +54,8 @@
       <div class="form">
         <label>Output
           <select name="ignition.driver">
-            <option value="simulation">SIMULATION — no relay switches</option>
-            <option value="esp32">ESP32 — real relays (ignition.ino)</option>
+            <option value="simulation">Simulation (no relay switches)</option>
+            <option value="esp32">ESP32 relay output</option>
           </select></label>
         <label>Countdown (s)<input name="ignition.countdown_s" type="number" min="3" max="60"></label>
         <label>Igniter pulse (ms)<input name="ignition.pulse_ms" type="number" min="100" max="3000" step="50"></label>
@@ -75,8 +63,7 @@
         <label>Auto-disarm after (s)<input name="ignition.arm_timeout_s" type="number" min="10" max="900"></label>
         <label>Relay test click (ms)<input name="ignition.relay_test_ms" type="number" min="50" max="1000" step="50"></label>
       </div>
-      <div class="note warn">Switch Output to <b>ESP32</b> only after the bench test with a lamp or LED in place of the igniter.
-        The ESP32 must run the new firmware (pressure node + <code>ignition.ino</code>).</div>
+      <div class="note warn">Use <b>ESP32 relay output</b> only after a bench test with a lamp or LED in place of the igniter.</div>
     </section>
 
     <!-- PRESSURE -->
@@ -86,7 +73,7 @@
         <label>Sensor range (bar)<input name="pressure.max_expected_bar" type="number" min="1" step="1"></label>
         <label>Alarm above (bar)<input name="pressure.alarm_bar" type="number" min="1" step="1"></label>
       </div>
-      <p class="muted small">Sensor calibration (zero voltage, slope) is set on the ESP32's own page: Wi-Fi “PressureMonitor” → http://192.168.4.1.</p>
+      <p class="muted small">Sensor calibration (zero voltage, slope) is set on the ESP32's own page: join the Wi-Fi “PressureMonitor”, then open http://192.168.4.1.</p>
     </section>
 
     <!-- RECORDING -->
@@ -102,17 +89,17 @@
 
     <div class="savebar" id="savebar" hidden>
       <span id="save-msg">Unsaved changes</span><span class="grow"></span>
-      <button id="discard">Discard</button><button id="save" class="primary">Save &amp; restart</button>
+      <button id="discard">Discard</button><button id="save" class="primary">Save and restart</button>
     </div>
   </main>
 </div>
 
 <div class="modal" id="leave-modal" hidden>
-  <div class="box info">
+  <div class="box" role="dialog" aria-modal="true">
     <h3>Unsaved changes</h3>
     <p>Save the changes before leaving this page?</p>
-    <div class="row"><button id="leave-stay">Stay</button><button id="leave-discard">Don't save</button>
-      <button class="primary" id="leave-save">Save &amp; restart</button></div>
+    <div class="row end"><button id="leave-stay">Stay</button><button id="leave-discard">Don't save</button>
+      <button class="primary" id="leave-save">Save and restart</button></div>
   </div>
 </div>
 
@@ -135,8 +122,8 @@
         <label>User<input data-f="user" placeholder="admin" autocomplete="off"></label>
         <label>Password<input data-f="password" type="password" autocomplete="new-password"></label>
         <label>RTSP port<input data-f="port" type="number" placeholder="554"></label>
-        <label>Main stream path <small>(recording)</small><input data-f="record_path" placeholder="from brand"></label>
-        <label>Sub stream path <small>(preview)</small><input data-f="preview_path" placeholder="from brand"></label>
+        <label>Main stream path (recording)<input data-f="record_path" placeholder="from brand"></label>
+        <label>Sub stream path (preview)<input data-f="preview_path" placeholder="from brand"></label>
       </div>
       <div class="form advanced" hidden>
         <label class="full">Preview URL<input data-f="preview_url" placeholder="rtsp://user:pass@192.168.1.60:554/stream2"></label>

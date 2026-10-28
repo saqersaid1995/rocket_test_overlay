@@ -43,16 +43,19 @@
 
   const fmt = (v, d = 2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(d);
 
-  function pill(el, text, cls) { el.textContent = text; el.className = "pill " + (cls || ""); }
+  function pill(el, label, value, cls) {
+    el.className = "pill " + (cls || "");
+    el.innerHTML = `<span>${label}</span><b>${value}</b>`;
+  }
 
   function render(s) {
     const t = s.telemetry, ign = s.ignition, rec = s.recorder;
 
     // top bar
-    pill($("pill-link"), `TELEMETRY ${t.link}`, t.link === "LIVE" ? "ok" : (t.link === "STALE" || t.link === "NO DATA") ? "warn" : "bad");
-    pill($("pill-ign"), `IGNITION ${ign.state}` + (ign.physical ? "" : " · SIM"),
+    pill($("pill-link"), "Telemetry", t.link, t.link === "LIVE" ? "ok" : (t.link === "STALE" || t.link === "NO DATA") ? "warn" : "bad");
+    pill($("pill-ign"), ign.physical ? "Ignition" : "Ignition (sim)", ign.state,
       ign.state === "SAFE" ? "ok" : ign.state === "ARMED" ? "warn" : "bad");
-    pill($("pill-rec"), rec.active ? `● REC ${rec.elapsed_s}s` : "REC OFF", rec.active ? "rec" : "");
+    pill($("pill-rec"), "Recording", rec.active ? `${rec.elapsed_s}s` : "Off", rec.active ? "rec" : "");
 
     // pressure
     const p = t.pressure_bar;
@@ -74,7 +77,7 @@
     // ignition
     document.body.dataset.state = ign.state;
     $("ign-state").textContent = ign.state;
-    $("ign-driver").textContent = ign.physical ? "ESP32 · PHYSICAL OUTPUT" : "SIMULATION · no output";
+    $("ign-driver").textContent = ign.physical ? "ESP32 relay output" : "Simulation, no output";
     const hw = ign.hardware;
     $("ign-hw").textContent = ign.physical
       ? `Controller: ${hw.state}` + (hw.age_s !== null ? ` (${hw.age_s}s ago)` : " (no status yet)") +
@@ -137,16 +140,16 @@
   function chip(el, text, cls, title) { el.textContent = text; el.className = "chip " + cls; el.title = title || ""; }
   function renderSystems(s) {
     const t = s.telemetry, hw = s.ignition.hardware;
-    if (t.port_error) chip($("chip-net"), "ESP32 LINK", "bad", t.port_error);
-    else if (t.link === "LIVE") chip($("chip-net"), "ESP32 LINK", "ok", `Connected from ${t.remote}`);
-    else if (t.link === "NO DATA" || t.link === "STALE") chip($("chip-net"), "ESP32 LINK", "warn", t.link);
-    else chip($("chip-net"), "ESP32 LINK", "bad", "ESP32 not connected — run the system check");
-    if (t.link !== "LIVE") chip($("chip-sensor"), "SENSOR", t.link === "NO DATA" ? "bad" : "", "No pressure data");
-    else if (t.voltage_v !== null && (t.voltage_v < 0.01 || t.voltage_v > 4.9)) chip($("chip-sensor"), "SENSOR", "warn", `${t.voltage_v} V`);
-    else chip($("chip-sensor"), "SENSOR", "ok", `${t.rate_hz} Hz`);
-    if (!s.ignition.physical) chip($("chip-ign"), "IGNITION · SIM", "warn", "Simulation: no relay switches");
-    else if (hw.module) chip($("chip-ign"), "IGNITION", "ok", `ESP32 ignition module: ${hw.state}`);
-    else chip($("chip-ign"), "IGNITION", "bad", "No ignition module answering on the ESP32");
+    if (t.port_error) chip($("chip-net"), "ESP32 link", "bad", t.port_error);
+    else if (t.link === "LIVE") chip($("chip-net"), "ESP32 link", "ok", `Connected from ${t.remote}`);
+    else if (t.link === "NO DATA" || t.link === "STALE") chip($("chip-net"), "ESP32 link", "warn", t.link);
+    else chip($("chip-net"), "ESP32 link", "bad", "ESP32 not connected — run the system check");
+    if (t.link !== "LIVE") chip($("chip-sensor"), "Sensor", t.link === "NO DATA" ? "bad" : "", "No pressure data");
+    else if (t.voltage_v !== null && (t.voltage_v < 0.01 || t.voltage_v > 4.9)) chip($("chip-sensor"), "Sensor", "warn", `${t.voltage_v} V`);
+    else chip($("chip-sensor"), "Sensor", "ok", `${t.rate_hz} Hz`);
+    if (!s.ignition.physical) chip($("chip-ign"), "Ignition (simulation)", "warn", "Simulation: no relay switches");
+    else if (hw.module) chip($("chip-ign"), "Ignition", "ok", `ESP32 ignition module: ${hw.state}`);
+    else chip($("chip-ign"), "Ignition", "bad", "No ignition module answering on the ESP32");
     const box = $("chip-cams");
     if (box.childElementCount !== s.cameras.length) {
       box.innerHTML = "";
@@ -159,9 +162,9 @@
     const h = s.hardware, he = $("chip-hw");
     he.hidden = !h || !h.report;
     if (h && h.report) {
-      if (h.no_code) chip(he, `HARDWARE · ${h.no_code} NO CODE`, "warn", "Something is connected that the code does not use");
-      else if (h.missing) chip(he, `HARDWARE · ${h.missing} MISSING`, "bad", "A device the code uses does not answer");
-      else chip(he, "HARDWARE", "ok", "Everything connected is used by the code");
+      if (h.no_code) chip(he, `Hardware: ${h.no_code} with no code`, "warn", "Something is connected that the code does not use");
+      else if (h.missing) chip(he, `Hardware: ${h.missing} missing`, "bad", "A device the code uses does not answer");
+      else chip(he, "Hardware", "ok", "Everything connected is used by the code");
     }
   }
   document.querySelector(".sysbar").addEventListener("click", (e) => { if (e.target.classList.contains("chip") && e.target.id !== "chip-hw") openCheck(); });
@@ -239,8 +242,8 @@
     ymax = niceMax(Math.max(ymax * 1.1, state && state.ignition.state !== "SAFE" ? CFG.alarm * 1.1 : 0));
     const x = (t) => L + pw * (1 - (now - t) / chartWin);
     const y = (v) => T + ph * (1 - v / ymax);
-    ctx.font = "11px ui-monospace, Menlo, Consolas, monospace";
-    ctx.strokeStyle = "#16232a"; ctx.fillStyle = "#6f8790"; ctx.lineWidth = 1;
+    ctx.font = "500 12px Barlow, system-ui, sans-serif";
+    ctx.strokeStyle = "#1d2732"; ctx.fillStyle = "#7a8899"; ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
       const v = ymax * i / 4, yy = y(v);
       ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(W - R, yy); ctx.stroke();
@@ -252,15 +255,19 @@
       ctx.fillText(s === 0 ? "now" : `-${s}s`, xx - 12, H - 6);
     }
     if (CFG.alarm < ymax) {
-      ctx.strokeStyle = "rgba(239,75,82,.6)"; ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = "rgba(240,68,68,.65)"; ctx.setLineDash([6, 4]);
       ctx.beginPath(); ctx.moveTo(L, y(CFG.alarm)); ctx.lineTo(W - R, y(CFG.alarm)); ctx.stroke();
       ctx.setLineDash([]);
     }
     if (!pts.length) return;
-    ctx.strokeStyle = "#36c6e8"; ctx.lineWidth = 2; ctx.lineJoin = "round";
     ctx.beginPath();
     pts.forEach((p, i) => { const xx = x(p[0]), yy = y(p[1]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); });
+    ctx.strokeStyle = "#36c6e8"; ctx.lineWidth = 2; ctx.lineJoin = "round";
     ctx.stroke();
+    const area = ctx.createLinearGradient(0, T, 0, T + ph);
+    area.addColorStop(0, "rgba(54,198,232,.18)"); area.addColorStop(1, "rgba(54,198,232,0)");
+    ctx.lineTo(x(pts[pts.length - 1][0]), y(0)); ctx.lineTo(x(pts[0][0]), y(0)); ctx.closePath();
+    ctx.fillStyle = area; ctx.fill();
   }
   function niceMax(v) {
     const m = Math.pow(10, Math.floor(Math.log10(v)));
