@@ -1,4 +1,11 @@
 {% import "_ui.html" as ui %}
+{% macro gauge(id, label) -%}
+<svg class="arc" viewBox="0 0 200 200" aria-hidden="true">
+  <circle class="arc-track" cx="100" cy="100" r="88"/>
+  <circle class="arc-fill" id="{{ id }}-arc" cx="100" cy="100" r="88"/>
+  <circle class="arc-alarm" id="{{ id }}-alarm" cx="100" cy="100" r="88"/>
+</svg>
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -6,125 +13,137 @@
 </head>
 <body class="page-console" data-state="SAFE">
 {% call ui.topbar("console", version) %}
+  <div class="systems" aria-label="Systems">
+    <button class="chip" id="chip-net">ESP32</button>
+    <button class="chip" id="chip-sensor">Sensor</button>
+    <button class="chip" id="chip-ign">Relay</button>
+    <span id="chip-cams"></span>
+    <a class="chip" id="chip-hw" href="/hardware" hidden>Hardware</a>
+    <button class="textbtn" id="btn-check">Check</button>
+  </div>
   <div class="sysmenu">
-    <button class="ghost" id="btn-update" title="Check GitHub for a new version">Updates</button>
-    <button class="ghost icon" id="btn-power" title="Close SFT STELLAR" aria-label="Close SFT STELLAR">
-      <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3v8M6.6 6.6a8 8 0 1 0 10.8 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <button class="textbtn" id="btn-update" title="Check GitHub for a new version">Update</button>
+    <button class="textbtn icon" id="btn-power" title="Close SFT STELLAR" aria-label="Close SFT STELLAR">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3v8M6.6 6.6a8 8 0 1 0 10.8 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
   </div>
 {% endcall %}
-<div class="sysbar">
-  <span class="sys-label">Systems</span>
-  <button class="chip" id="chip-net">ESP32 link</button>
-  <button class="chip" id="chip-sensor">Sensor</button>
-  <button class="chip" id="chip-ign">Ignition</button>
-  <span id="chip-cams"></span>
-  <a class="chip" id="chip-hw" href="/hardware" hidden>Hardware</a>
-  <span class="grow"></span>
-  <button class="small ghost" id="btn-check">Run system check</button>
-</div>
 
 <div id="offline" class="offline" hidden>Console lost connection to the server. Ignition aborts by itself after 3 s.</div>
 
-<main class="grid">
- <div class="col col-main">
-  <!-- PRESSURE -->
-  <section class="panel pressure">
-    <div class="panel-h"><h2>Chamber pressure</h2><span class="muted small" id="p-meta">PT-01</span></div>
-    <div class="readout">
-      <div class="value"><span id="p-now">—</span><small>bar</small></div>
-      <dl class="side">
-        <div><dt>Peak</dt><dd><b id="p-peak">—</b> bar</dd></div>
-        <div><dt>PSI</dt><dd><b id="p-psi">—</b></dd></div>
-        <div><dt>Zero offset</dt><dd><b id="p-tare">—</b> bar</dd></div>
-      </dl>
-      <span class="grow"></span>
-      <div class="p-alarm-tag" id="p-alarm-tag">Alarm at <b id="p-alarm-val">—</b> bar</div>
-    </div>
-    <div class="chart-wrap">
-      <canvas id="chart" aria-label="Chamber pressure over time" role="img"></canvas>
-      <div class="chart-tools seggroup" role="group" aria-label="Chart window">
-        <button class="seg" data-win="10">10 s</button><button class="seg on" data-win="30">30 s</button><button class="seg" data-win="60">60 s</button>
-      </div>
-    </div>
-    <div class="row">
-      <button class="small" id="btn-zero" title="Use the current reading as zero">Zero</button>
-      <button class="small" id="btn-peak">Reset peak</button>
-      <button class="small ghost" id="btn-clearzero" title="Remove the zero offset">Clear zero</button>
-      <span class="muted small grow right" id="link-detail"></span>
-    </div>
-  </section>
-
-  <!-- CAMERAS -->
-  <section class="panel cameras" id="cameras-panel">
-    <div class="panel-h"><h2>Cameras</h2><span class="muted small" id="cams-note"></span></div>
-    {% set shown = cameras|rejectattr("status", "equalto", "DISABLED")|list %}
-    <div class="cam-grid" style="--n: {{ [shown|length, 1]|max }}">
+{% set shown = cameras|rejectattr("status", "equalto", "DISABLED")|list %}
+<main class="broadcast">
+  <!-- STAGE: live picture or pressure trace, telemetry over it -->
+  <section class="stage" id="stage" data-view="{{ 'camera' if shown else 'pressure' }}">
+    <div class="stage-cams cameras" id="cameras-panel" style="--n: {{ [shown|length, 1]|max }}">
       {% for cam in shown %}
       <figure class="cam" id="cam-{{ cam.id }}">
         <img src="/camera/{{ cam.id }}.mjpg" alt="{{ cam.name }} live picture" data-src="/camera/{{ cam.id }}.mjpg">
-        <figcaption><b>{{ cam.name }}</b><span class="cam-status">—</span></figcaption>
-        <div class="cam-off"><b>{{ cam.name }} has no picture</b><span class="cam-err"></span><a href="/settings#cameras">Open camera settings</a></div>
+        <figcaption><span class="cam-status">–</span><b>{{ cam.name }}</b></figcaption>
+        <div class="cam-off"><b>{{ cam.name }}: no picture</b><span class="cam-err"></span><a href="/settings#cameras">Camera settings</a></div>
       </figure>
       {% else %}
-      <div class="empty">No camera turned on. <a href="/settings#cameras">Add or turn on a camera</a> in Settings.</div>
+      <div class="empty">No camera turned on. <a href="/settings#cameras">Add a camera</a></div>
       {% endfor %}
     </div>
-  </section>
- </div>
- <div class="col col-side">
-  <!-- IGNITION -->
-  <section class="panel ignition">
-    <div class="panel-h"><h2>Ignition</h2><span class="mode-tag" id="ign-mode">Simulation</span></div>
-    <div class="ign-state" id="ign-state">SAFE</div>
-    <div class="countdown" id="countdown"></div>
-    <div class="ign-hw muted small" id="ign-hw"></div>
-    <div class="ign-buttons">
-      <button class="arm" id="btn-arm">ARM</button>
-      <button class="start" id="btn-start"><span class="hold" id="hold-fill"></span><span class="lbl" id="start-lbl">Hold to start countdown</span></button>
-      <button class="abort" id="btn-abort">ABORT<small>Esc · Space when no button is selected</small></button>
-    </div>
-    <p class="small ign-note" id="ign-note"></p>
-    <details class="bench">
-      <summary>Bench test (relays)</summary>
-      <div class="relaytest">
-        <button class="small" id="btn-relay-arm" title="Click the ARM relay alone">Click ARM relay</button>
-        <button class="small" id="btn-relay-fire" title="Click the FIRE relay alone">Click FIRE relay</button>
-        <span class="muted small" id="relay-note">Only when SAFE.</span>
+    <div class="stage-chart"><canvas id="chart" aria-label="Chamber pressure over time" role="img"></canvas></div>
+
+    <div class="stage-top">
+      <div class="seggroup" role="group" aria-label="Stage view">
+        <button class="seg view" data-view="camera">Camera</button><button class="seg view" data-view="pressure">Pressure</button>
       </div>
-    </details>
+      <span class="stage-note" id="cams-note"></span>
+      <span class="grow"></span>
+      <div class="seggroup chart-tools" role="group" aria-label="Chart window">
+        <button class="seg win" data-win="10">10 s</button><button class="seg win on" data-win="30">30 s</button><button class="seg win" data-win="60">60 s</button>
+      </div>
+    </div>
+
+    <div class="lower">
+      <div class="gauge readout">
+        {{ gauge("g-now", "Chamber") }}
+        <div class="gv"><b id="p-now">–</b><span>Chamber · bar</span></div>
+        <div class="g-sub"><span>PSI <b id="p-psi">–</b></span><span>Zero <b id="p-tare">–</b></span></div>
+      </div>
+      <div class="center">
+        <div class="t-label" id="t-label">Countdown</div>
+        <div class="countdown" id="countdown">T−00:10</div>
+        <ol class="timeline" id="timeline" aria-label="Test sequence">
+          <li data-phase="ready">Ready</li><li data-phase="armed">Armed</li><li data-phase="countdown">Countdown</li>
+          <li data-phase="ignition">Ignition</li><li data-phase="safed">Safed</li>
+        </ol>
+      </div>
+      <div class="gauge peak">
+        {{ gauge("g-peak", "Peak") }}
+        <div class="gv"><b id="p-peak">–</b><span>Peak · bar</span></div>
+        <div class="g-sub"><span id="p-alarm-tag">Alarm <b id="p-alarm-val">–</b> bar</span></div>
+      </div>
+    </div>
+    <div class="stage-foot">
+      <button class="textbtn" id="btn-zero" title="Use the current reading as zero">Zero</button>
+      <button class="textbtn" id="btn-peak">Reset peak</button>
+      <button class="textbtn" id="btn-clearzero" title="Remove the zero offset">Clear zero</button>
+      <span class="grow"></span>
+      <span id="p-meta"></span><span id="link-detail"></span>
+    </div>
   </section>
 
-  <!-- RECORDING + LOG -->
-  <section class="panel log">
-    <div class="panel-h"><h2>Recording</h2><span class="muted small" id="rec-session"></span></div>
-    <div class="row">
-      <button id="btn-rec">Start recording</button>
-      <span class="muted small grow" id="rec-detail">Starts by itself at countdown.</span>
-    </div>
-    <div class="result" id="result" hidden>
-      <div class="result-h"><span class="result-tag" id="r-tag">Fired</span><b id="r-session"></b><span class="grow"></span>
-        <button class="small" id="r-open">Open folder</button></div>
-      <dl class="result-stats">
-        <div><dt>Peak</dt><dd><b id="r-peak">—</b> bar</dd></div>
-        <div><dt>Burn time</dt><dd><b id="r-burn">—</b> s</dd></div>
-        <div><dt>Time to peak</dt><dd><b id="r-ttp">—</b> s</dd></div>
-        <div><dt>Samples</dt><dd><b id="r-samples">—</b></dd></div>
+  <!-- RAIL: ignition, recording, log -->
+  <aside class="rail">
+    <section class="ignition">
+      <div class="r-h"><span>Ignition</span><span class="mode-tag" id="ign-mode">Simulation</span></div>
+      <div class="ign-state" id="ign-state">SAFE</div>
+      <dl class="kv">
+        <div><dt>Countdown</dt><dd id="kv-cd">–</dd></div>
+        <div><dt>Hold to start</dt><dd id="kv-hold">–</dd></div>
+        <div><dt>Igniter pulse</dt><dd id="kv-pulse">–</dd></div>
+        <div><dt>Sensor signal</dt><dd id="kv-sig">–</dd></div>
       </dl>
-      <p class="small muted" id="r-files"></p>
-    </div>
-    <div class="panel-h sub"><h2>Event log</h2></div>
-    <ol class="events" id="events"></ol>
-    <form class="row" id="note-form"><input id="note" placeholder="Add a note to the log" maxlength="300" aria-label="Note"><button>Add note</button></form>
-  </section>
- </div>
+      <p class="ign-hw" id="ign-hw"></p>
+      <div class="ign-buttons">
+        <button class="arm" id="btn-arm">ARM</button>
+        <button class="start" id="btn-start"><span class="hold" id="hold-fill"></span><span class="lbl" id="start-lbl">Hold to start</span></button>
+      </div>
+      <button class="abort" id="btn-abort" title="Esc always aborts. Space aborts when no button is selected.">ABORT<small>Esc</small></button>
+      <p class="ign-note" id="ign-note"></p>
+      <details class="bench">
+        <summary>Bench test (relays)</summary>
+        <div class="relaytest">
+          <button class="small" id="btn-relay-arm">Click ARM relay</button>
+          <button class="small" id="btn-relay-fire">Click FIRE relay</button>
+          <span id="relay-note">Only when SAFE.</span>
+        </div>
+      </details>
+    </section>
+
+    <section class="recording log">
+      <div class="r-h"><span>Recording</span><span id="rec-session"></span></div>
+      <div class="rec-row"><span class="rec-dot" aria-hidden="true"></span><span id="rec-detail">Starts by itself at countdown.</span><span class="grow"></span><button class="small" id="btn-rec">Start</button></div>
+      <div class="result" id="result" hidden>
+        <div class="result-h"><span class="result-tag" id="r-tag">Fired</span><span id="r-session"></span><span class="grow"></span><button class="textbtn" id="r-open">Open folder</button></div>
+        <dl class="result-stats">
+          <div><dt>Peak</dt><dd><b id="r-peak">–</b> bar</dd></div>
+          <div><dt>Burn</dt><dd><b id="r-burn">–</b></dd></div>
+          <div><dt>To peak</dt><dd><b id="r-ttp">–</b></dd></div>
+          <div><dt>Readings</dt><dd><b id="r-samples">–</b></dd></div>
+        </dl>
+        <p class="r-files" id="r-files"></p>
+      </div>
+    </section>
+
+    <section class="events-wrap">
+      <div class="r-h"><span>Events</span></div>
+      <ol class="events" id="events"></ol>
+      <form class="note-form" id="note-form"><input id="note" placeholder="Add a note to the log" maxlength="300" aria-label="Note"><button class="small">Add</button></form>
+    </section>
+  </aside>
 </main>
 
 <div class="modal" id="arm-modal" hidden>
   <div class="box warn" role="dialog" aria-modal="true" aria-labelledby="arm-title">
     <div class="arm-h"><h2 id="arm-title">Arm ignition</h2><span class="mode-tag" id="arm-mode">Simulation</span></div>
     <ul class="facts" id="arm-facts"></ul>
-    <p class="muted small">Confirm each item.</p>
+    <p class="m-sub">Confirm each item.</p>
     <label class="tick"><input type="checkbox" class="chk"> Range is clear of all personnel</label>
     <label class="tick"><input type="checkbox" class="chk"> Igniter connected and stand is ready</label>
     <label class="tick"><input type="checkbox" class="chk"> Cameras and pressure checked</label>
@@ -142,14 +161,14 @@
 
 <div class="modal" id="check-modal" hidden>
   <div class="box wide" role="dialog" aria-modal="true" aria-labelledby="check-title">
-    <h2 id="check-title">System check <span class="muted small" id="check-summary"></span></h2>
+    <h2 id="check-title">System check <span class="m-sub" id="check-summary"></span></h2>
     <ol class="checks" id="check-list"><li class="muted">Checking…</li></ol>
     <div class="row"><button id="check-fw" hidden>Fix firewall</button><a class="btnlink" href="/settings#check">Open fixes page</a><span class="grow"></span>
       <button id="check-again">Check again</button><button class="primary" id="check-close">Close</button></div>
   </div>
 </div>
 
-<script>window.TS = {{ {"hold_s": cfg.ignition.hold_to_start_s, "alarm": cfg.pressure.alarm_bar, "max": cfg.pressure.max_expected_bar} | tojson }};</script>
+<script>window.TS = {{ {"hold_s": cfg.ignition.hold_to_start_s, "alarm": cfg.pressure.alarm_bar, "max": cfg.pressure.max_expected_bar, "countdown_s": cfg.ignition.countdown_s} | tojson }};</script>
 {{ ui.shell_script() }}
 <script src="{{ url_for('static', filename='console.js') }}"></script>
 </body>

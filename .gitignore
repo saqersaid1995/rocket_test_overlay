@@ -12,3 +12,8 @@ data/
 Thumbs.db
 .idea/
 .vscode/
+
+# Impeccable working files
+.impeccable/review/
+.impeccable/questions/
+.impeccable/build/
