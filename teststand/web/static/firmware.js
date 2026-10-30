@@ -78,6 +78,7 @@
       const running = job.state === "RUNNING";
       ["fw-compile", "fw-upload", "fw-both", "fw-file"].forEach((id) => ($(id).disabled = running));
       $("fw-upload").disabled = running || !j.bin;
+      $("fw-upload").title = !j.bin ? "Compile the code first" : running ? "Wait for the current job" : "";
       const names = { compile: "Compile", "compile+upload": "Compile and upload", upload: "Upload" };
       const states = { RUNNING: "running", DONE: "done", FAILED: "failed", IDLE: "" };
       const label = job.kind ? `${names[job.kind] || job.kind} ${states[job.state] ?? job.state}` : "Ready";

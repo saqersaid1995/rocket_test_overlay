@@ -167,6 +167,7 @@ class Recorder:
                 burn = round(above[-1][0] - above[0][0], 3)
         return {
             "session": session.name,
+            "folder": str(session.resolve()),
             "started": datetime.fromtimestamp(self.started_at).isoformat(timespec="seconds"),
             "stopped": datetime.now().isoformat(timespec="seconds"),
             "stop_reason": reason,
@@ -179,7 +180,7 @@ class Recorder:
             "time_to_peak_s": round(peak_t - self.fire_at, 3) if peak_t and self.fire_at else None,
             "burn_time_s_estimate": burn,
             "note": "burn time = time pressure stayed above 10% of peak (estimate)",
-            "cameras": [c["id"] for c in self.cameras.snapshot()],
+            "cameras": [c["id"] for c in self.cameras.snapshot() if c.get("status") != "DISABLED"],
         }
 
     def snapshot(self) -> dict:

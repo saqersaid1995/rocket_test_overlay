@@ -39,6 +39,7 @@ class IgnitionController:
         self.fire_end = 0.0
         self.last_fire: float | None = None
         self.last_abort_reason: str | None = None
+        self.last_abort_t: float | None = None
         self._last_keepalive = 0.0
         self._hooks: dict[str, list[Callable[..., None]]] = {"countdown": [], "fire": [], "safe": []}
         self._stop = threading.Event()
@@ -96,6 +97,7 @@ class IgnitionController:
             self.state = SAFE
             if was != SAFE:
                 self.last_abort_reason = reason
+                self.last_abort_t = time.time()
         if was != SAFE:
             events.log("IGNITION", f"ABORT → SAFE ({reason})", "ALARM")
             self._emit("safe", reason)
@@ -194,5 +196,6 @@ class IgnitionController:
                 if self.state == ARMED else None,
                 "last_fire": self.last_fire,
                 "last_abort_reason": self.last_abort_reason,
+                "last_abort_t": self.last_abort_t,
                 "hardware": self.driver.hardware_state(),
             }

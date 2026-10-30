@@ -55,7 +55,7 @@
         <label>Output
           <select name="ignition.driver">
             <option value="simulation">Simulation (no relay switches)</option>
-            <option value="esp32">ESP32 relay output</option>
+            <option value="esp32">Live relay (ESP32)</option>
           </select></label>
         <label>Countdown (s)<input name="ignition.countdown_s" type="number" min="3" max="60"></label>
         <label>Igniter pulse (ms)<input name="ignition.pulse_ms" type="number" min="100" max="3000" step="50"></label>
@@ -63,7 +63,7 @@
         <label>Auto-disarm after (s)<input name="ignition.arm_timeout_s" type="number" min="10" max="900"></label>
         <label>Relay test click (ms)<input name="ignition.relay_test_ms" type="number" min="50" max="1000" step="50"></label>
       </div>
-      <div class="note warn">Use <b>ESP32 relay output</b> only after a bench test with a lamp or LED in place of the igniter.</div>
+      <div class="note warn">Use <b>Live relay</b> only after a bench test with a lamp or LED in place of the igniter.</div>
     </section>
 
     <!-- PRESSURE -->
@@ -96,7 +96,7 @@
 
 <div class="modal" id="leave-modal" hidden>
   <div class="box" role="dialog" aria-modal="true">
-    <h3>Unsaved changes</h3>
+    <h2>Unsaved changes</h2>
     <p>Save the changes before leaving this page?</p>
     <div class="row end"><button id="leave-stay">Stay</button><button id="leave-discard">Don't save</button>
       <button class="primary" id="leave-save">Save and restart</button></div>
@@ -150,6 +150,7 @@
   </div>
 </template>
 
+{{ ui.shell_script() }}
 <script src="{{ url_for('static', filename='settings.js') }}"></script>
 </body>
 </html>

@@ -116,6 +116,18 @@ def create_app(system) -> Flask:
             abort(404)
         return ok(recorder=system.recorder.snapshot())
 
+    @app.post("/api/session/open")
+    def open_session_folder():
+        """Open the last test's folder in Windows Explorer."""
+        last = system.recorder.last_session or {}
+        folder = last.get("folder")
+        if not folder or not os.path.isdir(folder):
+            return jsonify(ok=False, error="No saved test folder yet"), 404
+        if not hasattr(os, "startfile"):
+            return jsonify(ok=False, error=f"Open this folder by hand: {folder}"), 409
+        os.startfile(folder)  # noqa: S606 - local folder written by this app
+        return ok(folder=folder)
+
     @app.post("/api/note")
     def note():
         text = ((request.get_json(silent=True) or {}).get("text") or "").strip()[:300]

@@ -43,19 +43,17 @@
 
   const fmt = (v, d = 2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(d);
 
-  function pill(el, label, value, cls) {
-    el.className = "pill " + (cls || "");
-    el.innerHTML = `<span>${label}</span><b>${value}</b>`;
-  }
+  const S = window.STELLAR.status;   // shared helpers from shell.js
+  let lastResult = null, firstRender = true;
 
   function render(s) {
     const t = s.telemetry, ign = s.ignition, rec = s.recorder;
 
     // top bar
-    pill($("pill-link"), "Telemetry", t.link, t.link === "LIVE" ? "ok" : (t.link === "STALE" || t.link === "NO DATA") ? "warn" : "bad");
-    pill($("pill-ign"), ign.physical ? "Ignition" : "Ignition (sim)", ign.state,
-      ign.state === "SAFE" ? "ok" : ign.state === "ARMED" ? "warn" : "bad");
-    pill($("pill-rec"), "Recording", rec.active ? `${rec.elapsed_s}s` : "Off", rec.active ? "rec" : "");
+    const mode = S.mode(ign);
+    S.pill($("pill-ign"), ign.physical ? "Ignition" : "Ignition (sim)", ign.state, S.ignClass(ign.state));
+    S.pill($("pill-rec"), "Recording", rec.active ? `${rec.elapsed_s}s` : "Off", rec.active ? "rec" : "");
+    S.announce(ign.state, ign);
 
     // pressure
     const p = t.pressure_bar;
@@ -64,61 +62,83 @@
     $("p-peak").textContent = fmt(t.peak_bar, 2);
     $("p-tare").textContent = fmt(t.tare_bar, 3);
     const ro = document.querySelector(".readout");
-    ro.classList.toggle("alarm", p !== null && p >= CFG.alarm);
+    const alarm = p !== null && p >= CFG.alarm;
+    ro.classList.toggle("alarm", alarm);
     ro.classList.toggle("stale", t.link !== "LIVE");
-    $("p-fill").style.width = p === null ? "0" : Math.min(100, (p / CFG.max) * 100) + "%";
-    $("p-alarm").style.left = Math.min(100, (CFG.alarm / CFG.max) * 100) + "%";
-    $("p-meta").textContent = t.firmware ? `${t.firmware} · ${t.remote || ""}` : "waiting for ESP32…";
+    document.body.classList.toggle("p-alarm", alarm);
+    $("p-alarm-val").textContent = fmt(CFG.alarm, 0);
+    $("p-meta").textContent = t.link === "LIVE" ? `Sensor PT-01, ${t.rate_hz} readings per second` : "Waiting for the ESP32";
+    $("p-meta").title = t.firmware ? `${t.firmware} from ${t.remote || "?"}` : "";
     $("link-detail").textContent = t.port_error ? t.port_error
-      : t.link === "OFFLINE" ? `No connection from the ESP32 (listening on port ${t.port})`
-      : `${t.rate_hz} Hz · ${t.samples} samples · gaps ${t.gaps} · bad frames ${t.bad_frames}` +
-        (t.voltage_v !== null ? ` · ${fmt(t.voltage_v, 4)} V` : "");
+      : t.link === "OFFLINE" ? `No connection from the ESP32 (this PC listens on port ${t.port}).`
+      : t.gaps || t.bad_frames ? `${t.gaps} gaps and ${t.bad_frames} damaged messages since start.`
+      : t.voltage_v !== null ? `Sensor signal ${fmt(t.voltage_v, 3)} V` : "";
 
     // ignition
     document.body.dataset.state = ign.state;
     $("ign-state").textContent = ign.state;
-    $("ign-driver").textContent = ign.physical ? "ESP32 relay output" : "Simulation, no output";
+    $("ign-mode").textContent = mode;
+    $("ign-mode").className = "mode-tag " + (ign.physical ? "live" : "sim");
     const hw = ign.hardware;
     $("ign-hw").textContent = ign.physical
-      ? `Controller: ${hw.state}` + (hw.age_s !== null ? ` (${hw.age_s}s ago)` : " (no status yet)") +
-        (hw.fire_count !== undefined && hw.fire_count !== null ? ` · fires ${hw.fire_count}` : "")
-      : `Countdown ${ign.countdown_s}s · pulse ${ign.pulse_ms} ms`;
+      ? (hw.module ? `ESP32 relay reports ${hw.state}` + (hw.fire_count ? `, ${hw.fire_count} fires since power-on` : "") : "ESP32 relay is not answering")
+      : `Countdown ${ign.countdown_s} s, igniter pulse ${ign.pulse_ms} ms. No relay switches.`;
     if (ign.state === "COUNTDOWN" && ign.t_minus !== null) countdownEnd = performance.now() + ign.t_minus * 1000;
     else if (ign.state !== "FIRING") countdownEnd = null;
 
     $("btn-arm").textContent = ign.state === "ARMED" ? "DISARM" : "ARM";
     $("btn-arm").disabled = !(ign.state === "SAFE" || ign.state === "ARMED");
     $("btn-start").disabled = ign.state !== "ARMED";
+    $("start-lbl").textContent = `Hold ${fmt(CFG.hold_s, 1)} s to start`;
+    $("btn-start").title = "Press and hold to start the countdown (or hold Enter)";
     $("btn-relay-arm").disabled = $("btn-relay-fire").disabled = ign.state !== "SAFE";
-    let note = "";
-    if (ign.state === "ARMED" && ign.arm_remaining_s !== null) note = `Auto-disarm in ${ign.arm_remaining_s}s if no action.`;
-    else if (ign.state === "SAFE" && ign.last_abort_reason) note = `Last abort: ${ign.last_abort_reason}`;
-    else if (ign.state === "SAFE" && t.link !== "LIVE") note = "ARM is blocked until pressure data is LIVE (see SYSTEMS above).";
+    let note = "", noteCls = "muted";
+    if (ign.state === "ARMED" && ign.arm_remaining_s !== null) { note = `Disarms by itself in ${ign.arm_remaining_s} s if nothing happens.`; noteCls = "warn"; }
+    else if (ign.state === "SAFE" && t.link !== "LIVE") { note = "ARM needs live pressure data from the ESP32."; noteCls = "warn"; }
+    else if (ign.state === "SAFE" && ign.last_abort_reason) {
+      const who = ign.last_abort_reason === "operator ABORT" ? "by the operator" : ign.last_abort_reason;
+      const at = ign.last_abort_t ? " at " + new Date(ign.last_abort_t * 1000).toLocaleTimeString([], { hour12: false }) : "";
+      note = `Last abort: ${who}${at}.`;
+    }
     $("ign-note").textContent = note;
+    $("ign-note").className = "small ign-note " + noteCls;
+    if (ign.state === "FIRING") S.flash("FIRE", "fire");
+    else if (alarm) S.flash(`Pressure alarm ${fmt(p, 1)} bar`, "alarm");
+    else S.clearFx();
 
-    // cameras
+    // cameras: a camera without a picture collapses to a short notice
+    let live = 0, shown = 0;
     for (const c of s.cameras) {
       const fig = $("cam-" + c.id);
       if (!fig) continue;
+      shown++;
+      const ok = c.status === "LIVE";
+      if (ok) live++;
+      fig.classList.toggle("off", !ok);
+      fig.querySelector(".cam-err").textContent = c.error ? c.error : `Status: ${c.status.toLowerCase()}.`;
       const st = fig.querySelector(".cam-status");
-      if (c.recording) { st.textContent = `● REC ${c.record_s}s`; st.className = "cam-status rec"; }
-      else { st.textContent = c.record_failed ? "REC FAILED" : c.status; st.className = "cam-status " + (c.status === "LIVE" ? "ok" : "bad"); }
+      st.title = c.error || "";
+      if (c.recording) { st.textContent = `REC ${c.record_s} s`; st.className = "cam-status rec"; }
+      else if (c.record_failed) { st.textContent = "Recording failed"; st.className = "cam-status bad"; }
+      else { st.textContent = ok ? "Live" : c.status.toLowerCase(); st.className = "cam-status " + (ok ? "ok" : "bad"); }
     }
+    $("cameras-panel").classList.toggle("none-live", shown > 0 && live === 0);
+    $("cams-note").textContent = shown ? `${live} of ${shown} live` : "";
 
     // recorder
+    const busy = ign.state === "COUNTDOWN" || ign.state === "FIRING";
     $("btn-rec").textContent = rec.active ? "Stop recording" : "Start recording";
+    $("btn-rec").disabled = rec.active && busy;   // never cut the data during countdown or fire
+    $("btn-rec").title = rec.active && busy ? "Recording cannot be stopped during countdown or fire" : "";
     $("rec-session").textContent = rec.active ? rec.session : "";
     $("rec-detail").textContent = rec.active
-      ? `${rec.samples} samples` + (rec.auto_stop_pending ? " · auto-stop scheduled" : "")
-      : "Starts by itself at countdown (auto-record).";
-    if (rec.last) {
-      const L = rec.last;
-      $("rec-last").textContent = `Last test ${L.session}: peak ${L.peak_pressure_bar} bar` +
-        (L.burn_time_s_estimate ? ` · burn ≈ ${L.burn_time_s_estimate}s` : "") +
-        (L.fired ? "" : " · not fired") + ` · ${L.samples} samples`;
-    }
+      ? `${rec.samples} readings saved` + (rec.auto_stop_pending ? ". Stops by itself shortly." : ".")
+      : "Starts by itself at countdown.";
+    renderResult(rec.last);
 
     renderSystems(s);
+    if (!armModal.hidden) renderArmFacts(s);
+    firstRender = false;
 
     // events
     if (s.events.length) {
@@ -128,13 +148,33 @@
         const li = document.createElement("li");
         li.className = e.level;
         const time = new Date(e.t * 1000).toLocaleTimeString([], { hour12: false });
-        li.innerHTML = `<span class="t">${time}</span><span class="s">${e.source}</span>`;
-        li.appendChild(document.createTextNode(e.message));
+        li.innerHTML = `<span class="t">${time}</span><span class="s">${e.source}</span><span class="m"></span>`;
+        li.lastChild.textContent = e.message;
         ol.prepend(li);
       }
       while (ol.children.length > 300) ol.lastChild.remove();
     }
   }
+
+  // ---------------- last test result ----------------
+  function renderResult(L) {
+    const box = $("result");
+    if (!L) { box.hidden = true; return; }
+    box.hidden = false;
+    if (lastResult === L.session) return;
+    const isNew = lastResult !== null || (!firstRender && lastResult === null);
+    lastResult = L.session;
+    $("r-tag").textContent = L.fired ? "Fired" : "Not fired";
+    $("r-tag").className = "result-tag " + (L.fired ? "fired" : "idle");
+    $("r-session").textContent = "Last test " + new Date(L.stopped || L.started).toLocaleString([], { hour12: false, dateStyle: "medium", timeStyle: "short" });
+    $("r-peak").textContent = fmt(L.peak_pressure_bar, 2);
+    const unit = (id, v) => { $(id).parentElement.innerHTML = v ? `<b id="${id}">${fmt(v, 2)}</b> s` : `<b id="${id}">—</b>`; };
+    unit("r-burn", L.burn_time_s_estimate); unit("r-ttp", L.time_to_peak_s);
+    $("r-samples").textContent = L.samples.toLocaleString();
+    $("r-files").textContent = `Saved: pressure, events` + (L.cameras && L.cameras.length ? `, ${L.cameras.length} camera video${L.cameras.length > 1 ? "s" : ""}` : "") + ` in ${L.session}`;
+    if (isNew) { box.classList.remove("fresh"); void box.offsetWidth; box.classList.add("fresh"); }
+  }
+  $("r-open").addEventListener("click", () => api("/api/session/open"));
 
   // ---------------- systems bar ----------------
   function chip(el, text, cls, title) { el.textContent = text; el.className = "chip " + cls; el.title = title || ""; }
@@ -147,14 +187,14 @@
     if (t.link !== "LIVE") chip($("chip-sensor"), "Sensor", t.link === "NO DATA" ? "bad" : "", "No pressure data");
     else if (t.voltage_v !== null && (t.voltage_v < 0.01 || t.voltage_v > 4.9)) chip($("chip-sensor"), "Sensor", "warn", `${t.voltage_v} V`);
     else chip($("chip-sensor"), "Sensor", "ok", `${t.rate_hz} Hz`);
-    if (!s.ignition.physical) chip($("chip-ign"), "Ignition (simulation)", "warn", "Simulation: no relay switches");
-    else if (hw.module) chip($("chip-ign"), "Ignition", "ok", `ESP32 ignition module: ${hw.state}`);
-    else chip($("chip-ign"), "Ignition", "bad", "No ignition module answering on the ESP32");
+    if (!s.ignition.physical) chip($("chip-ign"), "Ignition: simulation", "warn", "No relay switches");
+    else if (hw.module) chip($("chip-ign"), "Ignition: live relay", "ok", `ESP32 relay reports ${hw.state}`);
+    else chip($("chip-ign"), "Ignition: live relay", "bad", "The ESP32 relay is not answering");
     const box = $("chip-cams");
     const cams = s.cameras.filter((c) => c.status !== "DISABLED");   // only cameras in use
     if (box.childElementCount !== cams.length) {
       box.innerHTML = "";
-      for (const c of cams) { const e = document.createElement("span"); e.id = "chip-cam-" + c.id; box.appendChild(e); }
+      for (const c of cams) { const e = document.createElement("button"); e.id = "chip-cam-" + c.id; box.appendChild(e); }
     }
     for (const c of cams) {
       const e = $("chip-cam-" + c.id);
@@ -168,13 +208,33 @@
       else chip(he, "Hardware", "ok", "Everything connected is used by the code");
     }
   }
-  document.querySelector(".sysbar").addEventListener("click", (e) => { if (e.target.classList.contains("chip") && e.target.id !== "chip-hw") openCheck(); });
+  document.querySelector(".sysbar").addEventListener("click", (e) => { const c = e.target.closest("button.chip"); if (c) openCheck(); });
+
+  // ---------------- modals: focus in, Tab stays inside, focus back on close ----------------
+  let modalReturn = null;
+  function openModal(m, focusSel) {
+    modalReturn = document.activeElement;
+    m.hidden = false;
+    const f = (focusSel && m.querySelector(focusSel)) || m.querySelector("button, input, a");
+    if (f) f.focus();
+  }
+  function closeModal(m) { m.hidden = true; if (modalReturn && modalReturn.focus) modalReturn.focus(); }
+  const openModalEl = () => document.querySelector(".modal:not([hidden])");
+  document.addEventListener("keydown", (e) => {
+    const m = openModalEl();
+    if (!m || e.key !== "Tab") return;
+    const items = [...m.querySelectorAll("button:not([disabled]), input, a[href]")];
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 
   // ---------------- system check ----------------
   const checkModal = $("check-modal");
   const escH = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   async function openCheck() {
-    checkModal.hidden = false;
+    if (checkModal.hidden) openModal(checkModal, "#check-close");
     $("check-list").innerHTML = '<li class="muted">Checking network, ESP32, firewall, cameras… (a few seconds)</li>';
     $("check-summary").textContent = ""; $("check-fw").hidden = true;
     let j;
@@ -188,7 +248,7 @@
   }
   $("btn-check").addEventListener("click", openCheck);
   $("check-again").addEventListener("click", openCheck);
-  $("check-close").addEventListener("click", () => (checkModal.hidden = true));
+  $("check-close").addEventListener("click", () => closeModal(checkModal));
   $("check-fw").addEventListener("click", async () => {
     $("check-fw").disabled = true;
     $("check-summary").textContent = "· Accept the Windows prompt…";
@@ -201,7 +261,7 @@
   // ---------------- relay test ----------------
   async function relayTest(which) {
     const j = await api("/api/relay-test/" + which);
-    if (j.ok) $("relay-note").textContent = `${which.toUpperCase()} relay clicked ${j.pulse_ms} ms`;
+    if (j.ok) $("relay-note").textContent = `${which.toUpperCase()} relay clicked for ${j.pulse_ms} ms.`;
   }
   $("btn-relay-arm").addEventListener("click", () => relayTest("arm"));
   $("btn-relay-fire").addEventListener("click", () => relayTest("fire"));
@@ -216,6 +276,7 @@
       $("tminus").textContent = txt;
     } else {
       $("tminus").textContent = state && state.ignition.state === "FIRING" ? "FIRE" : "";
+      if (state && state.ignition.state !== "FIRING") $("countdown").textContent = "";
     }
     requestAnimationFrame(frame);
   }
@@ -240,7 +301,7 @@
     const L = 44, R = 10, T = 10, B = 22, pw = W - L - R, ph = H - T - B;
     let ymax = 5;
     for (const p of pts) if (p[1] > ymax) ymax = p[1];
-    ymax = niceMax(Math.max(ymax * 1.1, state && state.ignition.state !== "SAFE" ? CFG.alarm * 1.1 : 0));
+    ymax = niceMax(ymax * 1.15);   // scale follows the data; the alarm is marked at the edge when above it
     const x = (t) => L + pw * (1 - (now - t) / chartWin);
     const y = (v) => T + ph * (1 - v / ymax);
     ctx.font = "500 12px Barlow, system-ui, sans-serif";
@@ -256,9 +317,12 @@
       ctx.fillText(s === 0 ? "now" : `-${s}s`, xx - 12, H - 6);
     }
     if (CFG.alarm < ymax) {
-      ctx.strokeStyle = "rgba(240,68,68,.65)"; ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = "rgba(240,68,68,.7)"; ctx.setLineDash([6, 4]);
       ctx.beginPath(); ctx.moveTo(L, y(CFG.alarm)); ctx.lineTo(W - R, y(CFG.alarm)); ctx.stroke();
       ctx.setLineDash([]);
+      ctx.fillStyle = "#ff8f8f"; ctx.fillText(`alarm ${CFG.alarm}`, W - R - 62, y(CFG.alarm) - 5);
+    } else {
+      ctx.fillStyle = "#ff8f8f"; ctx.fillText(`Alarm line (${CFG.alarm} bar) is above this scale`, L + 6, T + 12);
     }
     if (!pts.length) return;
     ctx.beginPath();
@@ -282,17 +346,33 @@
 
   // ---------------- ignition controls ----------------
   const armModal = $("arm-modal"), checks = armModal.querySelectorAll(".chk");
+  function renderArmFacts(s) {
+    const t = s.telemetry, ign = s.ignition;
+    const cams = s.cameras.filter((c) => c.status !== "DISABLED");
+    const live = cams.filter((c) => c.status === "LIVE").length;
+    const facts = [
+      [t.link === "LIVE", t.link === "LIVE" ? `Pressure data live: ${fmt(t.pressure_bar, 2)} bar` : `Pressure data ${t.link.toLowerCase()}`],
+      [live === cams.length && cams.length > 0, cams.length ? `Cameras live: ${live} of ${cams.length}` : "No camera turned on"],
+      [true, s.recorder.active ? "Recording is running" : "Recording starts by itself at countdown"],
+      [!ign.physical || ign.hardware.module, ign.physical ? (ign.hardware.module ? "ESP32 relay answering" : "ESP32 relay not answering") : "Simulation: no relay will switch"],
+    ];
+    $("arm-facts").innerHTML = facts.map(([ok, txt]) => `<li class="${ok ? "ok" : "warn"}">${escH(txt)}</li>`).join("");
+    $("arm-mode").textContent = S.mode(ign);
+    $("arm-mode").className = "mode-tag " + (ign.physical ? "live" : "sim");
+    $("arm-confirm").textContent = ign.physical ? "ARM live relay" : "ARM simulation";
+  }
   $("btn-arm").addEventListener("click", () => {
     if (state && state.ignition.state === "ARMED") { api("/api/ignition/disarm"); return; }
     checks.forEach((c) => (c.checked = false));
     $("arm-confirm").disabled = true;
-    armModal.hidden = false;
+    if (state) renderArmFacts(state);
+    openModal(armModal, ".chk");
   });
   checks.forEach((c) => c.addEventListener("change", () => {
     $("arm-confirm").disabled = ![...checks].every((x) => x.checked);
   }));
-  $("arm-cancel").addEventListener("click", () => (armModal.hidden = true));
-  $("arm-confirm").addEventListener("click", async () => { armModal.hidden = true; await api("/api/ignition/arm"); });
+  $("arm-cancel").addEventListener("click", () => closeModal(armModal));
+  $("arm-confirm").addEventListener("click", async () => { closeModal(armModal); await api("/api/ignition/arm"); });
 
   // hold-to-start
   const startBtn = $("btn-start"), holdFill = $("hold-fill");
@@ -311,12 +391,27 @@
     holdStart = performance.now(); holdTick();
   });
   ["pointerup", "pointercancel", "lostpointercapture"].forEach((ev) => startBtn.addEventListener(ev, holdCancel));
+  // keyboard: hold Enter on the focused button
+  startBtn.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.repeat || startBtn.disabled) return;
+    e.preventDefault(); holdStart = performance.now(); holdTick();
+  });
+  startBtn.addEventListener("keyup", (e) => { if (e.key === "Enter") holdCancel(); });
+  startBtn.addEventListener("blur", holdCancel);
 
   const doAbort = () => { holdCancel(); api("/api/ignition/abort"); };
   $("btn-abort").addEventListener("click", doAbort);
+  // Esc always aborts (and closes an open window). Space aborts unless a control is selected.
+  const CONTROLS = ["BUTTON", "INPUT", "TEXTAREA", "SELECT", "A", "SUMMARY"];
   document.addEventListener("keydown", (e) => {
-    const typing = document.activeElement && document.activeElement.tagName === "INPUT";
-    if (e.key === "Escape" || (e.code === "Space" && !typing)) { e.preventDefault(); doAbort(); }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      const m = openModalEl();
+      if (m) closeModal(m);
+      if (!m || (state && state.ignition.state !== "SAFE")) doAbort();
+    } else if (e.code === "Space" && !CONTROLS.includes(document.activeElement && document.activeElement.tagName)) {
+      e.preventDefault(); doAbort();
+    }
   });
 
   // ---------------- other controls ----------------
@@ -339,9 +434,9 @@
   // ---------------- updates + power ----------------
   const updModal = $("update-modal"), updBody = $("upd-body"), updApply = $("upd-apply");
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  $("upd-close").addEventListener("click", () => (updModal.hidden = true));
+  $("upd-close").addEventListener("click", () => closeModal(updModal));
   $("btn-update").addEventListener("click", async () => {
-    updModal.hidden = false; updApply.hidden = true;
+    openModal(updModal, "#upd-close"); updApply.hidden = true;
     $("upd-title").textContent = "Updates";
     updBody.textContent = "Checking GitHub for a new version…";
     let j;

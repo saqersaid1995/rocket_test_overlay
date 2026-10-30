@@ -25,6 +25,7 @@
   <p class="footnote">Free pins are only read as inputs, never switched. <b>NO CODE</b> means something is connected but the firmware does not use it.
     I2C names are a guess from the address. After you add a sensor in code, list its pin in <code>USED_PINS</code> or its address in <code>I2C_USED</code>.</p>
 </main>
+{{ ui.shell_script() }}
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));

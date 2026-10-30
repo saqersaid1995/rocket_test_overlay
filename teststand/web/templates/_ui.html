@@ -19,6 +19,27 @@
     <a href="/firmware" {% if page == 'firmware' %}class="on" aria-current="page"{% endif %}>Firmware</a>
     <a href="/settings" {% if page == 'settings' %}class="on" aria-current="page"{% endif %}>Settings</a>
   </nav>
+  <div class="status">
+    <span class="pill" id="pill-ign"><span>Ignition</span><b>—</b></span>
+    <span class="pill" id="pill-rec"><span>Recording</span><b>—</b></span>
+  </div>
+  <div class="clock"><span id="clock">--:--:--</span><span class="tminus" id="tminus"></span></div>
   {% if caller %}{{ caller() }}{% endif %}
 </header>
+{% if page != 'console' %}
+<div class="statebar" id="statebar" hidden>
+  <b id="sb-state">ARMED</b>
+  <span id="sb-detail"></span>
+  <span class="grow"></span>
+  <a class="btnlink" href="/">Back to console</a>
+  <button class="abort-mini" id="sb-abort">ABORT <small>Esc</small></button>
+</div>
+{% endif %}
+<p class="sr-only" id="sr-live" aria-live="assertive"></p>
+<div class="fx" id="fx" aria-hidden="true"><span class="fx-word" id="fx-word"></span></div>
+{%- endmacro %}
+
+{# status, ABORT and Esc for pages other than the console #}
+{% macro shell_script() -%}
+<script src="{{ url_for('static', filename='shell.js') }}"></script>
 {%- endmacro %}
