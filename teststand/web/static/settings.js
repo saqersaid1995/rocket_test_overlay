@@ -235,6 +235,7 @@
     const j = await (await fetch("/api/settings", { cache: "no-store" })).json();
     original = j.settings;
     fill(original);
+    thrustUi();
     $("cam-list").innerHTML = "";
     (original.cameras || []).forEach(addCam);
     dirty = false; $("savebar").hidden = true;
@@ -305,6 +306,36 @@
     toast(j.message || j.error || "Done");
     runCheck();
   });
+
+  // ---------------- thrust estimate ----------------
+  const tq = (n) => document.querySelector(`[name="thrust.${n}"]`);
+  const GAMMA = { KNSB: 1.04, KNDX: 1.04, KNSU: 1.044, APCP: 1.2 };
+  let thrustTimer = null;
+  function thrustUi() {
+    const on = tq("enabled").checked;
+    $("thrust-fields").querySelectorAll("input,select").forEach((el) => (el.disabled = !on));
+    $("thrust-preview").hidden = !on;
+    const prop = tq("propellant").value;
+    if (GAMMA[prop]) { tq("gamma").value = GAMMA[prop]; tq("gamma").disabled = true; }
+    if (!on) return;
+    clearTimeout(thrustTimer);
+    thrustTimer = setTimeout(thrustPreview, 250);
+  }
+  async function thrustPreview() {
+    const body = {};
+    ["propellant", "gamma", "throat_mm", "exit_mm", "ambient_bar", "efficiency", "propellant_g"].forEach((k) => (body[k] = tq(k).value));
+    let j;
+    try { j = await (await fetch("/api/thrust/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json(); }
+    catch (e) { return; }
+    const box = $("thrust-preview");
+    if (!j.ok) { box.textContent = j.error; return; }
+    if (!j.info) { box.textContent = j.message || "Enter the throat diameter."; return; }
+    const i = j.info;
+    box.innerHTML = `Throat area <b>${i.throat_area_mm2} mm²</b> · expansion ratio <b>${i.expansion_ratio}</b> · exit Mach <b>${i.exit_mach}</b><br>` +
+      `At ${i.ref_bar} bar (your alarm pressure): Cf <b>${i.cf_at_ref}</b>, thrust ≈ <b>${Math.round(i.force_at_ref_n)} N</b> (${(i.force_at_ref_n / 9.80665).toFixed(1)} kgf)`;
+  }
+  document.getElementById("tab-thrust").addEventListener("input", thrustUi);
+  document.getElementById("tab-thrust").addEventListener("change", thrustUi);
 
   load().then(() => showTab(location.hash.slice(1) || "check"));
 })();

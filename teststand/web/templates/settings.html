@@ -15,6 +15,7 @@
     <a href="#esp32" data-tab="esp32">ESP32 and network</a>
     <a href="#ignition" data-tab="ignition">Ignition</a>
     <a href="#pressure" data-tab="pressure">Pressure</a>
+    <a href="#thrust" data-tab="thrust">Thrust</a>
     <a href="#recording" data-tab="recording">Recording</a>
   </aside>
 
@@ -74,6 +75,35 @@
         <label>Alarm above (bar)<input name="pressure.alarm_bar" type="number" min="1" step="1"></label>
       </div>
       <p class="muted small">Sensor calibration (zero voltage, slope) is set on the ESP32's own page: join the Wi-Fi “PressureMonitor”, then open http://192.168.4.1.</p>
+    </section>
+
+    <!-- THRUST -->
+    <section class="tab" id="tab-thrust" hidden>
+      <div class="tab-h"><h1>Thrust</h1></div>
+      <p class="lead">No load cell? SFT STELLAR can estimate thrust from chamber pressure and the nozzle size:
+        thrust = efficiency × Cf × chamber pressure × throat area.</p>
+      <div class="form">
+        <label class="check full"><input name="thrust.enabled" type="checkbox"> Show estimated thrust (no thrust sensor connected)</label>
+      </div>
+      <div class="form" id="thrust-fields">
+        <label>Propellant
+          <select name="thrust.propellant">
+            <option value="KNSB">KNSB (sorbitol), gamma 1.04</option>
+            <option value="KNDX">KNDX (dextrose), gamma 1.04</option>
+            <option value="KNSU">KNSU (sucrose), gamma 1.044</option>
+            <option value="APCP">APCP (composite), gamma 1.20</option>
+            <option value="custom">Other: enter gamma</option>
+          </select></label>
+        <label>Gamma <span style="text-transform:none">(γ)</span>, ratio of specific heats<input name="thrust.gamma" type="number" min="1.01" max="1.69" step="0.001"></label>
+        <label>Throat diameter (mm)<input name="thrust.throat_mm" type="number" min="0" step="0.01"></label>
+        <label>Exit diameter (mm)<input name="thrust.exit_mm" type="number" min="0" step="0.01"></label>
+        <label>Air pressure at the stand (bar)<input name="thrust.ambient_bar" type="number" min="0.5" max="1.1" step="0.001"></label>
+        <label>Nozzle efficiency<input name="thrust.efficiency" type="number" min="0.5" max="1" step="0.01"></label>
+        <label>Propellant mass (g), for Isp<input name="thrust.propellant_g" type="number" min="0" step="1"></label>
+      </div>
+      <div class="note" id="thrust-preview">Enter the throat and exit diameters to see the numbers.</div>
+      <p class="muted small">γ values for sugar propellants are the two-phase values from R. Nakka (nakka-rocketry.net). Efficiency 0.90–0.95 covers real nozzle losses.
+        This is an estimate, not a measurement: expect about ±5–10% when the dimensions are right.</p>
     </section>
 
     <!-- RECORDING -->

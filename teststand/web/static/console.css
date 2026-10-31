@@ -357,3 +357,4 @@ tr.group td{padding:22px 14px 8px;font:400 11px var(--sans) !important;letter-sp
   .events{max-height:320px}
   .page{padding:22px 16px}
 }
+.result-stats.thrust{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07)}

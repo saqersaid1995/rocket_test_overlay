@@ -54,6 +54,9 @@
       </div>
       <span class="stage-note" id="cams-note"></span>
       <span class="grow"></span>
+      <div class="seggroup chart-tools" id="metric-seg" role="group" aria-label="Chart value" hidden>
+        <button class="seg metric on" data-metric="bar">Bar</button><button class="seg metric" data-metric="n">Thrust N</button>
+      </div>
       <div class="seggroup chart-tools" role="group" aria-label="Chart window">
         <button class="seg win" data-win="10">10 s</button><button class="seg win on" data-win="30">30 s</button><button class="seg win" data-win="60">60 s</button>
       </div>
@@ -63,7 +66,7 @@
       <div class="gauge readout">
         {{ gauge("g-now", "Chamber") }}
         <div class="gv"><b id="p-now">–</b><span>Chamber · bar</span></div>
-        <div class="g-sub"><span>PSI <b id="p-psi">–</b></span><span>Zero <b id="p-tare">–</b></span></div>
+        <div class="g-sub"><span id="p-peak-mini" hidden>Peak <b id="p-peak2">–</b></span><span>PSI <b id="p-psi">–</b></span><span>Zero <b id="p-tare">–</b></span></div>
       </div>
       <div class="center">
         <div class="t-label" id="t-label">Countdown</div>
@@ -75,8 +78,8 @@
       </div>
       <div class="gauge peak">
         {{ gauge("g-peak", "Peak") }}
-        <div class="gv"><b id="p-peak">–</b><span>Peak · bar</span></div>
-        <div class="g-sub"><span id="p-alarm-tag">Alarm <b id="p-alarm-val">–</b> bar</span></div>
+        <div class="gv"><b id="p-peak">–</b><span id="g2-label">Peak · bar</span></div>
+        <div class="g-sub"><span id="g2-sub-thrust" hidden>Peak <b id="t-peak">–</b> N</span><span id="p-alarm-tag">Alarm <b id="p-alarm-val">–</b> bar</span></div>
       </div>
     </div>
     <div class="stage-foot">
@@ -126,6 +129,12 @@
           <div><dt>Burn</dt><dd><b id="r-burn">–</b></dd></div>
           <div><dt>To peak</dt><dd><b id="r-ttp">–</b></dd></div>
           <div><dt>Readings</dt><dd><b id="r-samples">–</b></dd></div>
+        </dl>
+        <dl class="result-stats thrust" id="r-thrust" hidden>
+          <div><dt>Peak thrust</dt><dd><b id="r-fpk">–</b> N</dd></div>
+          <div><dt>Impulse</dt><dd><b id="r-imp">–</b> N·s</dd></div>
+          <div><dt>Class</dt><dd><b id="r-class">–</b></dd></div>
+          <div><dt>Isp</dt><dd><b id="r-isp">–</b></dd></div>
         </dl>
         <p class="r-files" id="r-files"></p>
       </div>

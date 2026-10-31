@@ -23,10 +23,13 @@ from .. import events
 
 
 class Recorder:
-    def __init__(self, cfg: dict, hub, cameras):
+    def __init__(self, cfg: dict, hub, cameras, thrust=None):
         self.cfg = cfg
         self.hub = hub
         self.cameras = cameras
+        self.thrust = thrust          # ThrustModel or None
+        self.impulse = 0.0            # N·s while recording (thrust estimate)
+        self.peak_thrust = 0.0
         self.base = Path(cfg["directory"])
         self._lock = threading.RLock()
         self._queue: queue.Queue = queue.Queue()
@@ -57,6 +60,7 @@ class Recorder:
             self.started_at = time.time()
             self.fire_at = None
             self.peak = (0.0, None)
+            self.impulse, self.peak_thrust = 0.0, 0.0
             self.samples = 0
             pre = self.hub.samples_since(self.started_at - self.cfg["pre_trigger_s"])
             self._queue = queue.Queue()
@@ -132,8 +136,10 @@ class Recorder:
     def _write_loop(self, session: Path, q: queue.Queue) -> None:
         csv = open(session / "pressure.csv", "w", encoding="utf-8", buffering=1 << 16)
         log = open(session / "events.log", "a", encoding="utf-8")
-        csv.write("local_time,t_rel_s,device_us,pressure_bar\n")
+        th = self.thrust if self.thrust is not None and self.thrust.enabled else None
+        csv.write("local_time,t_rel_s,device_us,pressure_bar" + (",thrust_n_estimated" if th else "") + "\n")
         t0 = self.started_at
+        last_t, last_f = None, 0.0
         last_flush = time.monotonic()
         try:
             while True:
@@ -146,8 +152,14 @@ class Recorder:
                     log.flush()
                     continue
                 for t, dev_us, p in item:
+                    f = th.force(p) if th else None
                     csv.write(f"{datetime.fromtimestamp(t).isoformat(timespec='milliseconds')},"
-                              f"{t - t0:.4f},{dev_us},{p:.4f}\n")
+                              f"{t - t0:.4f},{dev_us},{p:.4f}" + (f",{f:.2f}" if th else "") + "\n")
+                    if th:
+                        if last_t is not None and 0 < t - last_t < 1:
+                            self.impulse += (f + last_f) / 2 * (t - last_t)
+                        last_t, last_f = t, f
+                        self.peak_thrust = max(self.peak_thrust, f)
                     self.samples += 1
                     if p > self.peak[0]:
                         self.peak = (p, t)
@@ -181,7 +193,19 @@ class Recorder:
             "burn_time_s_estimate": burn,
             "note": "burn time = time pressure stayed above 10% of peak (estimate)",
             "cameras": [c["id"] for c in self.cameras.snapshot() if c.get("status") != "DISABLED"],
+            **self._thrust_summary(),
         }
+
+    def _thrust_summary(self) -> dict:
+        th = self.thrust
+        if th is None or not th.enabled:
+            return {}
+        from ..thrust import motor_class
+        imp = round(self.impulse, 2)
+        isp = th.isp(imp)
+        return {"thrust_estimated": True, "peak_thrust_n": round(self.peak_thrust, 1), "total_impulse_ns": imp,
+                "motor_class": motor_class(imp), "isp_s": round(isp, 1) if isp else None,
+                "thrust_note": "thrust estimated from chamber pressure: F = eff x Cf x Pc x At"}
 
     def snapshot(self) -> dict:
         return {"active": self.active, "session": self.session.name if self.session else None,

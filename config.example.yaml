@@ -46,3 +46,14 @@ cameras:
     name: WIDE
     url: rtsp://admin:password@192.168.1.61:554/stream1
     enabled: false           # set true when the camera is connected
+
+thrust:                     # thrust estimated from chamber pressure (when no load cell is fitted)
+  enabled: false
+  propellant: KNSB          # KNSB, KNDX, KNSU, APCP or custom (then set gamma)
+  gamma: 1.04               # ratio of specific heats, two-phase flow
+  throat_mm: 0              # nozzle throat diameter
+  exit_mm: 0                # nozzle exit diameter
+  ambient_bar: 1.013        # air pressure at the stand
+  efficiency: 0.95          # real-nozzle correction, 0.90-0.95
+  propellant_g: 0           # propellant mass, for Isp (optional)
+

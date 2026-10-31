@@ -24,6 +24,8 @@ EDITABLE = {
     "ignition": {"driver": str, "countdown_s": int, "pulse_ms": int, "hold_to_start_s": float,
                  "arm_timeout_s": int, "relay_test_ms": int},
     "recorder": {"directory": str, "pre_trigger_s": int, "auto_record": bool, "auto_stop_after_fire_s": int},
+    "thrust": {"enabled": bool, "propellant": str, "gamma": float, "throat_mm": float, "exit_mm": float,
+               "ambient_bar": float, "efficiency": float, "propellant_g": float},
 }
 CAMERA_FIELDS = {"id": str, "name": str, "enabled": bool, "ip": str, "user": str, "password": str,
                  "port": int, "brand": str, "record_path": str, "preview_path": str,
@@ -76,6 +78,25 @@ def register(app, system) -> None:
         from ..diagnostics import local_ip_towards
         data["pc_ip"] = local_ip_towards(cfg["telemetry"].get("esp_ip") or "192.168.1.50")
         return ok(settings=data)
+
+    @app.post("/api/thrust/preview")
+    def thrust_preview():
+        """Numbers for the Thrust settings tab, before saving."""
+        from ..thrust import PROPELLANTS, ThrustModel
+        body = dict(request.get_json(silent=True) or {})
+        try:
+            for k in ("gamma", "throat_mm", "exit_mm", "ambient_bar", "efficiency", "propellant_g"):
+                body[k] = float(body.get(k) or 0) or None
+            if body.get("propellant") in PROPELLANTS:
+                body["gamma"] = PROPELLANTS[body["propellant"]]
+            body["enabled"] = True
+            m = ThrustModel(body)
+            if not m.enabled:
+                return ok(info=None, message="Enter the throat diameter")
+            ref = float(system.cfg["pressure"]["alarm_bar"])
+            return ok(info=m.info(ref_bar=ref), gamma=m.k)
+        except (TypeError, ValueError, ZeroDivisionError, OverflowError) as exc:
+            return fail(f"Check the numbers: {exc}", 400)
 
     @app.post("/api/settings")
     def save_settings():

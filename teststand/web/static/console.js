@@ -45,6 +45,13 @@
 
   const S = window.STELLAR.status;   // shared helpers from shell.js
   let lastResult = null, firstRender = true, viewChosen = false, armedSinceFire = false;
+  let thrust = null, metric = "bar";
+  const fmtN = (v) => (v === null || v === undefined || isNaN(v)) ? "–" : Math.round(v).toLocaleString();
+  const toN = (p) => Math.max(0, thrust.A * (p + thrust.ambient_bar) * 1e5 - thrust.B);
+  document.querySelectorAll(".seg.metric").forEach((b) => b.addEventListener("click", () => {
+    metric = b.dataset.metric;
+    document.querySelectorAll(".seg.metric").forEach((x) => x.classList.toggle("on", x === b));
+  }));
   const ARC = 414.7, CIRC = 552.9;     // 270-degree gauge on r=88
   function setArc(id, frac) {
     const el = $(id);
@@ -84,7 +91,23 @@
     document.body.classList.toggle("p-alarm", alarm);
     $("p-alarm-val").textContent = fmt(CFG.alarm, 0);
     setArc("g-now-arc", p === null ? 0 : p / CFG.max);
-    setArc("g-peak-arc", (t.peak_bar || 0) / CFG.max);
+    const TH = s.thrust || {};
+    thrust = TH.enabled ? TH : null;
+    $("metric-seg").hidden = !thrust;
+    $("p-peak-mini").hidden = $("g2-sub-thrust").hidden = !thrust;
+    $("p-alarm-tag").hidden = !!thrust;
+    if (thrust) {
+      $("p-peak").textContent = fmtN(TH.n);
+      $("g2-label").textContent = "Thrust · N (est.)";
+      $("t-peak").textContent = fmtN(TH.peak_n);
+      $("p-peak2").textContent = fmt(t.peak_bar, 2);
+      setArc("g-peak-arc", (TH.n || 0) / (TH.max_n || 1));
+      $("g-peak-alarm").style.display = "none";
+    } else {
+      $("g2-label").textContent = "Peak · bar";
+      setArc("g-peak-arc", (t.peak_bar || 0) / CFG.max);
+      $("g-peak-alarm").style.display = "";
+    }
     ["g-now-alarm", "g-peak-alarm"].forEach((id) => { const el = $(id); if (el) el.style.strokeDashoffset = (-ARC * Math.min(1, CFG.alarm / CFG.max)).toFixed(1); });
     $("p-meta").textContent = t.link === "LIVE" ? `PT-01 · ${t.rate_hz} readings/s` : "Waiting for the ESP32";
     $("p-meta").title = t.firmware ? `${t.firmware} from ${t.remote || "?"}` : "";
@@ -204,6 +227,13 @@
     const unit = (id, v) => { $(id).parentElement.innerHTML = v > 0 ? `<b id="${id}">${fmt(v, 2)}</b> s` : `<b id="${id}">–</b>`; };
     unit("r-burn", burned ? L.burn_time_s_estimate : 0); unit("r-ttp", burned ? L.time_to_peak_s : 0);
     $("r-samples").textContent = L.samples.toLocaleString();
+    $("r-thrust").hidden = !L.thrust_estimated;
+    if (L.thrust_estimated) {
+      $("r-fpk").textContent = burned ? fmtN(L.peak_thrust_n) : "–";
+      $("r-imp").textContent = burned ? fmt(L.total_impulse_ns, 1) : "–";
+      $("r-class").textContent = burned && L.motor_class ? L.motor_class : "–";
+      $("r-isp").parentElement.innerHTML = burned && L.isp_s ? `<b id="r-isp">${fmt(L.isp_s, 0)}</b> s` : `<b id="r-isp">–</b>`;
+    }
     $("r-files").textContent = `Saved: pressure, events` + (L.cameras && L.cameras.length ? `, ${L.cameras.length} camera video${L.cameras.length > 1 ? "s" : ""}` : "") + ` in ${L.session}`;
     if (isNew) { box.classList.remove("fresh"); void box.offsetWidth; box.classList.add("fresh"); }
   }
@@ -338,8 +368,10 @@
     if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    const L = 44, R = 10, T = 10, B = 22, pw = W - L - R, ph = H - T - B;
-    let ymax = 5;
+    const asN = thrust && metric === "n";
+    if (asN) pts = pts.map((p) => [p[0], toN(p[1])]);
+    const L = asN ? 56 : 44, R = 10, T = 10, B = 22, pw = W - L - R, ph = H - T - B;
+    let ymax = asN ? 50 : 5;
     for (const p of pts) if (p[1] > ymax) ymax = p[1];
     ymax = niceMax(ymax * 1.15);   // scale follows the data; the alarm is marked at the edge when above it
     const x = (t) => L + pw * (1 - (now - t) / chartWin);
@@ -349,14 +381,16 @@
     for (let i = 0; i <= 4; i++) {
       const v = ymax * i / 4, yy = y(v);
       ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(W - R, yy); ctx.stroke();
-      ctx.fillText(v.toFixed(v < 10 ? 1 : 0), 4, yy + 4);
+      ctx.fillText(asN ? Math.round(v).toLocaleString() : v.toFixed(v < 10 ? 1 : 0), 4, yy + 4);
     }
     const step = chartWin <= 10 ? 2 : chartWin <= 30 ? 5 : 10;
     for (let s = 0; s <= chartWin; s += step) {
       const xx = L + pw * (1 - s / chartWin);
       ctx.fillText(s === 0 ? "now" : `-${s}s`, xx - 12, H - 6);
     }
-    if (CFG.alarm < ymax) {
+    if (asN) {
+      ctx.fillStyle = "#ffb08f"; ctx.fillText("Thrust, N (estimated from pressure)", L + 6, T + 12);
+    } else if (CFG.alarm < ymax) {
       ctx.strokeStyle = "rgba(255,77,85,.75)"; ctx.setLineDash([6, 5]);
       ctx.beginPath(); ctx.moveTo(L, y(CFG.alarm)); ctx.lineTo(W - R, y(CFG.alarm)); ctx.stroke();
       ctx.setLineDash([]);
@@ -367,10 +401,10 @@
     if (!pts.length) return;
     ctx.beginPath();
     pts.forEach((p, i) => { const xx = x(p[0]), yy = y(p[1]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); });
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.lineJoin = "round";
+    ctx.strokeStyle = asN ? "#ff6a2b" : "#fff"; ctx.lineWidth = 2; ctx.lineJoin = "round";
     ctx.stroke();
     const area = ctx.createLinearGradient(0, T, 0, T + ph);
-    area.addColorStop(0, "rgba(255,255,255,.14)"); area.addColorStop(1, "rgba(255,255,255,0)");
+    area.addColorStop(0, asN ? "rgba(255,106,43,.18)" : "rgba(255,255,255,.14)"); area.addColorStop(1, "rgba(0,0,0,0)");
     ctx.lineTo(x(pts[pts.length - 1][0]), y(0)); ctx.lineTo(x(pts[0][0]), y(0)); ctx.closePath();
     ctx.fillStyle = area; ctx.fill();
   }

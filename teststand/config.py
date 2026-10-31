@@ -44,6 +44,16 @@ DEFAULTS: dict = {
         "auto_record": True,          # countdown start -> start recording
         "auto_stop_after_fire_s": 30, # stop recording this long after the fire pulse
     },
+    "thrust": {                       # thrust estimated from chamber pressure (no load cell)
+        "enabled": False,
+        "propellant": "KNSB",         # sets gamma; "custom" = use gamma below
+        "gamma": 1.04,                # ratio of specific heats, two-phase flow
+        "throat_mm": 0.0,
+        "exit_mm": 0.0,
+        "ambient_bar": 1.013,
+        "efficiency": 0.95,           # nozzle / real-world correction
+        "propellant_g": 0.0,          # for Isp (optional)
+    },
     "firmware": {
         "fqbn": "esp32:esp32:esp32",  # board for arduino-cli (ESP32 Dev Module)
         "sketch": "esp32_pressure_ota",
@@ -81,6 +91,21 @@ def validate(data: dict) -> dict:
     ign["relay_test_ms"] = max(50, min(int(ign.get("relay_test_ms", 300)), 1000))
     if ign["driver"] not in ("simulation", "esp32"):
         raise ValueError(f"ignition.driver must be 'simulation' or 'esp32', got {ign['driver']!r}")
+    th = cfg["thrust"]
+    from .thrust import PROPELLANTS
+    if th.get("propellant") in PROPELLANTS:
+        th["gamma"] = PROPELLANTS[th["propellant"]]
+    th["gamma"] = float(th["gamma"])
+    th["efficiency"] = float(th["efficiency"])
+    if th.get("enabled"):
+        if float(th.get("throat_mm") or 0) <= 0:
+            raise ValueError("Thrust: enter the nozzle throat diameter")
+        if float(th.get("exit_mm") or 0) < float(th["throat_mm"]):
+            raise ValueError("Thrust: the exit diameter must be at least the throat diameter")
+        if not 1.0 < th["gamma"] < 1.7:
+            raise ValueError("Thrust: gamma must be between 1.0 and 1.7")
+        if not 0.5 <= th["efficiency"] <= 1.0:
+            raise ValueError("Thrust: nozzle efficiency must be between 0.5 and 1.0")
     port = int(cfg["telemetry"]["listen_port"])
     if not 0 <= port <= 65535:   # 0 = any free port (tests)
         raise ValueError("telemetry.listen_port must be 1-65535")

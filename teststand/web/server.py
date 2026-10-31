@@ -45,6 +45,15 @@ def create_app(system) -> Flask:
         return render_template("console.html", cameras=system.cameras.snapshot(), cfg=system.cfg,
                                version=updater.version())
 
+    def _thrust_now():
+        th = system.thrust
+        if not th.enabled:
+            return {"enabled": False}
+        t = system.hub.snapshot()
+        return {"enabled": True, "n": th.force(t.get("pressure_bar")), "peak_n": th.force(t.get("peak_bar") or 0),
+                "max_n": th.force(system.cfg["pressure"]["max_expected_bar"]), "A": th.A, "B": th.B,
+                "ambient_bar": th.pa_bar}
+
     @app.get("/api/state")
     def state():
         last_poll["t"] = time.time()
@@ -53,6 +62,7 @@ def create_app(system) -> Flask:
             server_time=time.time(),
             telemetry=system.hub.snapshot(),
             pressure_cfg=system.cfg["pressure"],
+            thrust=_thrust_now(),
             ignition=system.ignition.snapshot(),
             recorder=system.recorder.snapshot(),
             cameras=system.cameras.snapshot(),

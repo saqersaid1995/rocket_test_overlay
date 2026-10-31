@@ -577,3 +577,28 @@ def test_other_commands_do_not_corrupt_firmware_upload(hub):
         stop.set()
     assert node.ota_images[-1] == image
     node.stop()
+
+
+def test_thrust_model_and_recorder_summary(hub, tmp_path):
+    import math
+    from teststand.thrust import ThrustModel, motor_class
+    m = ThrustModel({"enabled": True, "throat_mm": 10, "exit_mm": 10 * math.sqrt(10), "gamma": 1.2,
+                     "efficiency": 1.0, "ambient_bar": 1.013})
+    assert abs(m.cf(69) - 1.598) < 0.01            # textbook Cf for k=1.2, eps=10, ~70 bar
+    assert m.force(0) == 0 and m.force(69) > 800
+    assert motor_class(300) == "H" and motor_class(700) == "J"
+    assert not ThrustModel({"enabled": True, "throat_mm": 0}).enabled
+    node = FakeNode("127.0.0.1", hub.port, burn_s=0.5, peak_bar=40)
+    threading.Thread(target=node.run, daemon=True).start()
+    assert wait_for(hub.link_ok, 5)
+    cams = type("C", (), {"start_recording": lambda *a: None, "stop_recording": lambda *a: None, "snapshot": lambda *a: []})()
+    rec = Recorder(dict(DEFAULTS["recorder"], directory=str(tmp_path)), hub,
+                   cams, ThrustModel({"enabled": True, "throat_mm": 8, "exit_mm": 20, "gamma": 1.04}))
+    rec.start("test")
+    node.burn_start = time.time()
+    time.sleep(1.5)
+    summary = rec.stop("test")
+    assert summary["thrust_estimated"] and summary["peak_thrust_n"] > 100 and summary["total_impulse_ns"] > 10
+    header = (tmp_path / summary["session"] / "pressure.csv").read_text().splitlines()[0]
+    assert header.endswith("thrust_n_estimated")
+    node.stop()

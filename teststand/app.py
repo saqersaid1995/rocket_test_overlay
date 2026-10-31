@@ -35,7 +35,9 @@ class System:
         self.cfg_path = Path(cfg_path) if cfg_path else Path("config.yaml")
         self.hub = TelemetryHub(cfg["telemetry"])
         self.cameras = CameraBank(cfg["cameras"])
-        self.recorder = Recorder(cfg["recorder"], self.hub, self.cameras)
+        from .thrust import ThrustModel
+        self.thrust = ThrustModel(cfg["thrust"])
+        self.recorder = Recorder(cfg["recorder"], self.hub, self.cameras, self.thrust)
         driver = make_driver(cfg["ignition"], self.hub)
         self.ignition = IgnitionController(cfg["ignition"], driver, self.hub.link_ok)
         self.ignition.on("countdown", self.recorder.on_countdown)
